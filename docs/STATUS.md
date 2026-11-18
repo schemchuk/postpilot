@@ -1,6 +1,6 @@
 # STATUS
 
-- Active agent: codex
+- Active agent: codex (launched in the background by claude-code, see docs/HANDOFF.md)
 - Current task: T01 Skeleton + CI (docs/03-tasks.md). Spec, architecture, ADRs 001-006 and the task
   plan are APPROVED by Volodymyr (2026-11-18). Window protocol: docs/HANDOFF.md.
 - Branch: main (work on feat/T01-skeleton)
