@@ -73,3 +73,5 @@
   API key in the HeyGen dashboard (which invalidates the old one) and puts it into this `.env` only.
 - **Cleanup:** social_bridge (private) is to be deleted from GitHub; the lumara repo no longer exists
   there. GitHub Projects with "lumara" in the name are to be removed too.
+- 2026-11-18: Umbra deleted from the second HeyGen account; local folders ../lumara and
+  ../social_bridge deleted from the laptop on Volodymyr's request.

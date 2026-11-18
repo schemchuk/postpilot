@@ -25,7 +25,6 @@ Prior art (learn from it, do not copy blindly):
 - `../handmake` — process only (spec-driven gates, ADRs, STATUS.md handoff). Take NO code, assets,
   accounts or secrets from it: they belong to someone else's accounts. Only Volodymyr's own GitHub
   access is shared.
-- `../social_bridge` — Python Facebook/Instagram Reels publishing.
 
 ## Hard constraints
 - Secrets only in `.env` (gitignored) and GitHub Secrets. Never print, log or commit tokens.
