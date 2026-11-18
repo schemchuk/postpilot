@@ -18,4 +18,4 @@ def test_import_and_cli() -> None:
         import_module(f"postpilot.{name}")
 
     assert postpilot.__version__
-    assert main() == 0
+    assert main([]) == 0
