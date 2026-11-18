@@ -9,15 +9,15 @@
   in the LinkedIn app (Volodymyr confirmed).
 - Branch: main
 - Last commit: see `git log -1`
-- Next step: FIRST verify the GitHub secret DATABASE_URL (see Blocked on), then run
-  `gh workflow run check-tokens.yml --ref main` and confirm it is green. Then start T07.
-- Blocked on: GitHub secret `DATABASE_URL` is EMPTY (the early write used `source .env`, which breaks on `&`).
-  Volodymyr must run: `grep '^DATABASE_URL=' .env | cut -d= -f2- | tr -d '\n' | gh secret set DATABASE_URL`.
-  The scheduled workflows (poll-telegram every 5 min, check-tokens daily, publish-due Fridays) fail until it is
-  fixed. If the fix is delayed, `gh workflow disable poll-telegram.yml` stops the failure e-mails (re-enable after).
+- Next step: T06a hotfix first (small, Codex): (1) jobs must apply pending migrations on start
+  (`migrate.up` is idempotent and lock-protected) so a fresh database never breaks a scheduled run;
+  (2) `run_job` must also log the exception TYPE and the failing job to stderr (Actions log), not only to
+  Telegram. Then T07 AI client + prompts + humanizer.
+- Blocked on: nothing. Verified 2026-11-18 19:01 EET: secret `DATABASE_URL` fixed, migrations 0001-0003 applied
+  to the production Neon database by hand, `check-tokens` and `poll-telegram` workflows green.
 - Follow-ups: purge unused oauth nonces in bot_state; local fallback `postpilot auth linkedin --open`;
   run integration tests in CI (needs a workflow change + OK); LinkedIn token has not been issued yet, the first
-  `/renew` flow is untested against real LinkedIn (check-tokens will prompt: status "missing").
+  `/renew` flow is untested against real LinkedIn (check-tokens sends a renewal prompt, status "missing").
 - Database: Neon free Postgres (Frankfurt), `DATABASE_URL` is in `.env` and in GitHub Secrets (unquoted,
   never `source` `.env`). Integration tests run with `TEST_DATABASE_URL` in a throwaway schema; they are
   skipped in CI until a workflow change adds the secret (needs Volodymyr's explicit OK).
