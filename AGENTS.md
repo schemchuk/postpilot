@@ -33,6 +33,10 @@ Prior art (learn from it, do not copy blindly):
   working link to the exact page where it is obtained (open the link first to check it is live).
   Volodymyr assigns secret tasks one at a time as work progresses; do not ask for or fetch them early.
   Secrets he explicitly allows to be reused may be copied between `.env` files without printing them.
+- When a secret must also go into GitHub Secrets, give Volodymyr a ready terminal command that reads the
+  value from `.env` and pipes it to `gh secret set`, so he never pastes it into a browser or chat, e.g.
+  `(set -a; . ./.env; set +a; printf %s "$NAME" | gh secret set NAME)`. Run from the repo root; verify
+  afterwards with `gh secret list` (names only).
 - AI-generated media (avatar videos) is labelled as AI-generated on every channel (EU AI Act, Meta).
 - Publishing is idempotent: a rerun never posts the same item twice.
 - Channels are pluggable: nothing in the core depends on a specific network.
