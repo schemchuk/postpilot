@@ -25,11 +25,12 @@ Flow for LinkedIn, no server needed:
 1. `check-tokens` (daily cron) finds <= 7 days left, tries silent refresh, otherwise sends a Telegram
    message with a "Renew LinkedIn token" button (a link to the OAuth URL with a signed `state`).
 2. Volodymyr taps it; with a live LinkedIn session consent is one tap.
-3. The redirect URI is a static page on GitHub Pages (`/callback`) that shows the one-time code with
-   a copy button and a deep link back to the bot. The code alone is useless without the client secret.
-4. He sends the code to the bot (or taps the deep link); the next `poll-telegram` run verifies `state`,
-   exchanges the code, stores the token and expiry, confirms in Telegram, and releases any items
-   held back by the expired token (as the old agent did).
+3. The redirect URI is a static page on GitHub Pages (`/callback/`) that shows a copy-ready
+   `/renew <code> <state>` command. Telegram's 64-character bot start payload limit rules out
+   carrying the command in a deep link.
+4. He sends the command to the bot. The next `poll-telegram` run verifies and consumes the signed
+   state (valid for 30 minutes), exchanges the code, stores the token and expiry, confirms in
+   Telegram, and releases any items held back by the expired token.
 5. A local fallback `postpilot auth linkedin --open` keeps the old localhost flow for emergencies.
 
 Storage: tokens and expiry dates live in the Postgres `tokens` table, encrypted with a key held in

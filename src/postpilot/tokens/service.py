@@ -6,7 +6,9 @@ from functools import partial
 from math import ceil
 from typing import Literal, Protocol
 
+from postpilot.notify.telegram import Notifier
 from postpilot.tokens.base import TokenManager, utc_datetime
+from postpilot.tokens.oauth_state import StateStore, make_state
 
 logger = logging.getLogger(__name__)
 
@@ -71,3 +73,14 @@ def check_tokens(
             except Exception as error:  # noqa: BLE001 - isolate alert failures
                 logger.warning("Token alert failed (%s)", type(error).__name__)
     return TokenReport(statuses)
+
+
+def issue_renewal_prompt(
+    manager: TokenManager,
+    secret_key: bytes,
+    state_store: StateStore,
+    notifier: Notifier,
+    now: datetime,
+) -> None:
+    state = make_state(secret_key, manager.provider, now, store=state_store)
+    notifier.send_renewal_prompt(manager.provider, manager.renewal_url(state))

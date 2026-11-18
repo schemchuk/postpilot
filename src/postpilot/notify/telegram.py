@@ -59,6 +59,9 @@ class TelegramApi:
             return message_id
         raise TelegramError("Telegram sendMessage returned an invalid message id")
 
+    def delete_message(self, chat_id: int, message_id: int) -> None:
+        self._request("deleteMessage", chat_id=chat_id, message_id=message_id)
+
     def edit_message_text(self, chat_id: int, message_id: int, text: str) -> None:
         self._request(
             "editMessageText", chat_id=chat_id, message_id=message_id, text=text
@@ -125,3 +128,12 @@ class Notifier:
 
     def send_alert(self, text: str) -> None:
         self.api.send_message(self.chat_id, _truncate(text))
+
+    def send_renewal_prompt(self, provider: str, url: str) -> None:
+        label = "LinkedIn" if provider == "linkedin" else provider
+        text = f"Renew {label} token"
+        self.api.send_message(
+            self.chat_id,
+            f"{text}. This link expires in 30 minutes.",
+            {"inline_keyboard": [[{"text": text, "url": url}]]},
+        )
