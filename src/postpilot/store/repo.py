@@ -14,6 +14,7 @@ from postpilot.core.models import (
     Variant,
 )
 from postpilot.core.states import IllegalTransition, ItemState, ensure_transition
+from postpilot.store.bot_state import BotState
 
 _ITEM_COLUMNS = "id, source, state, created_at, updated_at, approved_by, approved_at"
 _PUBLICATION_COLUMNS = "item_id, channel, status, remote_id, error, updated_at"
@@ -52,6 +53,7 @@ class LostPublicationClaim(IllegalTransition):
 class ItemRepo:
     def __init__(self, conn: Connection[TupleRow]) -> None:
         self.conn = conn
+        self.bot_state = BotState(conn)
 
     def create_item(self, source: Source) -> Item:
         with self.conn.transaction():
@@ -84,6 +86,34 @@ class ItemRepo:
             ).fetchall()
             return [Variant(*row) for row in rows]
 
+    def update_variant_text(self, item_id: UUID, lang: Language, text: str) -> None:
+        with self.conn.transaction():
+            self._require_state(item_id, ItemState.AWAITING_APPROVAL)
+            updated = self.conn.execute(
+                "UPDATE variants SET text = %s WHERE item_id = %s AND lang = %s",
+                (text, item_id, lang),
+            )
+            if not updated.rowcount:
+                raise KeyError((item_id, lang))
+
+    def apply_pending_edit(self, user_id: int, text: str) -> Item | None:
+        with self.conn.transaction():
+            pending = self.bot_state.take_pending_edit(user_id)
+            if pending is None:
+                return None
+            item_id, lang = pending
+            try:
+                self.update_variant_text(item_id, lang, text)
+            except IllegalTransition:
+                return None
+            return self.get_item(item_id)
+
+    def _require_state(self, item_id: UUID, expected: ItemState) -> ItemState:
+        state = self._lock_state(item_id)
+        if state != expected:
+            raise IllegalTransition(f"Expected {expected}, found {state}")
+        return state
+
     def _lock_state(self, item_id: UUID) -> ItemState:
         row = self.conn.execute(
             "SELECT state FROM items WHERE id = %s FOR UPDATE", (item_id,)
@@ -93,10 +123,20 @@ class ItemRepo:
         return ItemState(row[0])
 
     def transition(
-        self, item_id: UUID, new_state: ItemState, *, approved_by: int | None = None
+        self,
+        item_id: UUID,
+        new_state: ItemState,
+        *,
+        approved_by: int | None = None,
+        expected_state: ItemState | None = None,
     ) -> Item:
         with self.conn.transaction():
-            ensure_transition(self._lock_state(item_id), new_state)
+            state = (
+                self._lock_state(item_id)
+                if expected_state is None
+                else self._require_state(item_id, expected_state)
+            )
+            ensure_transition(state, new_state)
             if new_state == ItemState.APPROVED:
                 if approved_by is None:
                     raise ValueError("approved_by is required for approval")
