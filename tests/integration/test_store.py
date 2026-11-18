@@ -113,7 +113,8 @@ def test_draft_cannot_claim_publication(repo):
 def test_claim_only_once_per_channel(conn, repo, approved_item):
     claimed = repo.claim_publication(approved_item.id, "example")
     assert claimed is not None
-    assert claimed.status is PublicationStatus.PUBLISHING
+    assert not claimed.recovered
+    assert claimed.publication.status is PublicationStatus.PUBLISHING
     assert repo.claim_publication(approved_item.id, "example") is None
     repo.mark_published(approved_item.id, "example", "remote-id")
     assert repo.claim_publication(approved_item.id, "example") is None
@@ -144,8 +145,9 @@ def test_failed_publication_can_be_reclaimed(conn, repo, approved_item):
     repo.transition(item_id, ItemState.PUBLISHING)
     claimed = repo.claim_publication(item_id, "example")
     assert claimed is not None
-    assert claimed.status is PublicationStatus.PUBLISHING
-    assert claimed.error is None
+    assert claimed.recovered
+    assert claimed.publication.status is PublicationStatus.PUBLISHING
+    assert claimed.publication.error is None
     assert repo.claim_publication(item_id, "example") is None
 
 

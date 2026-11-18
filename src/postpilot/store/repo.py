@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+from datetime import timedelta
 from uuid import UUID, uuid4
 
 from psycopg import Connection
@@ -28,6 +30,23 @@ def _item(row: TupleRow) -> Item:
         approved_by,
         approved_at,
     )
+
+
+def _publication(row: TupleRow) -> Publication:
+    item_id, channel, status, remote_id, error, updated_at = row
+    return Publication(
+        item_id, channel, PublicationStatus(status), remote_id, error, updated_at
+    )
+
+
+@dataclass(frozen=True)
+class Claim:
+    publication: Publication
+    recovered: bool
+
+
+class LostPublicationClaim(IllegalTransition):
+    pass
 
 
 class ItemRepo:
@@ -97,7 +116,17 @@ class ItemRepo:
             assert row is not None
             return _item(row)
 
-    def claim_publication(self, item_id: UUID, channel: str) -> Publication | None:
+    def list_publications(self, item_id: UUID) -> list[Publication]:
+        with self.conn.transaction():
+            rows = self.conn.execute(
+                f"SELECT {_PUBLICATION_COLUMNS} FROM publications WHERE item_id = %s ORDER BY channel",
+                (item_id,),
+            ).fetchall()
+            return [_publication(row) for row in rows]
+
+    def claim_publication(
+        self, item_id: UUID, channel: str, *, stale_after: timedelta | None = None
+    ) -> Claim | None:
         with self.conn.transaction():
             state = self._lock_state(item_id)
             if state not in {ItemState.APPROVED, ItemState.PUBLISHING}:
@@ -106,38 +135,60 @@ class ItemRepo:
                 )
             row = self.conn.execute(
                 f"""
-                INSERT INTO publications (item_id, channel, status)
-                VALUES (%s, %s, 'PUBLISHING')
+                INSERT INTO publications (item_id, channel, status, updated_at)
+                VALUES (%s, %s, 'PUBLISHING', clock_timestamp())
                 ON CONFLICT (item_id, channel) DO NOTHING
                 RETURNING {_PUBLICATION_COLUMNS}
                 """,
                 (item_id, channel),
             ).fetchone()
-            if row is None:
-                row = self.conn.execute(
-                    f"""
-                    UPDATE publications SET status = 'PUBLISHING', error = NULL,
-                        remote_id = NULL, updated_at = now()
-                    WHERE item_id = %s AND channel = %s AND status = 'FAILED'
-                    RETURNING {_PUBLICATION_COLUMNS}
-                    """,
-                    (item_id, channel),
-                ).fetchone()
-            if row is None:
-                return None
-            ref, name, status, remote_id, error, updated_at = row
-            return Publication(
-                ref, name, PublicationStatus(status), remote_id, error, updated_at
-            )
+            if row is not None:
+                return Claim(_publication(row), recovered=False)
 
-    def mark_published(self, item_id: UUID, channel: str, remote_id: str) -> None:
+            row = self.conn.execute(
+                f"""
+                UPDATE publications SET status = 'PUBLISHING', error = NULL,
+                    remote_id = NULL, updated_at = clock_timestamp()
+                WHERE item_id = %s AND channel = %s AND (
+                    status = 'FAILED' OR (
+                        status = 'PUBLISHING' AND
+                        updated_at < clock_timestamp() - %s::interval
+                    )
+                )
+                RETURNING {_PUBLICATION_COLUMNS}
+                """,
+                (item_id, channel, stale_after),
+            ).fetchone()
+            return Claim(_publication(row), recovered=True) if row is not None else None
+
+    def finish_publishing(self, item_id: UUID, channels: set[str]) -> None:
+        with self.conn.transaction():
+            if self._lock_state(item_id) != ItemState.PUBLISHING:
+                return
+            statuses = {
+                publication.channel: publication.status
+                for publication in self.list_publications(item_id)
+            }
+            if PublicationStatus.FAILED in statuses.values():
+                self.transition(item_id, ItemState.FAILED)
+            elif all(
+                statuses.get(channel) == PublicationStatus.PUBLISHED
+                for channel in channels
+            ):
+                self.transition(item_id, ItemState.PUBLISHED)
+
+    def mark_published(
+        self, item_id: UUID, channel: str, remote_id: str, *, claim: Claim | None = None
+    ) -> None:
         self._finish_publication(
-            item_id, channel, PublicationStatus.PUBLISHED, remote_id, None
+            item_id, channel, PublicationStatus.PUBLISHED, remote_id, None, claim
         )
 
-    def mark_failed(self, item_id: UUID, channel: str, error: str) -> None:
+    def mark_failed(
+        self, item_id: UUID, channel: str, error: str, *, claim: Claim | None = None
+    ) -> None:
         self._finish_publication(
-            item_id, channel, PublicationStatus.FAILED, None, error
+            item_id, channel, PublicationStatus.FAILED, None, error, claim
         )
 
     def _finish_publication(
@@ -147,16 +198,32 @@ class ItemRepo:
         status: PublicationStatus,
         remote_id: str | None,
         error: str | None,
+        claim: Claim | None,
     ) -> None:
         with self.conn.transaction():
+            claimed_at = None
+            if claim is not None:
+                self._lock_state(item_id)
+                claimed_at = claim.publication.updated_at
             result = self.conn.execute(
                 """
                 UPDATE publications SET status = %s, remote_id = %s, error = %s, updated_at = now()
                 WHERE item_id = %s AND channel = %s AND status = 'PUBLISHING'
+                    AND (%s::timestamptz IS NULL OR updated_at = %s)
                 """,
-                (status.value, remote_id, error, item_id, channel),
+                (
+                    status.value,
+                    remote_id,
+                    error,
+                    item_id,
+                    channel,
+                    claimed_at,
+                    claimed_at,
+                ),
             )
             if result.rowcount == 0:
+                if claim is not None:
+                    raise LostPublicationClaim("Publication claim is no longer current")
                 raise IllegalTransition(
                     "Only a PUBLISHING publication can be completed"
                 )
