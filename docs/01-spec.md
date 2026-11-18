@@ -113,17 +113,24 @@ engineering: agents in production, CI/CD, tests, docs and decision records. It r
 - No use of coachhelp.de (being shut down).
 - No scheduling of S2 texts to the Friday slot.
 
-## 7. Open questions (answer before or during architecture)
+## 7. Decisions and open questions
 
-1. Meta: Threads, Instagram and Facebook publishing need a Meta developer app, and possibly app review.
-   Does Volodymyr already have one, or do we create it in the architecture phase?
-2. LinkedIn: the existing LinkedIn app is reused (new credentials in this `.env`) or a new app is created?
-   Token renewal needs a browser flow; in the cloud this needs a design (ADR).
-3. Cloud host for about 0 EUR/month: decided in the architecture phase (candidates to compare there).
-4. AI models: Claude API key for generation and translation; a new key in this `.env`. Confirm budget.
-5. Image generation for S1 posts (OpenAI, used today): keep, or drop since video is now the visual?
-6. HeyGen: new API key (old one retired) and the new avatar of Volodymyr; step-by-step comes when needed.
-7. Is an image still attached to LinkedIn posts, or is text-only enough for the first release?
+Answered by Volodymyr on 2026-11-18:
+- Image generation is dropped. Posts are text plus the avatar video; no OpenAI images (removes the
+  OpenAI dependency).
+- Claude API: the existing key is reused (copied into this project's `.env`; same account and budget).
+- LinkedIn app: lean towards reusing the existing app and saying so in the portfolio. Recommendation:
+  reuse the app (Client ID and Secret) but run a fresh OAuth authorization so postpilot holds its own
+  token; never copy the old access token. The app's redirect URL list must get the cloud callback
+  address. Final choice is made in the architecture ADR. Old and new agent share the app's rate limits
+  while both run.
+- Meta developer app: unknown; checked together in the architecture phase (Threads, Instagram and
+  Facebook publishing need it, and possibly app review).
+
+Still open:
+1. Cloud host for about 0 EUR/month: decided in the architecture phase.
+2. LinkedIn token renewal flow in the cloud (browser step): ADR.
+3. HeyGen: new API key (old one retired) and the new avatar of Volodymyr; step-by-step when needed.
 
 ## 8. Out-of-repo cleanup (tracked, not part of the code)
 
