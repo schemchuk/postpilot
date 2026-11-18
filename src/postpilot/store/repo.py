@@ -71,6 +71,14 @@ class ItemRepo:
             ).fetchone()
             return _item(row) if row is not None else None
 
+    def list_unfinished_item_ids(self) -> list[UUID]:
+        with self.conn.transaction():
+            rows = self.conn.execute(
+                "SELECT id FROM items WHERE state = %s ORDER BY created_at, id",
+                (ItemState.PUBLISHING.value,),
+            ).fetchall()
+            return [item_id for (item_id,) in rows]
+
     def add_variant(self, item_id: UUID, lang: Language, text: str) -> None:
         with self.conn.transaction():
             self.conn.execute(

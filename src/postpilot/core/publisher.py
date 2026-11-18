@@ -11,7 +11,7 @@ from postpilot.core.models import Item, PublicationStatus, Variant
 from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.store.repo import ItemRepo, LostPublicationClaim
 
-type Outcome = Literal["published", "skipped", "failed", "pending"]
+type Outcome = Literal["published", "skipped", "failed", "pending", "held"]
 
 
 @dataclass(frozen=True)
@@ -41,11 +41,13 @@ class Publisher:
         stale_after: timedelta = timedelta(minutes=15),
         *,
         sleep: Callable[[float], None] = time.sleep,
+        token_guard: Callable[[str], bool] | None = None,
     ) -> None:
         self.repo = repo
         self.channels = channels
         self.stale_after = stale_after
         self.sleep = sleep
+        self.token_guard = token_guard
 
     def publish_item(self, item_id: UUID) -> PublishReport:
         item = self.repo.get_item(item_id)
@@ -86,6 +88,9 @@ class Publisher:
     def _publish_channel(
         self, channel: Channel, item: Item, variants: list[Variant]
     ) -> ChannelResult:
+        if self.token_guard is not None and not self.token_guard(channel.name):
+            return ChannelResult("held")
+
         validation_error = None
         try:
             channel.validate(item, variants)

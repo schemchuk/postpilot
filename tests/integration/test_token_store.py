@@ -1,0 +1,67 @@
+from datetime import UTC, datetime, timedelta
+
+import test_store
+from cryptography.fernet import Fernet
+
+from postpilot.store import migrate
+from postpilot.store.bot_state import BotState
+from postpilot.tokens.crypto import TokenCipher
+from postpilot.tokens.store import StoredToken, TokenStore
+
+pytestmark = test_store.pytestmark
+database_schema = test_store.database_schema
+conn = test_store.conn
+
+
+def test_token_store_encrypts_and_upserts(conn):
+    cipher = TokenCipher(Fernet.generate_key())
+    store = TokenStore(conn, cipher)
+    expiry = datetime(2026, 11, 18, tzinfo=UTC)
+    access, refresh = "example access value", "example refresh value"
+    assert store.get("provider") is None
+    store.save("provider", access, expiry, refresh)
+    with conn.transaction():
+        raw_access, raw_refresh = conn.execute(
+            "SELECT access_token, refresh_token FROM tokens WHERE provider = 'provider'"
+        ).fetchone()
+    assert raw_access != access
+    assert raw_refresh != refresh
+    assert cipher.decrypt(raw_access) == access
+    assert cipher.decrypt(raw_refresh) == refresh
+    stored = store.get("provider")
+    assert stored == StoredToken("provider", access, expiry, refresh)
+    assert access not in repr(stored)
+    assert refresh not in repr(stored)
+
+    updated_expiry = expiry + timedelta(days=30)
+    store.save("provider", "updated access value", updated_expiry)
+    assert store.get("provider") == StoredToken(
+        "provider", "updated access value", updated_expiry
+    )
+    store.delete("provider")
+    assert store.get("provider") is None
+
+
+def test_token_migration_round_trip(conn):
+    assert "tokens" in test_store.table_names(conn)
+    migrate.down(conn)
+    assert "tokens" not in test_store.table_names(conn)
+    assert "bot_state" in test_store.table_names(conn)
+    migrate.up(conn)
+    assert "tokens" in test_store.table_names(conn)
+
+
+def test_token_alert_daily_state(conn):
+    state = BotState(conn)
+    today = datetime(2026, 11, 18, tzinfo=UTC).date()
+    messages = []
+    state.send_token_alert_once("one", today, lambda: messages.append("first"))
+    state.send_token_alert_once("one", today, lambda: messages.append("duplicate"))
+    tomorrow = today + timedelta(days=1)
+    state.send_token_alert_once("one", tomorrow, lambda: messages.append("next day"))
+    with conn.transaction():
+        row = conn.execute(
+            "SELECT value FROM bot_state WHERE key = 'token_alert:one'"
+        ).fetchone()
+    assert row == (tomorrow.isoformat(),)
+    assert messages == ["first", "next day"]
