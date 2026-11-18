@@ -29,6 +29,10 @@ Prior art (learn from it, do not copy blindly):
 ## Hard constraints
 - Secrets only in `.env` (gitignored) and GitHub Secrets. Never print, log or commit tokens.
   Keep `.env.example` with placeholders. Volodymyr creates and pastes all secrets himself.
+- Whenever a secret or credential is needed, give Volodymyr a step-by-step guide and a verified,
+  working link to the exact page where it is obtained (open the link first to check it is live).
+  Volodymyr assigns secret tasks one at a time as work progresses; do not ask for or fetch them early.
+  Secrets he explicitly allows to be reused may be copied between `.env` files without printing them.
 - AI-generated media (avatar videos) is labelled as AI-generated on every channel (EU AI Act, Meta).
 - Publishing is idempotent: a rerun never posts the same item twice.
 - Channels are pluggable: nothing in the core depends on a specific network.
