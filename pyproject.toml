@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "A Telegram-approved content publishing pipeline"
 readme = "README.md"
 requires-python = ">=3.12"
+dependencies = ["psycopg[binary]>=3.2"]
 
 [project.optional-dependencies]
 dev = ["ruff", "mypy", "pytest", "pre-commit"]
@@ -17,6 +18,9 @@ postpilot = "postpilot.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"postpilot.store" = ["migrations/*.sql"]
 
 [tool.ruff]
 target-version = "py312"
@@ -29,3 +33,4 @@ files = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = ["integration: requires a real PostgreSQL database"]
