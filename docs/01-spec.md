@@ -77,8 +77,10 @@ engineering: agents in production, CI/CD, tests, docs and decision records. It r
 
 ### F7. Operations
 - F7.1 Runs in the cloud, target cost about 0 EUR/month. The laptop is not part of production.
-- F7.2 Telegram notification on every failure and on credentials expiring (LinkedIn tokens live about
-  60 days with no refresh for ordinary apps; warn 7 days ahead).
+- F7.2 Telegram notification on every failure. Token lifecycle ported from the old agent and extended
+  to all providers: expiry tracking, silent refresh where possible, alert 7 days ahead, one-tap assisted
+  renewal for LinkedIn (about 60 days, no refresh token for ordinary apps), held posts released after
+  renewal (ADR 005).
 - F7.3 Daily snapshot of GitHub traffic and short-link clicks, since GitHub keeps only 14 days.
 - F7.4 Ported when rational, each as its own task: comment monitoring with AI reply drafts, fork/star
   watch, engagement log and /stats, profile advisor. Order and inclusion are decided in task planning.

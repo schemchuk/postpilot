@@ -1,6 +1,6 @@
 # 002. Ports and adapters, Channel protocol
 
-Status: PROPOSED
+Status: ACCEPTED (Volodymyr, 2026-11-18)
 
 Context: channels must be pluggable and nothing in the core may depend on a network (AGENTS.md).
 Decision: core defines `Channel` (`validate`, `publish`) and `Source` protocols; each network lives in

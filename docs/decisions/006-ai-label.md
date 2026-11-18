@@ -1,6 +1,6 @@
 # 006. AI-generated label
 
-Status: PROPOSED
+Status: ACCEPTED (Volodymyr, 2026-11-18)
 
 Decision: every HeyGen video is labelled as AI-generated on each channel: a visible burned-in text in
 the video, the caption line "AI-generated avatar / KI-generierter Avatar", and the platform's own

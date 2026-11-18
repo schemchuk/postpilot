@@ -1,6 +1,6 @@
 # 003. State store: free managed Postgres
 
-Status: PROPOSED (provider chosen in task 2 after checking current free-tier limits)
+Status: ACCEPTED (Volodymyr, 2026-11-18) - Postgres provider is chosen in task 2
 
 Context: Actions runners are ephemeral; state (items, publications, offsets, series, budget) must
 persist and support transactional claiming for idempotency.

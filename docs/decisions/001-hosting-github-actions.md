@@ -1,6 +1,6 @@
 # 001. Hosting: GitHub Actions cron, no server
 
-Status: PROPOSED (Volodymyr decides)
+Status: ACCEPTED (Volodymyr, 2026-11-18)
 
 ## Context
 Goal: about 0 EUR/month, runs in the cloud, laptop not in production. Load is a few jobs per week

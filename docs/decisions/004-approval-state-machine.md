@@ -1,6 +1,6 @@
 # 004. Approval as an explicit state machine
 
-Status: PROPOSED
+Status: ACCEPTED (Volodymyr, 2026-11-18)
 
 Decision: items move only through DRAFT, AWAITING_APPROVAL, APPROVED, PUBLISHING, PUBLISHED, SKIPPED,
 FAILED. `publish` accepts only APPROVED items and the transition is enforced in `core/states.py`, so

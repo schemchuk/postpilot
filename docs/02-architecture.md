@@ -33,6 +33,7 @@ managed Postgres (ADR 001, 003). No always-on server.
 | `ai/` | Claude client, prompts, humanizer; the only place that imports the Anthropic SDK |
 | `video/heygen.py` | v3 API: create, poll, download; subtitles; AI label; monthly cap |
 | `channels/` | One file per network behind `Channel` protocol: `validate()`, `publish(item) -> remote_id` |
+| `tokens/` | `TokenManager` per provider (LinkedIn, Threads, IG, FB): expiry tracking, silent refresh, assisted renewal (ADR 005) |
 | `notify/telegram.py` | Preview messages, buttons, failure and expiry alerts |
 | `store/` | Postgres access, migrations; no business logic |
 | `cli.py` | Entry points: `draft-weekly`, `poll-telegram`, `publish-due`, `snapshot-traffic`, `check-tokens` |
@@ -68,7 +69,10 @@ by checking the channel for an existing post with the item's marker before retry
 
 - Telegram: only the allowed user id is served; everything else is dropped silently.
 - Tokens never logged; error reports are redacted. Secret scanning in CI.
-- LinkedIn and Meta tokens expire (about 60 days): `check-tokens` alerts 7 days ahead (ADR 005).
+- LinkedIn and Meta tokens expire (about 60 days). `check-tokens` runs daily: silent refresh where the
+  provider allows it, otherwise a Telegram alert 7 days ahead with a one-tap renewal flow (ADR 005).
+  Tokens are stored encrypted in Postgres, never in logs. A post held by an expired token is released
+  right after renewal.
 
 ## 6. Testing
 
@@ -79,6 +83,6 @@ Graph API. No real network in CI.
 ## 7. Task order (preview for gate 4)
 
 1 skeleton + CI, 2 store + models + state machine, 3 publisher + fake channel, 4 Telegram notifier and
-approval, 5 AI client + humanizer, 6 GitHub source, 7 LinkedIn channel, 8 Telegram inbox S2,
+approval, 4b token lifecycle (TokenManager, check-tokens, LinkedIn assisted renewal), 5 AI client + humanizer, 6 GitHub source, 7 LinkedIn channel, 8 Telegram inbox S2,
 9 Threads, 10 HeyGen video, 11 Instagram/Facebook Reels, 12 ported extras (short links, traffic,
 series, comments, fork/star), 13 production cutover and removal of the old agent.
