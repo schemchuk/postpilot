@@ -1,6 +1,6 @@
 # Architecture: postpilot
 
-Status: DRAFT for review by Volodymyr (gate 3). Input: docs/01-spec.md. Decisions in docs/decisions/.
+Status: APPROVED by Volodymyr (2026-11-18).
 Several ADRs are PROPOSED and need Volodymyr's veto or OK before tasks are planned.
 
 ## 1. Shape

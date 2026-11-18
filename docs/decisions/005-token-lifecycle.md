@@ -1,6 +1,6 @@
 # 005. Token lifecycle: tracking, silent refresh, assisted renewal
 
-Status: PROPOSED (revised 2026-11-18 after Volodymyr's note that the old agent had auto-renewal)
+Status: ACCEPTED (Volodymyr, 2026-11-18)
 
 ## Context
 The old agent (`work_in_Linkedin/token_manager.py`, `linkedin_auth.py`, `assistant_bot.py`) does four

@@ -1,6 +1,6 @@
 # Tasks: postpilot
 
-Status: DRAFT for review by Volodymyr (gate 4). Defaults: Owner = Codex, Reviewer = Claude Code, branch
+Status: APPROVED by Volodymyr (2026-11-18).
 `feat/<id>-<slug>`, one PR per task under about 400 non-test lines, CI green before merge.
 Every task ships tests; no real network in CI. "Secret gate" = Volodymyr supplies a secret first;
 Claude Code gives a step-by-step guide with a verified link at that moment (AGENTS.md).
