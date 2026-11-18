@@ -4,6 +4,7 @@ from uuid import UUID
 
 from postpilot.core.models import Language
 from postpilot.core.states import IllegalTransition, ItemState
+from postpilot.notify.renewal import RenewalHandler
 from postpilot.notify.telegram import Notifier, TelegramApi
 from postpilot.store.repo import ItemRepo
 
@@ -27,7 +28,9 @@ class ApprovalHandler:
         allowed_user_id: int,
         *,
         on_regenerate: Callable[[UUID], None] | None = None,
+        renewal: RenewalHandler | None = None,
     ) -> None:
+        self.renewal = renewal
         self.repo = repo
         self.api = api
         self.allowed_user_id = allowed_user_id
@@ -44,6 +47,15 @@ class ApprovalHandler:
             self._handle_callback(event, sender)
         elif isinstance(event.get("text"), str):
             chat_id = _object(event.get("chat")).get("id")
+            if event["text"].startswith("/renew"):
+                message_id = event.get("message_id")
+                if (
+                    self.renewal is not None
+                    and type(chat_id) is int
+                    and type(message_id) is int
+                ):
+                    self.renewal.handle_message(chat_id, message_id, event["text"])
+                return
             if type(chat_id) is int:
                 item = self.repo.apply_pending_edit(sender, event["text"])
                 if item is not None:

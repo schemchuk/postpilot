@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LinkedIn token renewal</title>
+<style>
+  body { max-width: 38rem; margin: 3rem auto; padding: 0 1rem; font: 1rem/1.5 system-ui; }
+  code { display: block; padding: 1rem; background: #f2f4f6; overflow-wrap: anywhere; }
+  button { margin-top: 1rem; padding: .6rem 1rem; font: inherit; }
+</style>
+<main>
+  <h1>LinkedIn token renewal</h1>
+  <div id="success" hidden>
+    <p>Copy this command and send it to your Postpilot bot in Telegram.</p>
+    <code id="command"></code>
+    <button id="copy" type="button">Copy command</button>
+  </div>
+  <p id="status" role="status">No renewal command is available.</p>
+</main>
+<script>
+  const params = new URLSearchParams(location.search);
+  history.replaceState(null, "", location.pathname);
+
+  const code = params.get("code");
+  const state = params.get("state");
+  const feedback = document.getElementById("status");
+  const command = document.getElementById("command");
+
+  if (params.has("error") || !code || !state) {
+    feedback.textContent = "Renewal was not completed. Open a fresh renewal link from Telegram.";
+  } else {
+    command.textContent = "/renew " + code + " " + state;
+    feedback.textContent = "";
+    document.getElementById("success").hidden = false;
+    document.getElementById("copy").addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(command.textContent);
+        feedback.textContent = "Command copied.";
+      } catch {
+        const range = document.createRange();
+        range.selectNodeContents(command);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        feedback.textContent = "Command selected. Copy it using your device’s copy command.";
+      }
+    });
+  }
+</script>
+</html>

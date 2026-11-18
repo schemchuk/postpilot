@@ -64,3 +64,18 @@ class BotState:
             )
             if result.rowcount:
                 send()
+
+    def save_oauth_nonce(self, nonce: str) -> None:
+        with self.conn.transaction():
+            self.conn.execute(
+                "INSERT INTO bot_state (key, value) VALUES (%s, 'issued')",
+                (f"oauth_state:{nonce}",),
+            )
+
+    def consume_oauth_nonce(self, nonce: str) -> bool:
+        with self.conn.transaction():
+            row = self.conn.execute(
+                "DELETE FROM bot_state WHERE key = %s RETURNING key",
+                (f"oauth_state:{nonce}",),
+            ).fetchone()
+        return row is not None
