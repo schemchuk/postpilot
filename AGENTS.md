@@ -22,8 +22,9 @@ with separate credentials. Every post is previewed and approved in Telegram befo
 Prior art (learn from it, do not copy blindly):
 - `../work_in_Linkedin` — the current production LinkedIn agent (Python, systemd). It keeps running
   until this project replaces it. Do not modify it from this repo's sessions.
-- `../handmake` — process (spec-driven gates, ADRs, STATUS.md handoff) and Threads/Instagram/Facebook
-  adapters and runbooks (TypeScript). Its secrets and accounts belong to someone else: never reuse them.
+- `../handmake` — process only (spec-driven gates, ADRs, STATUS.md handoff). Take NO code, assets,
+  accounts or secrets from it: they belong to someone else's accounts. Only Volodymyr's own GitHub
+  access is shared.
 - `../social_bridge` — Python Facebook/Instagram Reels publishing.
 
 ## Hard constraints
@@ -33,8 +34,8 @@ Prior art (learn from it, do not copy blindly):
 - Publishing is idempotent: a rerun never posts the same item twice.
 - Channels are pluggable: nothing in the core depends on a specific network.
 - No auto-publishing without an explicit approval in Telegram.
-- Do NOT assume the tech stack. It is decided in the interview and architecture.
-- Time box: about 10 days total. Prefer a working MVP over completeness; cut scope explicitly.
+- Stack: Python (decided in interview round 2). Runs in the cloud, not on Volodymyr's laptop.
+- No time box: scope is not cut to fit a deadline (round 2). Still keep tasks small.
 
 ## Roles and ownership
 | Area | Owner | Reviewer |

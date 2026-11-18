@@ -22,3 +22,16 @@
    and a new repo are fine. Codex implements for now. About 10 days for the project, full-time.
 - Existing work_in_Linkedin: keep it running; its pending changes were committed and pushed
   (0945c8c, 2026-11-18). The portfolio project lives in a new folder and a new repo.
+
+## Round 2 (2026-11-18)
+1. **Name:** postpilot is accepted.
+2. **Scope:** no time box ("if it needs more than 10 days, fine"). Port everything from
+   work_in_Linkedin that is rational and serves the project goals.
+3. **Languages:** Volodymyr asks for a recommendation that makes the project look coherent
+   (see round 3).
+4. **Hosting:** move to the cloud; the laptop will be replaced soon.
+5. **Stack:** Python. Nothing is taken from handmake except Volodymyr's own GitHub access.
+   Volodymyr owns the domain coachhelp.de.
+6. **HeyGen:** the plan has API access; Volodymyr will top up credits. He does not know which
+   avatar is meant and wants to be shown it. Note: an automated lookup with the HeyGen key from
+   ../social_bridge was blocked by the permission system (key belongs to another project).
