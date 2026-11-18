@@ -1,13 +1,10 @@
 # STATUS
 
 - Active agent: claude-code
-- Current task: interview closed, summary awaiting confirmation
+- Current task: spec drafted (docs/01-spec.md), waiting for review (gate 2)
 - Branch: main
 - Last commit: see `git log -1`
-- Next step: create GitHub repo schemchuk/postpilot and push (if not done), then Volodymyr confirms
-  the 10-line summary in docs/00-interview.md, then write docs/01-spec.md
-- Blocked on: Volodymyr's confirmation; HeyGen id of his personal avatar (not on the copied key)
-- Open questions for Volodymyr:
-  - Which HeyGen account or avatar name holds his personal avatar?
-  - Deleting Numi/Arcas/Luna from HeyGen: confirm when lumara/social_bridge no longer need them.
-  - New HeyGen API key and new avatar of Volodymyr (step-by-step in the spec phase).
+- Next step: Volodymyr reviews docs/01-spec.md; after approval write docs/02-architecture.md and ADRs
+- Blocked on: Volodymyr's review of the spec
+- Open questions for Volodymyr: see section 7 of docs/01-spec.md
+  - Pending cleanup: delete GitHub repo social_bridge and "lumara" Projects (confirm first).
