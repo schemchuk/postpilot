@@ -50,6 +50,8 @@ class Publisher:
         self.token_guard = token_guard
 
     def publish_item(self, item_id: UUID) -> PublishReport:
+        if not self.channels:
+            raise ValueError("No channels configured")
         item = self.repo.get_item(item_id)
         if item is None:
             raise KeyError(item_id)

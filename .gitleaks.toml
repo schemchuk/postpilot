@@ -1,0 +1,12 @@
+title = "postpilot gitleaks config"
+
+[extend]
+useDefault = true
+
+# False positive: a dataclass field annotation named `linkedin` looks like `linkedin... = value`
+# to the generic linkedin-client-secret rule. The line holds no secret.
+[[allowlists]]
+description = "Settings.linkedin field annotation"
+targetRules = ["linkedin-client-secret"]
+paths = ['''src/postpilot/config\.py''']
+regexes = ['''linkedin: LinkedInSettings \| None = None''']

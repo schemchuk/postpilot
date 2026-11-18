@@ -72,10 +72,16 @@ class ItemRepo:
             return _item(row) if row is not None else None
 
     def list_unfinished_item_ids(self) -> list[UUID]:
+        return self._list_item_ids(ItemState.PUBLISHING)
+
+    def list_approved_item_ids(self) -> list[UUID]:
+        return self._list_item_ids(ItemState.APPROVED)
+
+    def _list_item_ids(self, state: ItemState) -> list[UUID]:
         with self.conn.transaction():
             rows = self.conn.execute(
                 "SELECT id FROM items WHERE state = %s ORDER BY created_at, id",
-                (ItemState.PUBLISHING.value,),
+                (state.value,),
             ).fetchall()
             return [item_id for (item_id,) in rows]
 
