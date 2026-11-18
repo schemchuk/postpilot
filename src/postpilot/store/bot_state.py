@@ -1,3 +1,5 @@
+from collections.abc import Callable
+from datetime import date
 from typing import cast
 from uuid import UUID
 
@@ -47,3 +49,18 @@ class BotState:
                 (user_id,),
             ).fetchone()
             return cast(tuple[UUID, Language], row) if row else None
+
+    def send_token_alert_once(
+        self, provider: str, day: date, send: Callable[[], None]
+    ) -> None:
+        with self.conn.transaction():
+            result = self.conn.execute(
+                """
+                INSERT INTO bot_state (key, value) VALUES (%s, %s)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+                WHERE bot_state.value < EXCLUDED.value
+                """,
+                (f"token_alert:{provider}", day.isoformat()),
+            )
+            if result.rowcount:
+                send()
