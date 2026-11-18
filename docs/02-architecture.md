@@ -1,7 +1,7 @@
 # Architecture: postpilot
 
 Status: APPROVED by Volodymyr (2026-11-18).
-Several ADRs are PROPOSED and need Volodymyr's veto or OK before tasks are planned.
+All ADRs 001-006 are ACCEPTED (2026-11-18).
 
 ## 1. Shape
 
