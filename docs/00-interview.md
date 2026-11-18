@@ -63,3 +63,13 @@
 8. Separate credentials for IG and FB; nothing from handmake except the process.
 9. Gated workflow: spec, architecture with ADRs, tasks; Codex implements, Claude Code reviews.
 10. No time box; work_in_Linkedin is deleted after postpilot goes live.
+
+## Round 4 (2026-11-18)
+- **Telegram texts** are published right after approval, not on the Friday slot.
+- **HeyGen:** the account behind `HEYGEN_API_KEY` has a wallet balance of about 24 USD, so Volodymyr's
+  avatar is created anew there. Numi, Arcas and Luna were deleted from it on 2026-11-18 (verified:
+  no private avatars left). The second account (Umbra) has about 0.4 USD and is not used.
+- **Key:** Volodymyr wants the key that lived in lumara/social_bridge retired. Plan: he generates a new
+  API key in the HeyGen dashboard (which invalidates the old one) and puts it into this `.env` only.
+- **Cleanup:** social_bridge (private) is to be deleted from GitHub; the lumara repo no longer exists
+  there. GitHub Projects with "lumara" in the name are to be removed too.

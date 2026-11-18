@@ -10,4 +10,4 @@
 - Open questions for Volodymyr:
   - Which HeyGen account or avatar name holds his personal avatar?
   - Deleting Numi/Arcas/Luna from HeyGen: confirm when lumara/social_bridge no longer need them.
-  - Telegram texts: publish on the next Friday slot or right after approval?
+  - New HeyGen API key and new avatar of Volodymyr (step-by-step in the spec phase).
