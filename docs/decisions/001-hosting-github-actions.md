@@ -4,7 +4,7 @@ Status: PROPOSED (Volodymyr decides)
 
 ## Context
 Goal: about 0 EUR/month, runs in the cloud, laptop not in production. Load is a few jobs per week
-plus a Telegram poll. Checked 2026-11-18 (snapshdeploy.dev state of free hosting, Oracle docs).
+plus a Telegram poll. Checked 2026-11-18 (snapdeploy.dev "State of Free Hosting 2026", Oracle docs).
 
 ## Options
 1. **GitHub Actions (cron + dispatch) + free Postgres.** No server, public repo means free minutes,
