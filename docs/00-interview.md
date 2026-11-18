@@ -35,3 +35,31 @@
 6. **HeyGen:** the plan has API access; Volodymyr will top up credits. He does not know which
    avatar is meant and wants to be shown it. Note: an automated lookup with the HeyGen key from
    ../social_bridge was blocked by the permission system (key belongs to another project).
+
+## Round 3 (2026-11-18)
+1. **Languages:** recommendation accepted. LinkedIn DE first, then UA. Threads DE only. Reels: avatar
+   speaks German, German subtitles burned in. Telegram texts are written in UA and auto-translated to
+   DE; both versions are shown in the preview.
+2. **Avatar:** Volodymyr knows which avatar is meant and allows copying the needed values into this
+   project's `.env` (HEYGEN_API_KEY copied from ../social_bridge). The account behind that key holds
+   only three private photo avatars (Numi, Arcas, Luna from lumara), no personal avatar found.
+   Volodymyr wants the lumara characters deleted from HeyGen (destructive, confirm before doing it).
+   HeyGen v2 endpoints are legacy (sunset 2026-10-31 announced); the adapter must use the v3 API.
+3. **Domain:** coachhelp.de is to be shut down completely (Vercel, database, LinkedIn, domains).
+   Not used for postpilot. A cancellation guide for paid services is wanted when that topic comes up.
+4. **Cloud budget:** aim for 0 EUR/month; the project is low-traffic.
+5. **Old repo:** delete work_in_Linkedin once postpilot runs in production.
+6. **Routes:** weekly GitHub posts keep the Wed draft / Fri publish rhythm. Telegram texts follow
+   the same route as generated posts (preview, then all channels).
+
+## Summary for confirmation (before the spec)
+1. postpilot: Python personal-brand content pipeline, portfolio for automation jobs in DE (UA from 2029).
+2. Sources: weekly posts from GitHub activity (4/month) and Volodymyr's UA texts from Telegram.
+3. Channels: LinkedIn (DE + UA), Threads (DE, short), Instagram Reels and Facebook Reels (DE avatar video).
+4. Video: HeyGen avatar of Volodymyr, made from the LinkedIn DE text, labelled as AI-generated.
+5. Every item is previewed and approved in a new Telegram bot before publishing.
+6. Everything rational from work_in_Linkedin is ported (humanizer, link safety, series, analytics, comments).
+7. Runs in the cloud at about 0 EUR/month; the laptop is not part of production.
+8. Separate credentials for IG and FB; nothing from handmake except the process.
+9. Gated workflow: spec, architecture with ADRs, tasks; Codex implements, Claude Code reviews.
+10. No time box; work_in_Linkedin is deleted after postpilot goes live.
