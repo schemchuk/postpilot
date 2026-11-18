@@ -1,0 +1,21 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff check
+        entry: ruff check .
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: mypy
+        name: mypy
+        entry: mypy src
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: scan-secrets
+        name: Scan for secrets
+        entry: python scripts/scan_secrets.py
+        language: system
+        pass_filenames: false
+        always_run: true
