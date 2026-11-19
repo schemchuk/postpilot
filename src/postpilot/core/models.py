@@ -42,3 +42,5 @@ class Publication:
     remote_id: str | None
     error: str | None
     updated_at: datetime
+    remote_ref: str | None = None
+    remote_ref_claimed_at: datetime | None = None

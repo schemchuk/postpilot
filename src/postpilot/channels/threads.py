@@ -1,6 +1,7 @@
 import re
 from collections.abc import Callable
-from uuid import UUID
+from datetime import datetime, timedelta
+from urllib.parse import quote
 
 import httpx
 
@@ -9,17 +10,13 @@ from postpilot.channels.base import (
     ChannelHeld,
     TransientChannelError,
     UncertainPublication,
-    marker,
 )
 from postpilot.core.models import Item, Variant
 
-_API = "https://graph.threads.com/v1.0/me"
+_API = "https://graph.threads.com/v1.0"
 _MAX_LENGTH = 500
+_TIMESTAMP_MARGIN = timedelta(minutes=5)
 _SENTENCE_END = re.compile(r"""[.!?…]+["'”’»“‘)\]]*(?=\s|$)""")
-
-
-def _suffix(item_id: UUID) -> str:
-    return f"\n\n{marker(item_id)}/de"
 
 
 class ThreadsChannel:
@@ -42,10 +39,8 @@ class ThreadsChannel:
             raise ChannelError("Missing required language variant")
         if not text.strip():
             raise ChannelError("Threads text is empty")
-        suffix = _suffix(item.id)
-        limit = _MAX_LENGTH - len(suffix)
-        if len(text) > limit:
-            budget = limit - 1
+        if len(text) > _MAX_LENGTH:
+            budget = _MAX_LENGTH - 1
             sentence_end = max(
                 (m.end() for m in _SENTENCE_END.finditer(text) if m.end() <= budget),
                 default=0,
@@ -55,7 +50,7 @@ class ThreadsChannel:
                 default=budget,
             )
             text = text[: sentence_end or word_end] + "…"
-        return text + suffix
+        return text
 
     def validate(self, item: Item, variants: list[Variant]) -> None:
         self._text(item, variants)
@@ -75,7 +70,8 @@ class ThreadsChannel:
         params: dict[str, str | int] | None = None,
         data: dict[str, str] | None = None,
     ) -> dict[str, object]:
-        transient = UncertainPublication if method == "POST" else TransientChannelError
+        publishing = endpoint == "me/threads_publish"
+        transient = UncertainPublication if publishing else TransientChannelError
         try:
             response = self._client.request(
                 method,
@@ -107,58 +103,96 @@ class ThreadsChannel:
                 if isinstance(result, dict):
                     return result
             if method == "POST":
-                raise UncertainPublication("Invalid Threads publish response")
+                raise transient("Invalid Threads response")
             raise ChannelError("Invalid Threads lookup response")
         raise transient("Threads request failed")
 
-    @staticmethod
-    def _id(result: dict[str, object]) -> str:
-        remote_id = result.get("id")
-        if not isinstance(remote_id, str) or not remote_id:
-            raise UncertainPublication("Threads did not return an ID")
-        return remote_id
-
-    def publish(self, item: Item, variants: list[Variant]) -> str:
+    def publish_with_ref(
+        self,
+        item: Item,
+        variants: list[Variant],
+        *,
+        ref: str | None,
+        claimed_at: datetime,
+        save_ref: Callable[[str], None],
+    ) -> str | None:
         text = self._text(item, variants)
         token = self._token()
-        creation_id = self._id(
-            self._request(
-                "POST", "threads", token, data={"media_type": "TEXT", "text": text}
-            )
-        )
+        if ref is not None:
+            status = self._request(
+                "GET", quote(ref, safe=""), token, params={"fields": "status"}
+            ).get("status")
+            if status == "PUBLISHED":
+                return self._find_published(text, claimed_at, token)
+            if status == "IN_PROGRESS":
+                return None
+            if status in ("ERROR", "EXPIRED"):
+                ref = None
+            elif status != "FINISHED":
+                raise ChannelError("Invalid Threads container status")
+
+        self._check_token(token)
+        if ref is None:
+            creation_id = self._request(
+                "POST", "me/threads", token, data={"media_type": "TEXT", "text": text}
+            ).get("id")
+            if not isinstance(creation_id, str) or not creation_id:
+                raise TransientChannelError("Threads did not return a container ID")
+            ref = creation_id
+
+        # Re-saving a FINISHED container also verifies ownership of the current claim.
+        save_ref(ref)
+        self._check_token(token)
+        remote_id = self._request(
+            "POST", "me/threads_publish", token, data={"creation_id": ref}
+        ).get("id")
+        if not isinstance(remote_id, str) or not remote_id:
+            raise UncertainPublication("Threads did not return a post ID")
+        return remote_id
+
+    def _check_token(self, token: str) -> None:
         if self._token() != token:
             raise ChannelHeld("Threads token changed during the operation")
-        return self._id(
-            self._request(
-                "POST", "threads_publish", token, data={"creation_id": creation_id}
-            )
-        )
 
-    def find_existing(self, item_id: UUID) -> str | None:
-        token = self._token()
-        suffix = _suffix(item_id)
-        params: dict[str, str | int] = {"fields": "id,text", "limit": 100}
+    def _find_published(
+        self, text: str, claimed_at: datetime, token: str
+    ) -> str | None:
+        params: dict[str, str | int] = {"fields": "id,text,timestamp", "limit": 100}
+        cutoff = claimed_at - _TIMESTAMP_MARGIN
         seen = set()
+        match = None
         while True:
-            if self._token() != token:
-                raise ChannelHeld("Threads token changed during the operation")
-            result = self._request("GET", "threads", token, params=params)
+            self._check_token(token)
+            result = self._request("GET", "me/threads", token, params=params)
             posts = result.get("data")
             if not isinstance(posts, list):
                 raise ChannelError("Invalid Threads posts response")
             for post in posts:
                 if not isinstance(post, dict):
                     raise ChannelError("Invalid Threads post response")
-                text, remote_id = post.get("text"), post.get("id")
-                if isinstance(text, str) and text.endswith(suffix):
+                timestamp = post.get("timestamp")
+                if not isinstance(timestamp, str):
+                    raise ChannelError("Threads post timestamp is unavailable")
+                try:
+                    posted_at = datetime.fromisoformat(timestamp)
+                except ValueError:
+                    raise ChannelError("Invalid Threads post timestamp") from None
+                if posted_at.utcoffset() is None:
+                    raise ChannelError("Invalid Threads post timestamp")
+                if posted_at < cutoff:
+                    return match
+                if post.get("text") == text:
+                    remote_id = post.get("id")
                     if not isinstance(remote_id, str) or not remote_id:
                         raise ChannelError("Threads post ID is unavailable")
-                    return remote_id
+                    if match is not None and match != remote_id:
+                        return None
+                    match = remote_id
             paging = result.get("paging")
             cursors = paging.get("cursors") if isinstance(paging, dict) else None
             after = cursors.get("after") if isinstance(cursors, dict) else None
             if not posts or not isinstance(after, str) or not after:
-                return None
+                return match
             if after in seen:
                 raise ChannelError("Threads pagination repeated a cursor")
             seen.add(after)

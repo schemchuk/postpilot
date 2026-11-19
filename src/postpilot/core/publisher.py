@@ -9,12 +9,13 @@ from uuid import UUID
 from postpilot.channels.base import (
     Channel,
     ChannelHeld,
+    RefChannel,
     TransientChannelError,
     UncertainPublication,
 )
 from postpilot.core.models import Item, PublicationStatus, Variant
 from postpilot.core.states import IllegalTransition, ItemState
-from postpilot.store.repo import ItemRepo, LostPublicationClaim
+from postpilot.store.repo import Claim, ItemRepo, LostPublicationClaim
 
 type Outcome = Literal["published", "skipped", "failed", "pending", "held"]
 
@@ -116,24 +117,24 @@ class Publisher:
             return ChannelResult("skipped")
 
         recover_only = getattr(channel, "recover_only", False)
-        lookup_only = recover_only and claim.stale
-        if validation_error is None or lookup_only:
+        preserve_claim = (
+            recover_only
+            and claim.stale
+            and (claim.remote_ref is not None or not isinstance(channel, RefChannel))
+        )
+        if validation_error is None or preserve_claim:
             try:
-                remote_id = (
-                    channel.find_existing(item.id)
-                    if lookup_only
-                    else self._send(
-                        channel, item, variants, claim.recovered and not recover_only
-                    )
-                )
+                remote_id = self._send(channel, item, variants, claim)
             except ChannelHeld:
-                if not lookup_only:
+                if not preserve_claim:
                     self.repo.release_publication(claim)
                 return ChannelResult("held")
+            except LostPublicationClaim:
+                return ChannelResult("pending")
             except UncertainPublication as error:
                 return ChannelResult("pending", _redact_error(error))
             except Exception as error:  # noqa: BLE001 - isolate adapter failures
-                if lookup_only:
+                if preserve_claim:
                     return ChannelResult("pending", _redact_error(error))
                 validation_error = _redact_error(error)
             else:
@@ -154,10 +155,27 @@ class Publisher:
         return ChannelResult("failed", validation_error)
 
     def _send(
-        self, channel: Channel, item: Item, variants: list[Variant], recover: bool
-    ) -> str:
+        self, channel: Channel, item: Item, variants: list[Variant], claim: Claim
+    ) -> str | None:
+        recover_only = getattr(channel, "recover_only", False)
+        if not isinstance(channel, RefChannel) and recover_only and claim.stale:
+            return channel.find_existing(item.id)
+
+        def save_ref(ref: str) -> None:
+            self.repo.save_publication_ref(claim, ref)
+
+        recover = claim.recovered and not recover_only
         for attempt in range(3):
             try:
+                if isinstance(channel, RefChannel):
+                    return channel.publish_with_ref(
+                        item,
+                        variants,
+                        ref=claim.remote_ref,
+                        claimed_at=claim.publication.remote_ref_claimed_at
+                        or claim.publication.updated_at,
+                        save_ref=save_ref,
+                    )
                 if recover:
                     existing = channel.find_existing(item.id)
                     if existing is not None:
@@ -168,6 +186,6 @@ class Publisher:
             except TransientChannelError:
                 if attempt == 2:
                     raise
-                recover = not getattr(channel, "recover_only", False)
+                recover = not recover_only
                 self.sleep(float(2**attempt))
         raise AssertionError("Unreachable retry state")
