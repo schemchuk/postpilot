@@ -20,7 +20,13 @@ LINKEDIN = {
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
-    for name in REQUIRED | LINKEDIN:
+    for name in (
+        *REQUIRED,
+        *LINKEDIN,
+        "THREADS_APP_ID",
+        "THREADS_APP_SECRET",
+        "THREADS_REDIRECT_URI",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -66,3 +72,19 @@ def test_dotenv(tmp_path, monkeypatch):
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "invalid-private-value")
     with pytest.raises(ConfigError, match="^TELEGRAM_CHAT_ID$"):
         Settings.from_env(path)
+
+
+def test_threads_redirect_fallback_and_redaction(monkeypatch):
+    for name, value in REQUIRED.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("THREADS_APP_ID", "mock-app-id")
+    monkeypatch.setenv("THREADS_APP_SECRET", "mock-app-secret")
+    assert Settings.from_env().threads is None
+    monkeypatch.setenv("LINKEDIN_REDIRECT_URI", LINKEDIN["LINKEDIN_REDIRECT_URI"])
+    settings = Settings.from_env()
+    assert settings.linkedin is None
+    assert settings.threads.redirect_uri == LINKEDIN["LINKEDIN_REDIRECT_URI"]
+    assert "mock-app-secret" in settings.secret_values()
+    assert "mock-app-secret" not in repr(settings)
+    monkeypatch.setenv("THREADS_REDIRECT_URI", "https://threads.example.test/")
+    assert Settings.from_env().threads.redirect_uri == "https://threads.example.test/"

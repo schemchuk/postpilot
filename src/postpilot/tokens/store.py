@@ -14,6 +14,7 @@ class StoredToken:
     access_token: str = field(repr=False)
     expires_at: datetime
     refresh_token: str | None = field(default=None, repr=False)
+    updated_at: datetime | None = field(default=None, compare=False)
 
 
 class TokenStore:
@@ -50,12 +51,12 @@ class TokenStore:
     def get(self, provider: str) -> StoredToken | None:
         with self.conn.transaction():
             row = self.conn.execute(
-                "SELECT access_token, refresh_token, expires_at FROM tokens WHERE provider = %s",
+                "SELECT access_token, refresh_token, expires_at, updated_at FROM tokens WHERE provider = %s",
                 (provider,),
             ).fetchone()
         if row is None:
             return None
-        access_ciphertext, refresh_ciphertext, expires_at = row
+        access_ciphertext, refresh_ciphertext, expires_at, updated_at = row
         return StoredToken(
             provider,
             self.cipher.decrypt(access_ciphertext),
@@ -63,6 +64,7 @@ class TokenStore:
             self.cipher.decrypt(refresh_ciphertext)
             if refresh_ciphertext is not None
             else None,
+            updated_at,
         )
 
     def delete(self, provider: str) -> None:

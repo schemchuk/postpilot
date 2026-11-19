@@ -36,10 +36,10 @@ class MemoryState:
 
 
 @pytest.fixture
-def setup():
+def setup(request):
     store = MemoryState()
     manager = Mock(spec=TokenManager)
-    manager.provider = "linkedin"
+    manager.provider = getattr(request, "param", "linkedin")
     manager.complete_renewal.return_value = NOW + timedelta(days=60)
     messages = []
 
@@ -54,7 +54,7 @@ def setup():
         api = TelegramApi("test", client=client)
         resumed = Mock()
         renewal = RenewalHandler(
-            {"linkedin": manager},
+            {manager.provider: manager},
             KEY,
             api,
             resumed,
@@ -139,3 +139,19 @@ def test_exchange_failure_has_generic_reply(setup):
     assert messages[-1][1]["text"] == FAILURE
     manager.complete_renewal.assert_called_once()
     resumed.assert_not_called()
+
+
+@pytest.mark.parametrize("setup", ["threads"], indirect=True)
+def test_threads_command_issues_provider_specific_renewal(setup):
+    _, manager, _, messages, resumed, send = setup
+    manager.renewal_url.side_effect = lambda state: (
+        f"https://example.test/?state={state}"
+    )
+    send("/renew threads")
+    button = messages[-1][1]["reply_markup"]["inline_keyboard"][0][0]
+    assert button["text"] == "Renew Threads token"
+    (state,) = parse_qs(urlsplit(button["url"]).query)["state"]
+    send(f"/renew example-code {state}")
+    assert messages[-1][1]["text"] == "Threads token renewed until 2027-01-17"
+    manager.complete_renewal.assert_called_once_with("example-code")
+    resumed.assert_called_once_with("threads")

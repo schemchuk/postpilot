@@ -3,9 +3,10 @@ from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime
 
-from postpilot.notify.telegram import TelegramApi, TelegramError
+from postpilot.notify.telegram import Notifier, TelegramApi, TelegramError
 from postpilot.tokens.base import TokenManager
 from postpilot.tokens.oauth_state import StateStore, verify_state
+from postpilot.tokens.service import issue_renewal_prompt
 
 _COMMAND = re.compile(r"/renew(?:\s|$)")
 _ARGUMENTS = re.compile(r"/renew ([^\s]+) ([^\s]+)")
@@ -35,6 +36,17 @@ class RenewalHandler:
 
         with suppress(TelegramError):
             self._api.delete_message(chat_id, message_id)
+        parts = text.split()
+        if len(parts) == 2 and (manager := self._managers.get(parts[1])) is not None:
+            issue_renewal_prompt(
+                manager,
+                self._secret_key,
+                self._state_store,
+                Notifier(self._api, chat_id),
+                self._clock(),
+            )
+            return True
+
         arguments = _ARGUMENTS.fullmatch(text)
         if arguments is None:
             self._api.send_message(
@@ -54,7 +66,7 @@ class RenewalHandler:
             )
             return True
 
-        label = "LinkedIn" if provider == "linkedin" else provider
+        label = {"linkedin": "LinkedIn", "threads": "Threads"}.get(provider, provider)
         until = f" until {expiry.date().isoformat()}" if expiry is not None else ""
         try:
             self._api.send_message(chat_id, f"{label} token renewed{until}")
