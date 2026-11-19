@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -7,10 +8,12 @@ from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
 from postpilot.core.models import Language
 from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.notify.renewal import RenewalHandler
-from postpilot.notify.telegram import Notifier, TelegramApi
+from postpilot.notify.telegram import Notifier, TelegramApi, TelegramError
 from postpilot.sources.telegram import TelegramInbox
 from postpilot.store.repo import EditTooLong, ItemRepo
 from postpilot.video.store import VideoStore
+
+_LOG = logging.getLogger(__name__)
 
 _AWAITING = ItemState.AWAITING_APPROVAL
 _ACTIONS = {
@@ -22,6 +25,13 @@ _ACTIONS = {
 
 def _object(value: object) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _reply[**P](method: Callable[P, object], *args: P.args, **kwargs: P.kwargs) -> None:
+    try:
+        method(*args, **kwargs)
+    except TelegramError:
+        _LOG.warning("Telegram callback reply failed")
 
 
 class ApprovalHandler:
@@ -119,7 +129,7 @@ class ApprovalHandler:
                 for row in keyboard
                 for button in row
             ):
-                self.api.answer_callback_query(callback_id, "Already handled")
+                _reply(self.api.answer_callback_query, callback_id, "Already handled")
                 return
             approve = action == "vapprove"
             changed = (
@@ -127,16 +137,18 @@ class ApprovalHandler:
                 if approve
                 else store.reject(item_id, sender)
             )
-            self.api.answer_callback_query(
-                callback_id, None if changed else "Already handled"
+            _reply(
+                self.api.answer_callback_query,
+                callback_id,
+                None if changed else "Already handled",
             )
             if changed and type(chat_id) is int and type(message_id) is int:
                 label = "Video approved" if approve else "Video rejected"
-                self.api.edit_message_caption(chat_id, message_id, label)
+                _reply(self.api.edit_message_caption, chat_id, message_id, label)
             return
         item = self.repo.get_item(item_id)
         if item is None or item.state != _AWAITING:
-            self.api.answer_callback_query(callback_id, "Already handled")
+            _reply(self.api.answer_callback_query, callback_id, "Already handled")
             return
 
         if action == "regen" and item.source == "telegram":
@@ -154,8 +166,8 @@ class ApprovalHandler:
                 else "ua"
             )
             self.repo.bot_state.set_pending_edit(sender, item_id, lang)
-            self.api.answer_callback_query(callback_id)
-            self.api.send_message(chat_id, f"Send the new {lang.upper()} text.")
+            _reply(self.api.answer_callback_query, callback_id)
+            _reply(self.api.send_message, chat_id, f"Send the new {lang.upper()} text.")
             return
 
         state, label = _ACTIONS[action]
@@ -167,11 +179,11 @@ class ApprovalHandler:
                 approved_by=sender if action == "approve" else None,
             )
         except IllegalTransition:
-            self.api.answer_callback_query(callback_id, "Already handled")
+            _reply(self.api.answer_callback_query, callback_id, "Already handled")
             return
 
         if action == "regen" and self.on_regenerate is not None:
             self.on_regenerate(item_id)
-        self.api.answer_callback_query(callback_id)
+        _reply(self.api.answer_callback_query, callback_id)
         if type(chat_id) is int and type(message_id) is int:
-            self.api.edit_message_text(chat_id, message_id, label)
+            _reply(self.api.edit_message_text, chat_id, message_id, label)
