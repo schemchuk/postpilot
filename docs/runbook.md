@@ -44,6 +44,36 @@ With Threads settings available to the job, `check-tokens` attempts refresh with
 14 days of expiry. For assisted renewal, send `/renew threads` in Telegram, open
 the authorization link, and send the command produced by the callback page.
 
+## Facebook Page token
+
+Use the Graph Page ID shown in `debug_token` under `granular_scopes[].target_ids`
+for the Page permissions. The ID in a `profile.php` URL is a different ID.
+For some New Pages Experience Pages, `me/accounts` returns `[]`.
+
+From the repository root, import the unquoted `FACEBOOK_PAGE_ACCESS_TOKEN` entry
+from your local `.env` without echoing it:
+
+```sh
+FACEBOOK_PAGE_ACCESS_TOKEN="$(grep '^FACEBOOK_PAGE_ACCESS_TOKEN=' .env | cut -d= -f2-)" \
+  postpilot facebook-import-token
+```
+
+The command encrypts the Page token. Non-expiring Page tokens are stored with a
+3650-day expiry placeholder. `check-tokens` validates the token with Meta and
+alerts on missing or invalid tokens. Renewal is a manual re-import.
+
+Set `FACEBOOK_PAGE_ID` in GitHub Secrets for both scheduled jobs:
+
+```sh
+grep '^FACEBOOK_PAGE_ID=' .env | cut -d= -f2- | tr -d '\n' | gh secret set FACEBOOK_PAGE_ID
+gh secret list
+```
+
+Scheduled `publish-reels` runs skip FAILED channel publications. To include
+them when selecting the oldest eligible render, run `postpilot publish-reels
+--retry` or enable `retry` when dispatching the workflow manually. The job
+checks any saved video ID before attempting to publish again.
+
 ## Traffic snapshots
 
 The `snapshot-traffic` workflow runs daily at 07:30 UTC and supports manual

@@ -76,7 +76,7 @@ def test_migration_up_noop_and_down(conn):
     full_schema = tables | bot_tables | {"tokens", "inbox_updates"} | series_tables
     link_tables = {"short_links", "link_clicks", "traffic_snapshots"}
     video_tables = {"video_renders"}
-    full_schema |= link_tables | video_tables
+    full_schema |= link_tables | video_tables | {"video_publications"}
     assert table_names(conn) == full_schema
     initial = applied_migrations(conn)
     assert [version for version, _ in initial] == [
@@ -88,9 +88,15 @@ def test_migration_up_noop_and_down(conn):
         "0006_link_tracking",
         "0007_video_renders",
         "0008_publication_remote_ref",
+        "0009_video_publications",
     ]
     migrate.up(conn)
     assert applied_migrations(conn) == initial
+
+    migrate.down(conn)
+    assert applied_migrations(conn) == initial[:8]
+    assert table_names(conn) == full_schema - {"video_publications"}
+    full_schema -= {"video_publications"}
 
     migrate.down(conn)
     assert applied_migrations(conn) == initial[:7]
@@ -133,7 +139,7 @@ def test_migration_up_noop_and_down(conn):
     assert applied_migrations(conn) == []
 
     migrate.up(conn)
-    assert table_names(conn) == full_schema
+    assert table_names(conn) == full_schema | {"video_publications"}
 
 
 def test_illegal_transition_preserves_item(repo):

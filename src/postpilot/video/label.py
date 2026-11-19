@@ -2,6 +2,8 @@ import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+AI_AVATAR_CAPTION_LABEL = "KI-generierter Avatar / AI-generated avatar"
+
 # Fontconfig resolves the font family on the runner without a fixed font file path.
 _FILTER = (
     "drawtext=font=DejaVu Sans:text=KI-generierter Avatar:"

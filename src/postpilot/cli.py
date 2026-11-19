@@ -20,6 +20,7 @@ _DATABASE_COMMANDS = {
     "publish-due": tasks.publish_due,
     "check-tokens": tasks.check_tokens,
     "snapshot-traffic": tasks.snapshot_traffic,
+    "facebook-import-token": tasks.facebook_import_token,
     "threads-import-token": tasks.threads_import_token,
 }
 _COMMANDS = (
@@ -27,6 +28,8 @@ _COMMANDS = (
     "poll-telegram",
     "publish-due",
     "render-video",
+    "publish-reels",
+    "facebook-import-token",
     "snapshot-traffic",
     "check-tokens",
     "threads-import-token",
@@ -48,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command")
     for command in _COMMANDS:
         subparser = subparsers.add_parser(command)
-        if command == "render-video":
+        if command in {"render-video", "publish-reels"}:
             subparser.add_argument("--retry", action="store_true")
 
     args = parser.parse_args(argv)
@@ -63,11 +66,11 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as error:
         parser.error(str(error))
 
-    database_job = (
-        partial(tasks.render_video, retry=args.retry)
-        if args.command == "render-video"
-        else _DATABASE_COMMANDS.get(args.command)
-    )
+    database_job = _DATABASE_COMMANDS.get(args.command)
+    if args.command == "render-video":
+        database_job = partial(tasks.render_video, retry=args.retry)
+    elif args.command == "publish-reels":
+        database_job = partial(tasks.publish_reels, retry=args.retry)
     operation = (
         partial(_with_database, database_job, settings)
         if database_job is not None
