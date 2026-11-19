@@ -1,15 +1,15 @@
 # STATUS
 
 - Active agent: claude-code (orchestrating Codex, docs/HANDOFF.md)
-- Current task: T08 is merged (PR #10). Next: T10 Telegram inbox S2 (docs/03-tasks.md).
+- Current task: T10 is merged (PR #11). Next: T11 LinkedIn channel (docs/03-tasks.md).
 - Done: T01 skeleton + CI (#1), T02 store + models + state machine (#2), T03 publisher + fake channel (#3),
   T04 Telegram notifier + approval (#4), T05a token core (#5), T05b LinkedIn assisted renewal + Pages
-  callback (#6), T06 CLI jobs + failure alerts + scheduled workflows (#7), T06a hotfix: migrations on job start, failure type to stderr (#8), T07 AI client + prompts + humanizer (#9), T08 GitHub source + series + repo safety (#10; migration 0004 applied on job start). 282 tests green incl. integration
+  callback (#6), T06 CLI jobs + failure alerts + scheduled workflows (#7), T06a hotfix: migrations on job start, failure type to stderr (#8), T07 AI client + prompts + humanizer (#9), T10 Telegram inbox S2 (#11, ANTHROPIC_API_KEY now passed to poll-telegram), T08 GitHub source + series + repo safety (#10; migration 0004 applied on job start). 301 tests green incl. integration
   tests against Neon. Pages live: https://schemchuk.github.io/postpilot/callback/. Redirect URI is registered
   in the LinkedIn app (Volodymyr confirmed).
 - Branch: main
 - Last commit: see `git log -1`
-- Next step: T10 Telegram inbox S2 (Codex, branch feat/T10-telegram-inbox). ADR 008 ACCEPTED.
+- Next step: T11 LinkedIn channel DE+UA (Codex, branch feat/T11-linkedin-channel). ADR 008 ACCEPTED.
 - Blocked on: nothing. Verified 2026-11-18 19:01 EET: secret `DATABASE_URL` fixed, migrations 0001-0003 applied
   to the production Neon database by hand, `check-tokens` and `poll-telegram` workflows green.
 - Follow-ups: purge unused oauth nonces in bot_state; local fallback `postpilot auth linkedin --open`;
@@ -23,5 +23,5 @@
 - Secrets: ANTHROPIC_API_KEY, LinkedIn app credentials, DATABASE_URL are set. Telegram bot token and chat id are set
   (bot @volodymyr_postpilot_bot). TOKEN_ENCRYPTION_KEY is set (copy in a password
   manager is recommended). Later: HeyGen key/avatar, Meta app, Threads, IG, FB credentials.
-- Decisions: git user.name stays `schemchuk`. Volodymyr allowed `gh pr merge` for the agent (project .claude/settings.json).
+- Decisions: git user.name stays `schemchuk`. Volodymyr allowed `gh pr merge` for the agent (project .claude/settings.json) and on 2026-11-19 stated the agent should always merge task PRs after green CI (standing authorization, including PRs that touch workflows once he has set the secret).
 - Pending cleanup: delete GitHub repo social_bridge and "lumara" Projects (confirm first).
