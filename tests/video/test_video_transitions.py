@@ -8,16 +8,17 @@ from postpilot.video.store import VideoStatus, VideoStore
 
 
 @pytest.mark.parametrize(
-    ("method", "source", "target"),
+    ("method", "source", "target", "kwargs"),
     [
-        ("approve", "READY", "APPROVED"),
-        ("reject", "READY", "REJECTED"),
-        ("attach", "RENDERING", "READY"),
-        ("mark_failed", "RENDERING", "FAILED"),
+        ("approve", "READY", "APPROVED", {}),
+        ("reject", "READY", "REJECTED", {}),
+        ("attach", "RENDERING", "READY", {}),
+        ("mark_failed", "RENDERING", "FAILED", {}),
+        ("mark_failed", "READY", "FAILED", {"preview": True}),
     ],
 )
 @pytest.mark.parametrize("status", list(VideoStatus))
-def test_atomic_transition_is_guarded(method, source, target, status):
+def test_atomic_transition_is_guarded(method, source, target, kwargs, status):
     conn = MagicMock()
     store = VideoStore(conn)
     render_id = uuid4()
@@ -31,12 +32,18 @@ def test_atomic_transition_is_guarded(method, source, target, status):
 
     def execute(query, params):
         assert query.strip().startswith(f"UPDATE video_renders SET status = '{target}'")
-        assert query.strip().endswith(f"WHERE id = %s AND status = '{source}'")
-        assert params[-1] == render_id
+        if method == "mark_failed":
+            assert query.strip().endswith("WHERE id = %s AND status = %s")
+            assert params == (render_id, source)
+        else:
+            assert query.strip().endswith(f"WHERE id = %s AND status = '{source}'")
+            assert params[-1] == render_id
         return MagicMock(rowcount=int(status == source))
 
     conn.execute.side_effect = execute
-    assert getattr(store, method)(render_id, *args[method]) is (status == source)
+    assert getattr(store, method)(render_id, *args[method], **kwargs) is (
+        status == source
+    )
     conn.execute.assert_called_once()
     conn.transaction.assert_called_once_with()
 

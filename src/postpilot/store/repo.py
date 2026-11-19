@@ -129,6 +129,22 @@ class ItemRepo:
             ).fetchall()
             return [item_id for (item_id,) in rows]
 
+    def next_video_variant(self, *, retry: bool = False) -> Variant | None:
+        with self.conn.transaction():
+            row = self.conn.execute(
+                """
+                SELECT i.id, v.lang, v.text
+                FROM items i JOIN variants v ON v.item_id = i.id AND v.lang = 'de'
+                LEFT JOIN video_renders r ON r.item_id = i.id AND r.lang = v.lang
+                WHERE i.state IN ('APPROVED', 'PUBLISHED')
+                  AND CASE WHEN %s THEN r.status = 'FAILED' AND NOT r.retried
+                           ELSE r.id IS NULL END
+                ORDER BY i.created_at, i.id LIMIT 1
+                """,
+                (retry,),
+            ).fetchone()
+        return Variant(*row) if row is not None else None
+
     def add_variant(self, item_id: UUID, lang: Language, text: str) -> None:
         with self.conn.transaction():
             self.conn.execute(

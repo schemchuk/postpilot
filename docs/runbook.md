@@ -59,3 +59,14 @@ the latest available row. Snapshots are stored under the UTC run date. Rerunning
 the workflow on the same date overwrites that day's values. Individual failures
 are logged, and a run with tracked targets and zero successful snapshots sends
 a job failure alert.
+
+### Avatar video
+
+`postpilot render-video` checks the monthly cap and HeyGen wallet, then renders
+at most one eligible German post. The Friday workflow runs at 10:00 UTC.
+Approve or reject the labelled video in Telegram. Videos exceeding 50 MB stay
+READY and trigger a text alert.
+
+Use `postpilot render-video --retry` to retry the oldest eligible FAILED render
+once after checking HeyGen for any charge or completed render from the previous
+attempt. Investigate alerts for RENDERING rows before making any manual changes.

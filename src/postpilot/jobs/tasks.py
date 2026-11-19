@@ -11,7 +11,7 @@ from psycopg.rows import TupleRow
 
 from postpilot.ai.client import ClaudeClient
 from postpilot.channels.registry import build_channels
-from postpilot.config import Settings
+from postpilot.config import ConfigError, HeyGenSettings, Settings
 from postpilot.core.publisher import Publisher
 from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.links.shortio import ShortioClient
@@ -30,6 +30,9 @@ from postpilot.tokens.crypto import TokenCipher
 from postpilot.tokens.linkedin import LinkedInTokenManager
 from postpilot.tokens.store import TokenStore
 from postpilot.tokens.threads import TOKEN_LIFETIME, ThreadsTokenManager
+from postpilot.video.heygen import HeyGenClient
+from postpilot.video.pipeline import render_one
+from postpilot.video.store import VideoStore
 
 logger = logging.getLogger(__name__)
 
@@ -129,12 +132,46 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
             settings.telegram_chat_id,
             renewal=renewal,
             inbox=TelegramInbox(repo, api, model),
+            video_store=VideoStore(conn),
         )
         poll_once(api, handler, repo.bot_state, raise_errors=True)
 
         item_ids = repo.list_approved_item_ids(source="telegram")
         if item_ids and (publisher := _publisher(settings, repo, client)) is not None:
             _publish_items(publisher, item_ids)
+
+
+def validate_video_settings(settings: Settings) -> tuple[HeyGenSettings, str]:
+    if settings.heygen is None:
+        raise ConfigError(
+            "HEYGEN_API_KEY, HEYGEN_AVATAR_ID and HEYGEN_VOICE_ID are required"
+        )
+    if not settings.anthropic_api_key:
+        raise ConfigError("ANTHROPIC_API_KEY is required")
+    return settings.heygen, settings.anthropic_api_key
+
+
+def render_video(
+    settings: Settings, conn: Connection[TupleRow], *, retry: bool
+) -> None:
+    heygen_settings, api_key = validate_video_settings(settings)
+    heygen = HeyGenClient(heygen_settings)
+    try:
+        render_one(
+            VideoStore(conn),
+            ItemRepo(conn),
+            heygen,
+            ClaudeClient(api_key),
+            Notifier(
+                TelegramApi(settings.telegram_bot_token), settings.telegram_chat_id
+            ),
+            _now,
+            cap=settings.video_monthly_cap,
+            min_balance=settings.video_min_balance_usd,
+            retry=retry,
+        )
+    finally:
+        heygen.close()
 
 
 def check_tokens(settings: Settings, conn: Connection[TupleRow]) -> None:

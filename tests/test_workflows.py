@@ -10,6 +10,7 @@ SCHEDULES = {
     "check-tokens": "0 7 * * *",
     "snapshot-traffic": "30 7 * * *",
     "publish-due": "0 9 * * 5",
+    "render-video": "0 10 * * 5",
 }
 
 
@@ -74,6 +75,21 @@ def test_scheduled_workflow(name, cron):
         }
         if name == "snapshot-traffic":
             expected.update({"SHORTIO_API_KEY", "SHORTIO_DOMAIN", "GITHUB_TOKEN"})
+        elif name == "render-video":
+            assert job["timeout-minutes"] == 25
+            assert any(
+                "apt-get install -y ffmpeg fonts-dejavu-core" in step.get("run", "")
+                for step in job["steps"][: job["steps"].index(command)]
+            )
+            expected.update(
+                {
+                    "HEYGEN_API_KEY",
+                    "HEYGEN_AVATAR_ID",
+                    "HEYGEN_VOICE_ID",
+                    "VIDEO_MONTHLY_CAP",
+                    "ANTHROPIC_API_KEY",
+                }
+            )
         else:
             expected.update(channel_credentials)
         if name == "poll-telegram":

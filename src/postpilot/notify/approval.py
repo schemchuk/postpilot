@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -9,6 +10,7 @@ from postpilot.notify.renewal import RenewalHandler
 from postpilot.notify.telegram import Notifier, TelegramApi
 from postpilot.sources.telegram import TelegramInbox
 from postpilot.store.repo import EditTooLong, ItemRepo
+from postpilot.video.store import VideoStore
 
 _AWAITING = ItemState.AWAITING_APPROVAL
 _ACTIONS = {
@@ -32,9 +34,11 @@ class ApprovalHandler:
         on_regenerate: Callable[[UUID], None] | None = None,
         renewal: RenewalHandler | None = None,
         inbox: TelegramInbox | None = None,
+        video_store: VideoStore | None = None,
     ) -> None:
         self.renewal = renewal
         self.inbox = inbox
+        self.video_store = video_store
         self.repo = repo
         self.api = api
         self.allowed_user_id = allowed_user_id
@@ -95,7 +99,7 @@ class ApprovalHandler:
         if not isinstance(data, str) or not isinstance(callback_id, str):
             return
         action, _, raw_id = data.partition(":")
-        if action not in _ACTIONS and action != "edit":
+        if action not in _ACTIONS and action not in {"edit", "vapprove", "vreject"}:
             return
         try:
             item_id = UUID(raw_id)
@@ -105,6 +109,31 @@ class ApprovalHandler:
         message = _object(event.get("message"))
         chat_id = _object(message.get("chat")).get("id")
         message_id = message.get("message_id")
+        if action in {"vapprove", "vreject"}:
+            store = self.video_store
+            if store is None:
+                return
+            keyboard = _object(message.get("reply_markup")).get("inline_keyboard", [])
+            if not isinstance(message.get("video"), dict) or not any(
+                _object(button).get("callback_data") == data
+                for row in keyboard
+                for button in row
+            ):
+                self.api.answer_callback_query(callback_id, "Already handled")
+                return
+            approve = action == "vapprove"
+            changed = (
+                store.approve(item_id, sender, datetime.now(UTC))
+                if approve
+                else store.reject(item_id, sender)
+            )
+            self.api.answer_callback_query(
+                callback_id, None if changed else "Already handled"
+            )
+            if changed and type(chat_id) is int and type(message_id) is int:
+                label = "Video approved" if approve else "Video rejected"
+                self.api.edit_message_caption(chat_id, message_id, label)
+            return
         item = self.repo.get_item(item_id)
         if item is None or item.state != _AWAITING:
             self.api.answer_callback_query(callback_id, "Already handled")
