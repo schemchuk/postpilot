@@ -1,6 +1,6 @@
 # ADR 011 — Short links and traffic snapshots
 
-Status: PROPOSED
+Status: ACCEPTED (Volodymyr, 2026-11-19)
 
 Use Short.io links to attribute clicks to individual posts and languages. Keep the
 original URL available when link creation or storage fails.
