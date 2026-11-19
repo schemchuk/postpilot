@@ -9,7 +9,7 @@
   in the LinkedIn app (Volodymyr confirmed).
 - Branch: main
 - Last commit: see `git log -1`
-- Next step: T09 short links + traffic snapshot (secret gate: short.io key; ask Volodymyr whether to reuse the old key). Threads is unblocked: token imported into Neon 2026-11-19, THREADS_APP_ID/SECRET in GitHub Secrets and passed to workflows (#14).
+- Next step: T09 short links + traffic snapshot (secret gate: short.io key; Volodymyr decided 2026-11-19 to reuse the old key from work_in_Linkedin, which he recently created; copy it into .env without printing, then add to GitHub Secrets via the gh command if CI needs it). Threads is unblocked: token imported into Neon 2026-11-19, THREADS_APP_ID/SECRET in GitHub Secrets and passed to workflows (#14).
 - ADR 009 ACCEPTED (Volodymyr, 2026-11-19): visible footer `postpilot:<uuid>/<lang>` on LinkedIn posts. LinkedIn channel is untested against live LinkedIn (no token issued yet; needs r_member_social check).
 - Blocked on: nothing. Verified 2026-11-18 19:01 EET: secret `DATABASE_URL` fixed, migrations 0001-0003 applied
   to the production Neon database by hand, `check-tokens` and `poll-telegram` workflows green.
