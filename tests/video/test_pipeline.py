@@ -24,7 +24,8 @@ SCRIPT = " ".join(["Ich habe diese Woche an meinem Projekt gearbeitet."] * 11)
     [
         " ",
         "Zu kurz.",
-        "Wort " * 121,
+        "Wort " * 141,
+        "Wort " * 49,
         *(
             f"{SCRIPT} {x}"
             for x in (
@@ -41,6 +42,11 @@ SCRIPT = " ".join(["Ich habe diese Woche an meinem Projekt gearbeitet."] * 11)
 def test_script_validation(response):
     with pytest.raises(ScriptError):
         generate_script(Mock(complete=Mock(return_value=response)), "Post")
+
+
+def test_script_accepts_short_source():
+    short = " ".join(["Wort"] * 65)
+    assert generate_script(Mock(complete=Mock(return_value=short)), "Post") == short
 
 
 def test_script_uses_german_variant():
