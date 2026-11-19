@@ -45,6 +45,9 @@ def test_oldest_eligible_german_variant_and_explicit_retry(conn):
     store.claim(oldest, "de")
     assert repo.next_video_variant().item_id == newer
     store.claim(newer, "de")
+    publishing = add(6, ItemState.PUBLISHING, "de")
+    assert repo.next_video_variant().item_id == publishing
+    store.claim(publishing, "de")
     assert repo.next_video_variant() is None
 
     retry_id = store.claim(failed, "de", retry=True)

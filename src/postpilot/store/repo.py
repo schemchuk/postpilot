@@ -136,7 +136,7 @@ class ItemRepo:
                 SELECT i.id, v.lang, v.text
                 FROM items i JOIN variants v ON v.item_id = i.id AND v.lang = 'de'
                 LEFT JOIN video_renders r ON r.item_id = i.id AND r.lang = v.lang
-                WHERE i.state IN ('APPROVED', 'PUBLISHED')
+                WHERE i.state IN ('APPROVED', 'PUBLISHING', 'PUBLISHED')
                   AND CASE WHEN %s THEN r.status = 'FAILED' AND NOT r.retried
                            ELSE r.id IS NULL END
                 ORDER BY i.created_at, i.id LIMIT 1
