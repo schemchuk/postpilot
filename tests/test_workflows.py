@@ -11,6 +11,7 @@ SCHEDULES = {
     "snapshot-traffic": "30 7 * * *",
     "publish-due": "0 9 * * 5",
     "render-video": "0 10 * * 5",
+    "publish-reels": "*/15 * * * *",
 }
 
 
@@ -44,13 +45,17 @@ def test_scheduled_workflow(name, cron):
         {
             "inputs": {
                 "retry": {
-                    "description": "Retry one FAILED render (once per item)",
+                    "description": (
+                        "Retry one FAILED render (once per item)"
+                        if name == "render-video"
+                        else "Include FAILED publications when selecting one render"
+                    ),
                     "type": "boolean",
                     "default": False,
                 }
             }
         }
-        if name == "render-video"
+        if name in {"render-video", "publish-reels"}
         else None
     )
     assert triggers == {"schedule": [{"cron": cron}], "workflow_dispatch": dispatch}
@@ -69,15 +74,10 @@ def test_scheduled_workflow(name, cron):
         assert any(
             step.get("run") == "python -m pip install ." for step in job["steps"]
         )
-        command = next(
-            step
-            for step in job["steps"]
-            if step.get("run")
-            in {
-                f"postpilot {name}",
-                f"postpilot {name} ${{{{ inputs.retry && '--retry' || '' }}}}",
-            }
-        )
+        expected_run = f"postpilot {name}"
+        if dispatch is not None:
+            expected_run += " ${{ inputs.retry && '--retry' || '' }}"
+        command = next(step for step in job["steps"] if step.get("run") == expected_run)
         expected = {
             "DATABASE_URL",
             "TELEGRAM_BOT_TOKEN",
@@ -94,6 +94,9 @@ def test_scheduled_workflow(name, cron):
         }
         if name == "snapshot-traffic":
             expected.update({"SHORTIO_API_KEY", "SHORTIO_DOMAIN", "GITHUB_TOKEN"})
+        elif name == "publish-reels":
+            assert job["timeout-minutes"] == 15
+            expected.add("FACEBOOK_PAGE_ID")
         elif name == "render-video":
             assert job["timeout-minutes"] == 25
             assert any(
@@ -111,6 +114,8 @@ def test_scheduled_workflow(name, cron):
             )
         else:
             expected.update(channel_credentials)
+        if name == "check-tokens":
+            expected.add("FACEBOOK_PAGE_ID")
         if name == "poll-telegram":
             expected.add("ANTHROPIC_API_KEY")
         assert set(command["env"]) == expected

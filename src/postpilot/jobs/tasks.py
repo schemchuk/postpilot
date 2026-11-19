@@ -10,6 +10,8 @@ from psycopg import Connection, Error
 from psycopg.rows import TupleRow
 
 from postpilot.ai.client import ClaudeClient
+from postpilot.channels.base import TransientChannelError
+from postpilot.channels.facebook_reels import FacebookReelsChannel
 from postpilot.channels.registry import build_channels
 from postpilot.config import ConfigError, HeyGenSettings, Settings
 from postpilot.core.publisher import Publisher
@@ -27,11 +29,14 @@ from postpilot.store.repo import ItemRepo
 from postpilot.tokens import service
 from postpilot.tokens.base import TokenManager, days_left
 from postpilot.tokens.crypto import TokenCipher
+from postpilot.tokens.facebook import PAGE_TOKEN_STORAGE_LIFETIME, token_is_valid
 from postpilot.tokens.linkedin import LinkedInTokenManager
 from postpilot.tokens.store import TokenStore
 from postpilot.tokens.threads import TOKEN_LIFETIME, ThreadsTokenManager
 from postpilot.video.heygen import HeyGenClient
 from postpilot.video.pipeline import render_one
+from postpilot.video.publications import VideoPublicationStore
+from postpilot.video.publisher import publish_one
 from postpilot.video.store import VideoStore
 
 logger = logging.getLogger(__name__)
@@ -174,8 +179,36 @@ def render_video(
         heygen.close()
 
 
+def publish_reels(
+    settings: Settings, conn: Connection[TupleRow], *, retry: bool = False
+) -> None:
+    if settings.facebook is None:
+        return
+    store = TokenStore(conn, TokenCipher(settings.token_encryption_key))
+
+    def read_token(provider: str) -> str | None:
+        token = store.get(provider)
+        return token.access_token if token and token.expires_at > _now() else None
+
+    with httpx.Client() as client:
+        publish_one(
+            VideoPublicationStore(conn),
+            VideoStore(conn),
+            [FacebookReelsChannel(settings.facebook, client)],
+            read_token,
+            Notifier(
+                TelegramApi(settings.telegram_bot_token), settings.telegram_chat_id
+            ).send_alert,
+            retry=retry,
+        )
+
+
 def check_tokens(settings: Settings, conn: Connection[TupleRow]) -> None:
-    if settings.linkedin is None and settings.threads is None:
+    if (
+        settings.linkedin is None
+        and settings.threads is None
+        and settings.facebook is None
+    ):
         return
     state = ItemRepo(conn).bot_state
     store = TokenStore(conn, TokenCipher(settings.token_encryption_key))
@@ -184,6 +217,24 @@ def check_tokens(settings: Settings, conn: Connection[TupleRow]) -> None:
     )
     now = _now()
     with httpx.Client() as client:
+        if settings.facebook is not None:
+            token = store.get("facebook")
+            try:
+                valid = token is not None and token_is_valid(
+                    settings.facebook, client, token.access_token
+                )
+            except TransientChannelError:
+                logger.warning("Facebook token validation unavailable")
+            else:
+                if not valid:
+                    state.send_token_alert_once(
+                        "facebook",
+                        now.date(),
+                        partial(
+                            notifier.send_alert,
+                            "facebook: Page token missing or invalid",
+                        ),
+                    )
         managers = _managers(settings, store, client)
         report = service.check_tokens(
             managers.values(), notifier.send_alert, state, now
@@ -221,6 +272,15 @@ def threads_import_token(settings: Settings, conn: Connection[TupleRow]) -> None
         raise ValueError("THREADS_ACCESS_TOKEN is required")
     store = TokenStore(conn, TokenCipher(settings.token_encryption_key))
     store.save("threads", token, _now() + TOKEN_LIFETIME)
+
+
+def facebook_import_token(settings: Settings, conn: Connection[TupleRow]) -> None:
+    token = os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN")
+    if not token or not token.strip():
+        raise ValueError("FACEBOOK_PAGE_ACCESS_TOKEN is required")
+    TokenStore(conn, TokenCipher(settings.token_encryption_key)).save(
+        "facebook", token, _now() + PAGE_TOKEN_STORAGE_LIFETIME
+    )
 
 
 def snapshot_traffic(settings: Settings, conn: Connection[TupleRow]) -> None:
