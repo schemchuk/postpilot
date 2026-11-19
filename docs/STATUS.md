@@ -1,7 +1,7 @@
 # STATUS
 
 - Active agent: claude-code (orchestrating Codex, docs/HANDOFF.md)
-- Current task: T13b is merged (PR #18: render-video CLI + workflow, script prompt, budget gate, Telegram video approval, ADR 012 PROPOSED). Next: T14.
+- Current task: T13b is merged (PR #18: render-video CLI + workflow, script prompt, budget gate, Telegram video approval, ADR 012 ACCEPTED). Next: T14.
 - Done: T01 skeleton + CI (#1), T02 store + models + state machine (#2), T03 publisher + fake channel (#3),
   T04 Telegram notifier + approval (#4), T05a token core (#5), T05b LinkedIn assisted renewal + Pages
   callback (#6), T06 CLI jobs + failure alerts + scheduled workflows (#7), T06a hotfix: migrations on job start, failure type to stderr (#8), T07 AI client + prompts + humanizer (#9), T11 LinkedIn channel DE+UA (#12), T12 Threads channel + token manager + import (#13; ADR 010 ACCEPTED), T13a HeyGen client + label + render store (#17; migration 0007), T13b render-video pipeline (#18), T09 short.io links + daily traffic snapshot (#16; migration 0006; ADR 011 ACCEPTED), T10 Telegram inbox S2 (#11, ANTHROPIC_API_KEY now passed to poll-telegram), T08 GitHub source + series + repo safety (#10; migration 0004 applied on job start). 333 tests green incl. integration
@@ -9,7 +9,7 @@
   in the LinkedIn app (Volodymyr confirmed).
 - Branch: main
 - Last commit: see `git log -1`
-- Next step: T14 Instagram + Facebook Reels (secret gates: IG and FB tokens, one at a time). Before it, Volodymyr should accept ADR 012 and run `render-video` once via workflow_dispatch to verify it live (spends HeyGen credits, wallet $23.93). Follow-ups for T14: failed renders after a paid `create_video` are not counted in the monthly cap (count_this_month excludes FAILED); script validation (80-120 words) has no automatic retry. HEYGEN_* secrets are in GitHub Secrets. Short links are not yet wired into publishing.
+- Next step: T14 Instagram + Facebook Reels (secret gates: IG and FB tokens, one at a time). render-video was triggered once via workflow_dispatch on 2026-11-19 to verify it live (see result below if recorded). Follow-ups for T14: failed renders after a paid `create_video` are not counted in the monthly cap (count_this_month excludes FAILED); script validation (80-120 words) has no automatic retry. HEYGEN_* secrets are in GitHub Secrets. Short links are not yet wired into publishing.
 - ADR 009 ACCEPTED (Volodymyr, 2026-11-19): visible footer `postpilot:<uuid>/<lang>` on LinkedIn posts. LinkedIn channel is untested against live LinkedIn (no token issued yet; needs r_member_social check).
 - Blocked on: nothing. Verified 2026-11-18 19:01 EET: secret `DATABASE_URL` fixed, migrations 0001-0003 applied
   to the production Neon database by hand, `check-tokens` and `poll-telegram` workflows green.

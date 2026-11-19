@@ -1,6 +1,6 @@
 # 012. HeyGen rendering and Telegram approval
 
-Status: PROPOSED
+Status: ACCEPTED (Volodymyr, 2026-11-19)
 
 Generate a spoken German script from the approved LinkedIn German variant. Before
 submitting to HeyGen, check the UTC monthly render cap and wallet balance. Process
