@@ -1,6 +1,6 @@
 # 010. Threads text channel
 
-Status: PROPOSED (Volodymyr approval required)
+Status: ACCEPTED (Volodymyr, 2026-11-19)
 
 Threads publishes German text only, after explicit approval in Telegram. Each post
 ends with a visible footer, `postpilot:<item UUID>/de`. The footer and preceding
