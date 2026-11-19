@@ -50,18 +50,23 @@ def _managers(
     return {manager.provider: manager}
 
 
-def _publisher(settings: Settings, repo: ItemRepo) -> Publisher | None:
-    channels = build_channels(settings)
+def _publisher(
+    settings: Settings, repo: ItemRepo, client: httpx.Client
+) -> Publisher | None:
+    def read_token(provider: str) -> str | None:
+        store = TokenStore(repo.conn, TokenCipher(settings.token_encryption_key))
+        token = store.get(provider)
+        if token is None or days_left(token.expires_at, _now()) <= 0:
+            return None
+        return token.access_token
+
+    channels = build_channels(settings, read_token, client)
     if not channels:
         logger.warning("no channels configured")
         return None
-    store = TokenStore(repo.conn, TokenCipher(settings.token_encryption_key))
-
-    def usable(provider: str) -> bool:
-        token = store.get(provider)
-        return token is not None and days_left(token.expires_at, _now()) > 0
-
-    return Publisher(repo, channels, token_guard=usable)
+    return Publisher(
+        repo, channels, token_guard=lambda provider: bool(read_token(provider))
+    )
 
 
 def _publish_items(publisher: Publisher, item_ids: Iterable[UUID]) -> None:
@@ -87,7 +92,7 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
     api = TelegramApi(settings.telegram_bot_token)
 
     def release_held_items(provider: str) -> None:
-        publisher = _publisher(settings, repo)
+        publisher = _publisher(settings, repo, client)
         if publisher is not None:
             _publish_items(publisher, repo.list_unfinished_item_ids())
 
@@ -113,9 +118,9 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
         )
         poll_once(api, handler, repo.bot_state, raise_errors=True)
 
-    item_ids = repo.list_approved_item_ids(source="telegram")
-    if item_ids and (publisher := _publisher(settings, repo)) is not None:
-        _publish_items(publisher, item_ids)
+        item_ids = repo.list_approved_item_ids(source="telegram")
+        if item_ids and (publisher := _publisher(settings, repo, client)) is not None:
+            _publish_items(publisher, item_ids)
 
 
 def check_tokens(settings: Settings, conn: Connection[TupleRow]) -> None:
@@ -150,11 +155,13 @@ def check_tokens(settings: Settings, conn: Connection[TupleRow]) -> None:
 
 def publish_due(settings: Settings, conn: Connection[TupleRow]) -> None:
     repo = ItemRepo(conn)
-    publisher = _publisher(settings, repo)
-    if publisher is not None:
-        _publish_items(
-            publisher, repo.list_unfinished_item_ids() + repo.list_approved_item_ids()
-        )
+    with httpx.Client() as client:
+        publisher = _publisher(settings, repo, client)
+        if publisher is not None:
+            _publish_items(
+                publisher,
+                repo.list_unfinished_item_ids() + repo.list_approved_item_ids(),
+            )
 
 
 def not_implemented() -> int:

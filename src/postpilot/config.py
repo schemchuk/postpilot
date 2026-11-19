@@ -15,6 +15,7 @@ class LinkedInSettings:
     client_secret: str = field(repr=False)
     redirect_uri: str = field(repr=False)
     scopes: tuple[str, ...] = field(repr=False)
+    version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -43,7 +44,13 @@ class Settings:
         redirect_uri = values.get("LINKEDIN_REDIRECT_URI", "")
         scopes = tuple(values.get("LINKEDIN_SCOPES", "").split())
         linkedin = (
-            LinkedInSettings(client_id, client_secret, redirect_uri, scopes)
+            LinkedInSettings(
+                client_id,
+                client_secret,
+                redirect_uri,
+                scopes,
+                values.get("LINKEDIN_VERSION"),
+            )
             if client_id and client_secret and redirect_uri and scopes
             else None
         )

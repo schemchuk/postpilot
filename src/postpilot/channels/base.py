@@ -30,3 +30,11 @@ class Channel(Protocol):
     def find_existing(self, item_id: UUID) -> str | None:
         """Return the remote ID of a post with the item marker, if found."""
         ...
+
+
+class ChannelHeld(Exception):
+    """A channel is temporarily unavailable before sending."""
+
+
+class UncertainPublication(TransientChannelError):
+    """A send may have succeeded without returning a remote ID."""
