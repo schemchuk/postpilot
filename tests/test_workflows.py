@@ -66,6 +66,8 @@ def test_scheduled_workflow(name, cron):
             "LINKEDIN_CLIENT_SECRET",
             "LINKEDIN_REDIRECT_URI",
             "LINKEDIN_SCOPES",
+            "THREADS_APP_ID",
+            "THREADS_APP_SECRET",
         }
         if name == "poll-telegram":
             expected.add("ANTHROPIC_API_KEY")
