@@ -1,6 +1,6 @@
 # 009. LinkedIn Posts API channel
 
-Status: PROPOSED
+Status: ACCEPTED
 
 The DE and UA adapters share the `linkedin` token provider and have separate publication
 rows. Either language can succeed while the other is rejected. Missing or expired tokens

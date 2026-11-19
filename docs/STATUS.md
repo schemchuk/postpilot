@@ -10,7 +10,7 @@
 - Branch: main
 - Last commit: see `git log -1`
 - Next step: T12 Threads channel. Secret gate first: Meta developer app + Threads token (give Volodymyr a verified guide). Codex branch feat/T12-threads-channel.
-- Open question for Volodymyr: ADR 009 (PROPOSED) uses a VISIBLE footer `postpilot:<uuid>/<lang>` on each LinkedIn post for crash recovery. Approve or choose another approach before the first real publish. LinkedIn channel is untested against live LinkedIn (no token issued yet; needs r_member_social check). ADR 008 ACCEPTED.
+- ADR 009 ACCEPTED (Volodymyr, 2026-11-19): visible footer `postpilot:<uuid>/<lang>` on LinkedIn posts. LinkedIn channel is untested against live LinkedIn (no token issued yet; needs r_member_social check).
 - Blocked on: nothing. Verified 2026-11-18 19:01 EET: secret `DATABASE_URL` fixed, migrations 0001-0003 applied
   to the production Neon database by hand, `check-tokens` and `poll-telegram` workflows green.
 - Follow-ups: purge unused oauth nonces in bot_state; local fallback `postpilot auth linkedin --open`;
