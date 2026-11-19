@@ -40,7 +40,20 @@ def test_workflow_common_safety(path):
 def test_scheduled_workflow(name, cron):
     workflow = yaml.safe_load((WORKFLOWS / f"{name}.yml").read_text())
     triggers = workflow["on"] if "on" in workflow else workflow[True]
-    assert triggers == {"schedule": [{"cron": cron}], "workflow_dispatch": None}
+    dispatch = (
+        {
+            "inputs": {
+                "retry": {
+                    "description": "Retry one FAILED render (once per item)",
+                    "type": "boolean",
+                    "default": False,
+                }
+            }
+        }
+        if name == "render-video"
+        else None
+    )
+    assert triggers == {"schedule": [{"cron": cron}], "workflow_dispatch": dispatch}
     assert workflow["permissions"] == {"contents": "read"}
     assert workflow["concurrency"] == {"group": name, "cancel-in-progress": False}
     for job in workflow["jobs"].values():
@@ -57,7 +70,13 @@ def test_scheduled_workflow(name, cron):
             step.get("run") == "python -m pip install ." for step in job["steps"]
         )
         command = next(
-            step for step in job["steps"] if step.get("run") == f"postpilot {name}"
+            step
+            for step in job["steps"]
+            if step.get("run")
+            in {
+                f"postpilot {name}",
+                f"postpilot {name} ${{{{ inputs.retry && '--retry' || '' }}}}",
+            }
         )
         expected = {
             "DATABASE_URL",
