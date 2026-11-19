@@ -4,11 +4,14 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 from uuid import uuid4
 
+import httpx
 import pytest
 from cryptography.fernet import Fernet
 
 from postpilot.config import LinkedInSettings, Settings
+from postpilot.core.models import Item
 from postpilot.core.publisher import Publisher
+from postpilot.core.states import ItemState
 from postpilot.jobs import tasks
 from postpilot.tokens.oauth_state import make_state
 
@@ -77,7 +80,7 @@ def api(monkeypatch):
 
 def test_publish_due_with_no_channels_leaves_repo_untouched(settings, repo, caplog):
     with caplog.at_level("INFO"):
-        tasks.publish_due(settings, None)
+        tasks.publish_due(replace(settings, linkedin=None), None)
     assert "no channels configured" in caplog.text
     assert repo.mock_calls == []
 
@@ -120,7 +123,9 @@ def test_renewal_releases_held_items_with_current_token(
     item_id = uuid4()
     repo.list_unfinished_item_ids.return_value = [item_id]
     store = Mock()
-    store.get.return_value = SimpleNamespace(expires_at=now - timedelta(days=1))
+    store.get.return_value = SimpleNamespace(
+        expires_at=now - timedelta(days=1), access_token="test-token"
+    )
     manager = Mock()
     manager.complete_renewal.side_effect = lambda _code: setattr(
         store.get.return_value, "expires_at", now + timedelta(days=1)
@@ -128,7 +133,7 @@ def test_renewal_releases_held_items_with_current_token(
     monkeypatch.setattr(tasks, "TokenStore", Mock(return_value=store))
     monkeypatch.setattr(tasks, "_managers", lambda *args: {"linkedin": manager})
     channel = Mock()
-    monkeypatch.setattr(tasks, "build_channels", lambda _: [channel])
+    monkeypatch.setattr(tasks, "build_channels", lambda *_: [channel])
 
     publisher = Mock()
     publisher.publish_item.return_value.channels = {}
@@ -255,3 +260,38 @@ def test_poll_only_creates_translation_client_with_key(
     else:
         client.assert_called_once_with(key)
         repo.create_inbox_item.assert_called_once_with(50, "Мій текст", "Mein Text")
+
+
+@pytest.mark.parametrize("expired", [True, False])
+def test_linkedin_provider_and_expiry_guard(settings, repo, monkeypatch, expired):
+    now = datetime.now(UTC)
+    monkeypatch.setattr(tasks, "_now", lambda: now)
+    item = Item(uuid4(), "telegram", ItemState.PUBLISHING, now, now, 1, now)
+    repo.get_item.return_value = item
+    repo.list_publications.return_value = []
+    repo.get_variants.return_value = []
+    repo.claim_publication.return_value = None
+    store = Mock()
+    store.get.return_value = (
+        SimpleNamespace(expires_at=now, access_token="expired-token")
+        if expired
+        else None
+    )
+    monkeypatch.setattr(tasks, "TokenStore", Mock(return_value=store))
+
+    def reject_http(request):
+        pytest.fail("A held publication must not make an HTTP request")
+
+    with httpx.Client(transport=httpx.MockTransport(reject_http)) as client:
+        publisher = tasks._publisher(settings, repo, client)
+        report = publisher.publish_item(item.id)
+
+    assert {name: result.outcome for name, result in report.channels.items()} == {
+        "linkedin": "held",
+        "linkedin-ua": "held",
+    }
+    assert [call.args for call in store.get.call_args_list] == [
+        ("linkedin",),
+        ("linkedin",),
+    ]
+    repo.claim_publication.assert_not_called()

@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock
 
@@ -49,7 +50,7 @@ def api(monkeypatch):
 
 
 def test_empty_channels_leave_items_untouched(conn, repo, approved_item, settings):
-    tasks.publish_due(settings, conn)
+    tasks.publish_due(replace(settings, linkedin=None), conn)
     assert repo.get_item(approved_item.id).state == ItemState.APPROVED
     assert repo.list_publications(approved_item.id) == []
 
@@ -80,7 +81,7 @@ def test_renew_releases_held_item(
     store.save("linkedin", "test-expired-token", now - timedelta(days=1))
     repo.add_variant(approved_item.id, "de", "Ein Beitrag")
     channel = FakeChannel("linkedin")
-    monkeypatch.setattr(tasks, "build_channels", lambda _: [channel])
+    monkeypatch.setattr(tasks, "build_channels", lambda *_: [channel])
     tasks.publish_due(settings, conn)
     assert repo.get_item(approved_item.id).state == ItemState.PUBLISHING
     assert channel.posts == {}
@@ -129,7 +130,7 @@ def test_poll_approval_publishes_telegram_and_leaves_github_for_friday(
         }
     ]
     channel = FakeChannel("linkedin")
-    monkeypatch.setattr(tasks, "build_channels", lambda _: [channel])
+    monkeypatch.setattr(tasks, "build_channels", lambda *_: [channel])
     TokenStore(conn, TokenCipher(settings.token_encryption_key)).save(
         "linkedin", "test-token", datetime.now(UTC) + timedelta(days=10)
     )

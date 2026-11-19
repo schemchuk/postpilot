@@ -113,6 +113,7 @@ def test_old_claim_cannot_overwrite_recovered_publication(repo, ready_item):
     recovered = repo.claim_publication(item_id, "fake", stale_after=timedelta(0))
     assert old_claim is not None and recovered is not None
     assert recovered.recovered
+    assert recovered.stale
 
     with pytest.raises(LostPublicationClaim):
         repo.mark_failed(item_id, "fake", "Old worker failed", claim=old_claim)

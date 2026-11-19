@@ -45,6 +45,7 @@ def _publication(row: TupleRow) -> Publication:
 class Claim:
     publication: Publication
     recovered: bool
+    stale: bool = False
 
 
 class LostPublicationClaim(IllegalTransition):
@@ -256,6 +257,10 @@ class ItemRepo:
             if row is not None:
                 return Claim(_publication(row), recovered=False)
 
+            previous = self.conn.execute(
+                "SELECT status FROM publications WHERE item_id = %s AND channel = %s",
+                (item_id, channel),
+            ).fetchone()
             row = self.conn.execute(
                 f"""
                 UPDATE publications SET status = 'PUBLISHING', error = NULL,
@@ -270,7 +275,27 @@ class ItemRepo:
                 """,
                 (item_id, channel, stale_after),
             ).fetchone()
-            return Claim(_publication(row), recovered=True) if row is not None else None
+            if row is None:
+                return None
+            return Claim(
+                _publication(row),
+                recovered=True,
+                stale=previous is not None
+                and previous[0] == PublicationStatus.PUBLISHING,
+            )
+
+    def release_publication(self, claim: Claim) -> None:
+        publication = claim.publication
+        with self.conn.transaction():
+            self._lock_state(publication.item_id)
+            self.conn.execute(
+                """
+                DELETE FROM publications
+                WHERE item_id = %s AND channel = %s
+                  AND status = 'PUBLISHING' AND updated_at = %s
+                """,
+                (publication.item_id, publication.channel, publication.updated_at),
+            )
 
     def finish_publishing(self, item_id: UUID, channels: set[str]) -> None:
         with self.conn.transaction():

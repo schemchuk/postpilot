@@ -171,6 +171,7 @@ def test_failed_publication_can_be_reclaimed(conn, repo, approved_item):
     claimed = repo.claim_publication(item_id, "example")
     assert claimed is not None
     assert claimed.recovered
+    assert not claimed.stale
     assert claimed.publication.status is PublicationStatus.PUBLISHING
     assert claimed.publication.error is None
     assert repo.claim_publication(item_id, "example") is None
