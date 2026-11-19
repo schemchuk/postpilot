@@ -9,7 +9,7 @@
   in the LinkedIn app (Volodymyr confirmed).
 - Branch: main
 - Last commit: see `git log -1`
-- Next step: T14 Instagram + Facebook Reels (secret gates: IG and FB tokens, one at a time). render-video was triggered once via workflow_dispatch on 2026-11-19 to verify it live (see result below if recorded). Follow-ups for T14: failed renders after a paid `create_video` are not counted in the monthly cap (count_this_month excludes FAILED); script validation (80-120 words) has no automatic retry. HEYGEN_* secrets are in GitHub Secrets. Short links are not yet wired into publishing.
+- Next step: T14 Instagram + Facebook Reels (secret gates: IG and FB tokens, one at a time). render-video was triggered once via workflow_dispatch on 2026-11-19 to verify it live and succeeded as a no-op (production DB had no items, no HeyGen credits spent): workflow, secrets, ffmpeg and DB access are verified, the real render is NOT yet verified live; needs an APPROVED or PUBLISHED item with a DE variant. Follow-ups for T14: failed renders after a paid `create_video` are not counted in the monthly cap (count_this_month excludes FAILED); script validation (80-120 words) has no automatic retry. HEYGEN_* secrets are in GitHub Secrets. Short links are not yet wired into publishing.
 - ADR 009 ACCEPTED (Volodymyr, 2026-11-19): visible footer `postpilot:<uuid>/<lang>` on LinkedIn posts. LinkedIn channel is untested against live LinkedIn (no token issued yet; needs r_member_social check).
 - Blocked on: nothing. Verified 2026-11-18 19:01 EET: secret `DATABASE_URL` fixed, migrations 0001-0003 applied
   to the production Neon database by hand, `check-tokens` and `poll-telegram` workflows green.
