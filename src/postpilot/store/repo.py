@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 from psycopg import Connection
 from psycopg.rows import TupleRow
 
+from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
 from postpilot.core.models import (
     Item,
     Language,
@@ -50,6 +51,14 @@ class LostPublicationClaim(IllegalTransition):
     pass
 
 
+class EditTooLong(ValueError):
+    pass
+
+
+class _DuplicateInboxUpdate(Exception):
+    pass
+
+
 class ItemRepo:
     def __init__(self, conn: Connection[TupleRow]) -> None:
         self.conn = conn
@@ -64,6 +73,37 @@ class ItemRepo:
             assert row is not None
             return _item(row)
 
+    def has_inbox_update(self, update_id: int) -> bool:
+        with self.conn.transaction():
+            return (
+                self.conn.execute(
+                    "SELECT 1 FROM inbox_updates WHERE update_id = %s", (update_id,)
+                ).fetchone()
+                is not None
+            )
+
+    def _record_inbox_update(self, update_id: int, item_id: UUID) -> None:
+        result = self.conn.execute(
+            "INSERT INTO inbox_updates (update_id, item_id) VALUES (%s, %s) "
+            "ON CONFLICT (update_id) DO NOTHING",
+            (update_id, item_id),
+        )
+        if not result.rowcount:
+            raise _DuplicateInboxUpdate
+
+    def create_inbox_item(
+        self, update_id: int, original: str, translation: str
+    ) -> Item | None:
+        try:
+            with self.conn.transaction():
+                item = self.create_item("telegram")
+                self._record_inbox_update(update_id, item.id)
+                self.add_variant(item.id, "ua", original)
+                self.add_variant(item.id, "de", translation)
+                return self.transition(item.id, ItemState.AWAITING_APPROVAL)
+        except _DuplicateInboxUpdate:
+            return None
+
     def get_item(self, id: UUID) -> Item | None:
         with self.conn.transaction():
             row = self.conn.execute(
@@ -74,14 +114,17 @@ class ItemRepo:
     def list_unfinished_item_ids(self) -> list[UUID]:
         return self._list_item_ids(ItemState.PUBLISHING)
 
-    def list_approved_item_ids(self) -> list[UUID]:
-        return self._list_item_ids(ItemState.APPROVED)
+    def list_approved_item_ids(self, *, source: Source | None = None) -> list[UUID]:
+        return self._list_item_ids(ItemState.APPROVED, source=source)
 
-    def _list_item_ids(self, state: ItemState) -> list[UUID]:
+    def _list_item_ids(
+        self, state: ItemState, *, source: Source | None = None
+    ) -> list[UUID]:
         with self.conn.transaction():
             rows = self.conn.execute(
-                "SELECT id FROM items WHERE state = %s ORDER BY created_at, id",
-                (state.value,),
+                "SELECT id FROM items WHERE state = %s AND (%s::text IS NULL OR source = %s) "
+                "ORDER BY created_at, id",
+                (state.value, source, source),
             ).fetchall()
             return [item_id for (item_id,) in rows]
 
@@ -110,17 +153,31 @@ class ItemRepo:
             if not updated.rowcount:
                 raise KeyError((item_id, lang))
 
-    def apply_pending_edit(self, user_id: int, text: str) -> Item | None:
-        with self.conn.transaction():
-            pending = self.bot_state.take_pending_edit(user_id)
-            if pending is None:
-                return None
-            item_id, lang = pending
-            try:
-                self.update_variant_text(item_id, lang, text)
-            except IllegalTransition:
-                return None
-            return self.get_item(item_id)
+    def apply_pending_edit(
+        self, user_id: int, text: str, *, update_id: int | None = None
+    ) -> Item | None:
+        try:
+            with self.conn.transaction():
+                pending = self.bot_state.take_pending_edit(user_id)
+                if pending is None:
+                    return None
+                item_id, lang = pending
+                if update_id is not None:
+                    self._record_inbox_update(update_id, item_id)
+                item = self.get_item(item_id)
+                if (
+                    item is not None
+                    and item.source == "telegram"
+                    and len(text) > LINKEDIN_TEXT_LIMIT
+                ):
+                    raise EditTooLong
+                try:
+                    self.update_variant_text(item_id, lang, text)
+                except IllegalTransition:
+                    return None
+                return self.get_item(item_id)
+        except _DuplicateInboxUpdate:
+            return None
 
     def _require_state(self, item_id: UUID, expected: ItemState) -> ItemState:
         state = self._lock_state(item_id)

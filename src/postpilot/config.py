@@ -24,6 +24,7 @@ class Settings:
     telegram_chat_id: int = field(repr=False)
     token_encryption_key: str = field(repr=False)
     linkedin: LinkedInSettings | None = None
+    anthropic_api_key: str | None = field(default=None, repr=False)
 
     @classmethod
     def from_env(cls, dotenv: Path | None = None) -> "Settings":
@@ -46,7 +47,14 @@ class Settings:
             if client_id and client_secret and redirect_uri and scopes
             else None
         )
-        return cls(database_url, bot_token, chat_id, key, linkedin)
+        return cls(
+            database_url,
+            bot_token,
+            chat_id,
+            key,
+            linkedin,
+            values.get("ANTHROPIC_API_KEY") or None,
+        )
 
     def secret_values(self) -> tuple[str, ...]:
         values: tuple[str, ...] = (

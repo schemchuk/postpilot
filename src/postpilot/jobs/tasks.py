@@ -8,6 +8,7 @@ import httpx
 from psycopg import Connection
 from psycopg.rows import TupleRow
 
+from postpilot.ai.client import ClaudeClient
 from postpilot.channels.registry import build_channels
 from postpilot.config import Settings
 from postpilot.core.publisher import Publisher
@@ -16,6 +17,7 @@ from postpilot.notify.approval import ApprovalHandler
 from postpilot.notify.poller import poll_once
 from postpilot.notify.renewal import RenewalHandler
 from postpilot.notify.telegram import Notifier, TelegramApi
+from postpilot.sources.telegram import TelegramInbox
 from postpilot.store.repo import ItemRepo
 from postpilot.tokens import service
 from postpilot.tokens.base import TokenManager, days_left
@@ -97,8 +99,23 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
             release_held_items,
             state_store=repo.bot_state,
         )
-        handler = ApprovalHandler(repo, api, settings.telegram_chat_id, renewal=renewal)
+        model = (
+            ClaudeClient(settings.anthropic_api_key)
+            if settings.anthropic_api_key
+            else None
+        )
+        handler = ApprovalHandler(
+            repo,
+            api,
+            settings.telegram_chat_id,
+            renewal=renewal,
+            inbox=TelegramInbox(repo, api, model),
+        )
         poll_once(api, handler, repo.bot_state, raise_errors=True)
+
+    item_ids = repo.list_approved_item_ids(source="telegram")
+    if item_ids and (publisher := _publisher(settings, repo)) is not None:
+        _publish_items(publisher, item_ids)
 
 
 def check_tokens(settings: Settings, conn: Connection[TupleRow]) -> None:

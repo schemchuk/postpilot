@@ -100,7 +100,9 @@ def render_preview(item: Item, variants: Iterable[Variant]) -> str:
     return preview
 
 
-def approval_keyboard(item_id: UUID) -> dict[str, list[list[dict[str, str]]]]:
+def approval_keyboard(
+    item_id: UUID, *, regenerate: bool = True
+) -> dict[str, list[list[dict[str, str]]]]:
     return {
         "inline_keyboard": [
             [
@@ -111,6 +113,7 @@ def approval_keyboard(item_id: UUID) -> dict[str, list[list[dict[str, str]]]]:
                     ("Regenerate", "regen"),
                     ("Skip", "skip"),
                 )
+                if regenerate or action != "regen"
             ]
         ]
     }
@@ -122,9 +125,21 @@ class Notifier:
         self.chat_id = chat_id
 
     def send_preview(self, item: Item, variants: Iterable[Variant]) -> int:
-        return self.api.send_message(
-            self.chat_id, render_preview(item, variants), approval_keyboard(item.id)
-        )
+        markup = approval_keyboard(item.id, regenerate=item.source != "telegram")
+        if item.source == "telegram":
+            heading = f"Item {item.id.hex[:8]} · {item.source}"
+            sections = [
+                f"{variant.lang.upper()}\n{variant.text}" for variant in variants
+            ]
+            preview = "\n\n".join([heading, *sections])
+            if len(preview) > _MESSAGE_LIMIT:
+                # Each variant fits on its own. Offer approval after both are sent.
+                for section in sections[:-1]:
+                    self.api.send_message(self.chat_id, f"{heading}\n\n{section}")
+                preview = f"{heading}\n\n{sections[-1]}"
+        else:
+            preview = render_preview(item, variants)
+        return self.api.send_message(self.chat_id, preview, markup)
 
     def send_alert(self, text: str) -> None:
         self.api.send_message(self.chat_id, _truncate(text))
