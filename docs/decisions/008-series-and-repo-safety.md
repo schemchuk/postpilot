@@ -1,6 +1,6 @@
 # 008. Series identity and repository link checks
 
-Status: PROPOSED
+Status: ACCEPTED
 
 Starting a series while another is active raises an error. Stopping or completing a series preserves
 its history. A matching publication records the part, advances the series and marks the repository

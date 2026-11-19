@@ -9,7 +9,7 @@
   in the LinkedIn app (Volodymyr confirmed).
 - Branch: main
 - Last commit: see `git log -1`
-- Next step: T10 Telegram inbox S2 (Codex, branch feat/T10-telegram-inbox). ADR 008 is PROPOSED, awaiting Volodymyr's confirmation.
+- Next step: T10 Telegram inbox S2 (Codex, branch feat/T10-telegram-inbox). ADR 008 ACCEPTED.
 - Blocked on: nothing. Verified 2026-11-18 19:01 EET: secret `DATABASE_URL` fixed, migrations 0001-0003 applied
   to the production Neon database by hand, `check-tokens` and `poll-telegram` workflows green.
 - Follow-ups: purge unused oauth nonces in bot_state; local fallback `postpilot auth linkedin --open`;
