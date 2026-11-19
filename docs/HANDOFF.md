@@ -18,6 +18,19 @@ never opens a Codex window. Same scheme as in handmake (Codex edit-only sandbox,
    handling) stop for Volodymyr's explicit OK before merge.
 5. Claude updates STATUS, pushes, and tells Volodymyr to open a new window (see the next section). It does not start Tn+1 in the same window.
 
+## No idle waiting (mandatory)
+A background Codex run is never "wait for the notification". The notification only reports the launcher shell,
+not Codex. Claude Code must:
+- Launch with `setsid nohup ... &`, record the PID, and tell Codex in the brief that Claude is the orchestrator
+  (HANDOFF authorizes it; do not stop on the Active-agent check, do not edit STATUS.md, do not ask questions).
+- Within 2 minutes of launch, read the log tail and `git status` to confirm real progress.
+- Then poll every 2-3 minutes with `kill -0 <pid>`, the `-o` last-message file and `git status`, using Monitor
+  with an until-loop on the PID or the file (never `pgrep -f` matching its own command line).
+- The moment the PID is gone or the last-message file exists, start review in the same turn: ruff, mypy,
+  pytest, diff against acceptance criteria. Never end a turn with "waiting" while Codex is idle or finished.
+- If the log is silent for 3 minutes, read it and act (resume Codex or take over the fix).
+- Report to Volodymyr only facts (log, files, test output), never "it is working" without evidence.
+
 ## New window after every task (mandatory)
 One task = one window. Once a task is merged and STATUS.md is updated and pushed, the agent STOPS and does
 not start the next task in the same window. Its final message of the task is exactly this, in Ukrainian:
