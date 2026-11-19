@@ -59,6 +59,9 @@ Next step, Blocked on, Open questions for Volodymyr.
 - START of every session: `git pull --rebase` (once a remote exists), read AGENTS.md and
   docs/STATUS.md, confirm you are the Active agent. If not, stop and tell Volodymyr.
 - END of every session: working tree clean, STATUS.md updated, pushed, Active agent set.
+- ONE TASK = ONE WINDOW. After a task is merged and STATUS.md is pushed, stop and tell Volodymyr (in Ukrainian)
+  to open a new window and say "continue per STATUS". Never start the next task in the same window unless
+  Volodymyr explicitly says so. Details: docs/HANDOFF.md.
 - Read only the docs your task touches. One session per task. Task PRs under ~400 non-test lines.
 
 ## Git rules

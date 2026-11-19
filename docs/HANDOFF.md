@@ -16,11 +16,17 @@ never opens a Codex window. Same scheme as in handmake (Codex edit-only sandbox,
 4. **Commit, PR, merge.** Claude commits with trailer `Agent: codex`, pushes, opens the PR, waits for CI,
    merges with `gh pr merge --squash --delete-branch`. Tasks marked "Needs OK" (workflows, secret
    handling) stop for Volodymyr's explicit OK before merge.
-5. Claude updates STATUS and tells Volodymyr: "Tnn done, starting Tn+1" (or what is needed from him).
+5. Claude updates STATUS, pushes, and tells Volodymyr to open a new window (see the next section). It does not start Tn+1 in the same window.
 
-## When a new window is useful
-Only to keep context small: after a few tasks Claude says "Tnn done; open a new window and say
-'continue per STATUS'". STATUS.md carries everything, nothing is lost.
+## New window after every task (mandatory)
+One task = one window. Once a task is merged and STATUS.md is updated and pushed, the agent STOPS and does
+not start the next task in the same window. Its final message of the task is exactly this, in Ukrainian:
+
+> Tnn готово і змерджено. Відкрий нове вікно і напиши: «continue per STATUS». Далі: Tn+1.
+
+Before saying it the agent checks: working tree clean, STATUS.md names the next task and next step, everything
+pushed to main. Nothing may live only in the chat. The new window starts from AGENTS.md and docs/STATUS.md.
+The only exception is Volodymyr explicitly telling the agent to continue in the same window.
 
 ## Limits to know
 - The Codex sandbox has no network: dependencies are installed by Claude beforehand, Codex does not
