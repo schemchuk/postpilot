@@ -1,15 +1,15 @@
 # STATUS
 
 - Active agent: claude-code (orchestrating Codex, docs/HANDOFF.md)
-- Current task: T06a hotfix is merged (PR #8). Next: T07 AI client + prompts + humanizer (docs/03-tasks.md).
+- Current task: T07 is merged (PR #9). Next: T08 GitHub source + series + repo-safety (docs/03-tasks.md).
 - Done: T01 skeleton + CI (#1), T02 store + models + state machine (#2), T03 publisher + fake channel (#3),
   T04 Telegram notifier + approval (#4), T05a token core (#5), T05b LinkedIn assisted renewal + Pages
-  callback (#6), T06 CLI jobs + failure alerts + scheduled workflows (#7), T06a hotfix: migrations on job start, failure type to stderr (#8). 230 tests green incl. integration
+  callback (#6), T06 CLI jobs + failure alerts + scheduled workflows (#7), T06a hotfix: migrations on job start, failure type to stderr (#8), T07 AI client + prompts + humanizer (#9). 230 tests green incl. integration
   tests against Neon. Pages live: https://schemchuk.github.io/postpilot/callback/. Redirect URI is registered
   in the LinkedIn app (Volodymyr confirmed).
 - Branch: main
 - Last commit: see `git log -1`
-- Next step: T07 AI client + prompts + humanizer (Codex, branch feat/T07-ai-client).
+- Next step: T08 GitHub source + series + repo-safety (Codex, branch feat/T08-github-source). ADR 007 is PROPOSED, awaiting Volodymyr's OK.
 - Blocked on: nothing. Verified 2026-11-18 19:01 EET: secret `DATABASE_URL` fixed, migrations 0001-0003 applied
   to the production Neon database by hand, `check-tokens` and `poll-telegram` workflows green.
 - Follow-ups: purge unused oauth nonces in bot_state; local fallback `postpilot auth linkedin --open`;
