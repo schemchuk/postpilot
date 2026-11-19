@@ -26,6 +26,10 @@ def clean_env(monkeypatch):
         "THREADS_APP_ID",
         "THREADS_APP_SECRET",
         "THREADS_REDIRECT_URI",
+        "SHORTIO_API_KEY",
+        "SHORTIO_DOMAIN",
+        "GITHUB_OWNER",
+        "GITHUB_TOKEN",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -88,3 +92,24 @@ def test_threads_redirect_fallback_and_redaction(monkeypatch):
     assert "mock-app-secret" not in repr(settings)
     monkeypatch.setenv("THREADS_REDIRECT_URI", "https://threads.example.test/")
     assert Settings.from_env().threads.redirect_uri == "https://threads.example.test/"
+
+
+def test_optional_traffic_settings(monkeypatch):
+    for name, value in REQUIRED.items():
+        monkeypatch.setenv(name, value)
+    settings = Settings.from_env()
+    assert settings.shortio is None
+    assert settings.github_owner == "schemchuk"
+    assert settings.github_token is None
+
+    monkeypatch.setenv("SHORTIO_API_KEY", "mock-private-shortio-key")
+    assert Settings.from_env().shortio is None
+    monkeypatch.setenv("SHORTIO_DOMAIN", "example.short.gy")
+    monkeypatch.setenv("GITHUB_OWNER", "another-owner")
+    monkeypatch.setenv("GITHUB_TOKEN", "mock-private-github-token")
+    settings = Settings.from_env()
+    assert settings.shortio.domain == "example.short.gy"
+    assert settings.github_owner == "another-owner"
+    for secret in ("mock-private-shortio-key", "mock-private-github-token"):
+        assert secret in settings.secret_values()
+        assert secret not in repr(settings)

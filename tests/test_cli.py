@@ -25,7 +25,7 @@ def test_unknown_command_exits_nonzero():
     "command, database",
     [
         ("draft-weekly", False),
-        ("snapshot-traffic", False),
+        ("snapshot-traffic", True),
         ("poll-telegram", True),
         ("publish-due", True),
         ("check-tokens", True),
@@ -33,6 +33,7 @@ def test_unknown_command_exits_nonzero():
     ],
 )
 def test_dispatch(monkeypatch, command, database):
+    assert (command in cli._DATABASE_COMMANDS) == database
     settings = Settings("fake-db", "fake-token", 123, "fake-key")
     monkeypatch.setattr(cli.Settings, "from_env", Mock(return_value=settings))
     runner = Mock(return_value=7)

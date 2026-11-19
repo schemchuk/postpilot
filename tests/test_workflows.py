@@ -8,6 +8,7 @@ WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 SCHEDULES = {
     "poll-telegram": "*/5 * * * *",
     "check-tokens": "0 7 * * *",
+    "snapshot-traffic": "30 7 * * *",
     "publish-due": "0 9 * * 5",
 }
 
@@ -62,6 +63,8 @@ def test_scheduled_workflow(name, cron):
             "TELEGRAM_BOT_TOKEN",
             "TELEGRAM_CHAT_ID",
             "TOKEN_ENCRYPTION_KEY",
+        }
+        channel_credentials = {
             "LINKEDIN_CLIENT_ID",
             "LINKEDIN_CLIENT_SECRET",
             "LINKEDIN_REDIRECT_URI",
@@ -69,8 +72,13 @@ def test_scheduled_workflow(name, cron):
             "THREADS_APP_ID",
             "THREADS_APP_SECRET",
         }
+        if name == "snapshot-traffic":
+            expected.update({"SHORTIO_API_KEY", "SHORTIO_DOMAIN", "GITHUB_TOKEN"})
+        else:
+            expected.update(channel_credentials)
         if name == "poll-telegram":
             expected.add("ANTHROPIC_API_KEY")
         assert set(command["env"]) == expected
         for variable, value in command["env"].items():
-            assert value == "${{ secrets." + variable + " }}"
+            secret = "GH_TRAFFIC_TOKEN" if variable == "GITHUB_TOKEN" else variable
+            assert value == "${{ secrets." + secret + " }}"

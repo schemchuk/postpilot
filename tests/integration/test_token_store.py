@@ -44,6 +44,7 @@ def test_token_store_encrypts_and_upserts(conn):
 
 def test_token_migration_round_trip(conn):
     assert "tokens" in test_store.table_names(conn)
+    migrate.down(conn)  # 0006_link_tracking
     migrate.down(conn)  # 0005_inbox_updates
     migrate.down(conn)  # 0004_series
     migrate.down(conn)  # 0003_tokens

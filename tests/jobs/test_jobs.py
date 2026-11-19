@@ -295,3 +295,68 @@ def test_linkedin_provider_and_expiry_guard(settings, repo, monkeypatch, expired
         ("linkedin",),
     ]
     repo.claim_publication.assert_not_called()
+
+
+@pytest.mark.parametrize("mode", ["empty", "partial", "failed", "clicks-only"])
+def test_snapshot_traffic(settings, monkeypatch, caplog, mode):
+    from postpilot.config import ShortioSettings
+    from postpilot.sources.github import GitHubError, RepoTraffic
+
+    settings = replace(
+        settings,
+        github_token="mock-traffic-token",
+        shortio=ShortioSettings("mock-shortio-token", "example.short.gy"),
+    )
+    now = datetime(2026, 11, 19, tzinfo=UTC)
+    monkeypatch.setattr(tasks, "_now", lambda: now)
+    store = Mock()
+    repos = {"bad", "good"} if mode in ("partial", "failed") else set()
+    store.list_links.return_value = (
+        []
+        if mode == "empty"
+        else [
+            SimpleNamespace(link_id="unavailable"),
+            SimpleNamespace(link_id="available"),
+        ]
+    )
+    monkeypatch.setattr(tasks, "LinkStore", Mock(return_value=store))
+    monkeypatch.setattr(
+        tasks,
+        "SeriesStore",
+        Mock(return_value=Mock(posted_repos=Mock(return_value=repos))),
+    )
+    traffic = RepoTraffic(3, 2, 1, 1, {"github.com": 2})
+    github = Mock()
+    github.traffic.side_effect = [
+        GitHubError("mock-traffic-token"),
+        traffic if mode == "partial" else None,
+    ]
+    monkeypatch.setattr(tasks, "GitHubClient", Mock(return_value=github))
+    shortio = Mock()
+    shortio.total_clicks.side_effect = [None, None if mode == "failed" else 0]
+    monkeypatch.setattr(tasks, "ShortioClient", Mock(return_value=shortio))
+
+    if mode == "failed":
+        with pytest.raises(
+            RuntimeError, match="All traffic and click snapshots failed"
+        ):
+            tasks.snapshot_traffic(settings, Mock())
+    else:
+        tasks.snapshot_traffic(settings, Mock())
+
+    if mode == "partial":
+        store.upsert_traffic.assert_called_once_with("good", now.date(), traffic)
+    else:
+        store.upsert_traffic.assert_not_called()
+    if mode in ("partial", "clicks-only"):
+        store.upsert_clicks.assert_called_once_with("available", now.date(), 0)
+    else:
+        store.upsert_clicks.assert_not_called()
+    if mode == "empty":
+        tasks.GitHubClient.assert_not_called()
+        tasks.ShortioClient.assert_not_called()
+        assert not caplog.records
+    else:
+        shortio.close.assert_called_once()
+        assert "unavailable" in caplog.text
+    assert "mock-traffic-token" not in caplog.text
