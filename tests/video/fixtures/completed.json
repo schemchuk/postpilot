@@ -1,0 +1,11 @@
+{
+  "data": {
+    "video_id": "render-123",
+    "status": "completed",
+    "video_url": "https://cdn.example.test/clean.mp4?signature=mock",
+    "captioned_video_url": "https://cdn.example.test/captioned.mp4?signature=mock",
+    "subtitle_url": "https://cdn.example.test/subtitles.srt?signature=mock",
+    "thumbnail_url": "https://cdn.example.test/thumbnail.jpg?signature=mock",
+    "duration": 24.5
+  }
+}

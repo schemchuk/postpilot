@@ -1,0 +1,7 @@
+{
+  "data": {
+    "status": "failed",
+    "failure_code": "render_error",
+    "failure_message": "Failed at https://cdn.example.test/intermediate?signature=mock"
+  }
+}

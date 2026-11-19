@@ -74,7 +74,8 @@ def test_migration_up_noop_and_down(conn):
     series_tables = {"series", "series_parts", "posted_repos"}
     full_schema = tables | bot_tables | {"tokens", "inbox_updates"} | series_tables
     link_tables = {"short_links", "link_clicks", "traffic_snapshots"}
-    full_schema |= link_tables
+    video_tables = {"video_renders"}
+    full_schema |= link_tables | video_tables
     assert table_names(conn) == full_schema
     initial = applied_migrations(conn)
     assert [version for version, _ in initial] == [
@@ -84,16 +85,23 @@ def test_migration_up_noop_and_down(conn):
         "0004_series",
         "0005_inbox_updates",
         "0006_link_tracking",
+        "0007_video_renders",
     ]
     migrate.up(conn)
     assert applied_migrations(conn) == initial
 
     migrate.down(conn)
-    assert table_names(conn) == full_schema - link_tables
+    assert table_names(conn) == full_schema - video_tables
+    assert applied_migrations(conn) == initial[:6]
+
+    migrate.down(conn)
+    assert table_names(conn) == full_schema - video_tables - link_tables
     assert applied_migrations(conn) == initial[:5]
 
     migrate.down(conn)
-    assert table_names(conn) == full_schema - link_tables - {"inbox_updates"}
+    assert table_names(conn) == full_schema - video_tables - link_tables - {
+        "inbox_updates"
+    }
     assert applied_migrations(conn) == initial[:4]
 
     migrate.down(conn)

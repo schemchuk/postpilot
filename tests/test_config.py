@@ -30,6 +30,12 @@ def clean_env(monkeypatch):
         "SHORTIO_DOMAIN",
         "GITHUB_OWNER",
         "GITHUB_TOKEN",
+        "HEYGEN_API_KEY",
+        "HEYGEN_AVATAR_ID",
+        "HEYGEN_VOICE_ID",
+        "HEYGEN_ENGINE",
+        "VIDEO_MONTHLY_CAP",
+        "VIDEO_MIN_BALANCE_USD",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -113,3 +119,45 @@ def test_optional_traffic_settings(monkeypatch):
     for secret in ("mock-private-shortio-key", "mock-private-github-token"):
         assert secret in settings.secret_values()
         assert secret not in repr(settings)
+
+
+def test_optional_video_settings(monkeypatch):
+    for name, value in REQUIRED.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("HEYGEN_API_KEY", "mock-private-heygen-key")
+    monkeypatch.setenv("HEYGEN_AVATAR_ID", "mock-look")
+    settings = Settings.from_env()
+    assert settings.heygen is None
+    assert settings.video_monthly_cap == 6
+    assert settings.video_min_balance_usd == 3.0
+
+    monkeypatch.setenv("HEYGEN_VOICE_ID", "mock-voice")
+    assert Settings.from_env().heygen.engine == "avatar_iv"
+    monkeypatch.setenv("HEYGEN_ENGINE", "custom-engine")
+    monkeypatch.setenv("VIDEO_MONTHLY_CAP", "8")
+    monkeypatch.setenv("VIDEO_MIN_BALANCE_USD", "4.25")
+    settings = Settings.from_env()
+    assert settings.heygen.engine == "custom-engine"
+    assert settings.heygen.avatar_id == "mock-look"
+    assert settings.heygen.voice_id == "mock-voice"
+    assert settings.video_monthly_cap == 8
+    assert settings.video_min_balance_usd == 4.25
+    assert settings.heygen.api_key in settings.secret_values()
+    assert settings.heygen.api_key not in repr(settings)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("VIDEO_MONTHLY_CAP", "-1"),
+        ("VIDEO_MONTHLY_CAP", "2.5"),
+        ("VIDEO_MIN_BALANCE_USD", "NaN"),
+        ("VIDEO_MIN_BALANCE_USD", "invalid"),
+    ],
+)
+def test_invalid_video_budget(monkeypatch, name, value):
+    for key, setting in REQUIRED.items():
+        monkeypatch.setenv(key, setting)
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ConfigError, match=f"^{name}$"):
+        Settings.from_env()

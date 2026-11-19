@@ -25,7 +25,8 @@ approved_item = test_store.approved_item
 def reset_job_state(conn):
     with conn.transaction():
         conn.execute(
-            "TRUNCATE items, variants, publications, pending_edits, bot_state, tokens, inbox_updates"
+            "TRUNCATE items, variants, publications, pending_edits, bot_state, tokens, "
+            "inbox_updates, video_renders, short_links, link_clicks"
         )
 
 

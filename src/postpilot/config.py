@@ -1,3 +1,4 @@
+import math
 import os
 import re
 from collections.abc import Mapping
@@ -32,6 +33,14 @@ class ShortioSettings:
 
 
 @dataclass(frozen=True)
+class HeyGenSettings:
+    api_key: str = field(repr=False)
+    avatar_id: str
+    voice_id: str
+    engine: str = "avatar_iv"
+
+
+@dataclass(frozen=True)
 class Settings:
     database_url: str = field(repr=False)
     telegram_bot_token: str = field(repr=False)
@@ -43,6 +52,10 @@ class Settings:
     shortio: ShortioSettings | None = None
     github_owner: str = "schemchuk"
     github_token: str | None = field(default=None, repr=False)
+
+    heygen: HeyGenSettings | None = None
+    video_monthly_cap: int = 6
+    video_min_balance_usd: float = 3.0
 
     @classmethod
     def from_env(cls, dotenv: Path | None = None) -> "Settings":
@@ -81,6 +94,21 @@ class Settings:
         )
         shortio_key = values.get("SHORTIO_API_KEY")
         shortio_domain = values.get("SHORTIO_DOMAIN")
+        heygen_key = values.get("HEYGEN_API_KEY")
+        avatar_id = values.get("HEYGEN_AVATAR_ID")
+        voice_id = values.get("HEYGEN_VOICE_ID")
+        try:
+            cap = int(values.get("VIDEO_MONTHLY_CAP") or "6")
+            if cap < 0:
+                raise ValueError
+        except ValueError:
+            raise ConfigError("VIDEO_MONTHLY_CAP") from None
+        try:
+            balance = float(values.get("VIDEO_MIN_BALANCE_USD") or "3.0")
+            if not math.isfinite(balance) or balance < 0:
+                raise ValueError
+        except ValueError:
+            raise ConfigError("VIDEO_MIN_BALANCE_USD") from None
         return cls(
             database_url,
             bot_token,
@@ -94,6 +122,16 @@ class Settings:
             else None,
             values.get("GITHUB_OWNER") or "schemchuk",
             values.get("GITHUB_TOKEN") or None,
+            HeyGenSettings(
+                heygen_key,
+                avatar_id,
+                voice_id,
+                values.get("HEYGEN_ENGINE") or "avatar_iv",
+            )
+            if heygen_key and avatar_id and voice_id
+            else None,
+            cap,
+            balance,
         )
 
     def secret_values(self) -> tuple[str, ...]:
@@ -119,6 +157,8 @@ class Settings:
             values += (self.shortio.api_key,)
         if self.github_token is not None:
             values += (self.github_token,)
+        if self.heygen is not None:
+            values += (self.heygen.api_key,)
         return values
 
 
