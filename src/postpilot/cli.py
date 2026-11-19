@@ -26,6 +26,7 @@ _COMMANDS = (
     "draft-weekly",
     "poll-telegram",
     "publish-due",
+    "render-video",
     "snapshot-traffic",
     "check-tokens",
     "threads-import-token",
@@ -46,7 +47,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     subparsers = parser.add_subparsers(dest="command")
     for command in _COMMANDS:
-        subparsers.add_parser(command)
+        subparser = subparsers.add_parser(command)
+        if command == "render-video":
+            subparser.add_argument("--retry", action="store_true")
 
     args = parser.parse_args(argv)
     if args.command is None:
@@ -55,10 +58,16 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         settings = Settings.from_env(Path(".env"))
+        if args.command == "render-video":
+            tasks.validate_video_settings(settings)
     except ConfigError as error:
         parser.error(str(error))
 
-    database_job = _DATABASE_COMMANDS.get(args.command)
+    database_job = (
+        partial(tasks.render_video, retry=args.retry)
+        if args.command == "render-video"
+        else _DATABASE_COMMANDS.get(args.command)
+    )
     operation = (
         partial(_with_database, database_job, settings)
         if database_job is not None

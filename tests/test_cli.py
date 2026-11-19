@@ -75,3 +75,53 @@ def test_threads_import_uses_environment_and_stores_expiry(monkeypatch, capsys):
         "threads", "mock-import-token", now + timedelta(days=60)
     )
     assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize("retry", [False, True])
+def test_render_video_dispatch(monkeypatch, retry):
+    from postpilot.config import HeyGenSettings
+
+    settings = Settings(
+        "fake-db",
+        "fake-token",
+        123,
+        "fake-key",
+        heygen=HeyGenSettings("key", "avatar", "voice"),
+        anthropic_api_key="fake-model-key",
+    )
+    monkeypatch.setattr(cli.Settings, "from_env", Mock(return_value=settings))
+    monkeypatch.setattr(cli, "connect", Mock(return_value=nullcontext("connection")))
+    steps = Mock()
+    monkeypatch.setattr(cli.migrate, "up", steps.up)
+    monkeypatch.setattr(cli.tasks, "render_video", steps.render)
+    runner = Mock(side_effect=lambda name, job, settings: job() or 0)
+    monkeypatch.setattr(cli, "run_job", runner)
+
+    assert cli.main(["render-video", *(["--retry"] if retry else [])]) == 0
+    assert steps.mock_calls == [
+        call.up("connection"),
+        call.render(settings, "connection", retry=retry),
+    ]
+
+
+@pytest.mark.parametrize("has_heygen", [False, True])
+def test_render_video_missing_config(monkeypatch, capsys, has_heygen):
+    from postpilot.config import HeyGenSettings
+
+    settings = Settings(
+        "fake-db",
+        "fake-token",
+        123,
+        "fake-key",
+        heygen=HeyGenSettings("key", "avatar", "voice") if has_heygen else None,
+    )
+    monkeypatch.setattr(cli.Settings, "from_env", Mock(return_value=settings))
+    connect = Mock()
+    monkeypatch.setattr(cli, "connect", connect)
+    with pytest.raises(SystemExit) as error:
+        cli.main(["render-video"])
+    assert error.value.code == 2
+    assert (
+        "ANTHROPIC_API_KEY" if has_heygen else "HEYGEN_API_KEY"
+    ) in capsys.readouterr().err
+    connect.assert_not_called()

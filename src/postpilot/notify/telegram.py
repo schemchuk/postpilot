@@ -1,3 +1,4 @@
+import json
 import logging
 from collections.abc import Iterable
 from typing import Any, cast
@@ -6,8 +7,10 @@ from uuid import UUID
 import httpx
 
 from postpilot.core.models import Item, Variant
+from postpilot.video.store import VideoRender
 
 _MESSAGE_LIMIT = 4096
+_VIDEO_LIMIT = 50_000_000
 _BOT_URL = "https://api.telegram.org/bot"
 
 
@@ -28,13 +31,22 @@ class TelegramApi:
         self._token = token
         self._client = client
 
-    def _request(self, method: str, **payload: object) -> Any:
+    def _request(
+        self, method: str, video: bytes | None = None, /, **payload: object
+    ) -> Any:
         url = f"{_BOT_URL}{self._token}/{method}"
+        post = httpx.post if self._client is None else self._client.post
         try:
-            if self._client is None:
-                response = httpx.post(url, json=payload, follow_redirects=False)
+            if video is None:
+                response = post(url, json=payload, follow_redirects=False)
             else:
-                response = self._client.post(url, json=payload, follow_redirects=False)
+                response = post(
+                    url,
+                    data=payload,
+                    files={"video": ("preview.mp4", video, "video/mp4")},
+                    timeout=120.0,
+                    follow_redirects=False,
+                )
             response.raise_for_status()
             data = response.json()
         except (httpx.HTTPError, httpx.InvalidURL, httpx.StreamError, ValueError):
@@ -58,6 +70,27 @@ class TelegramApi:
         ):
             return message_id
         raise TelegramError("Telegram sendMessage returned an invalid message id")
+
+    def send_video(
+        self, chat_id: int, video: bytes, caption: str, reply_markup: dict[str, Any]
+    ) -> None:
+        self._request(
+            "sendVideo",
+            video,
+            chat_id=chat_id,
+            caption=caption,
+            supports_streaming="true",
+            reply_markup=json.dumps(reply_markup),
+        )
+
+    def edit_message_caption(self, chat_id: int, message_id: int, caption: str) -> None:
+        self._request(
+            "editMessageCaption",
+            chat_id=chat_id,
+            message_id=message_id,
+            caption=caption,
+            reply_markup={"inline_keyboard": []},
+        )
 
     def delete_message(self, chat_id: int, message_id: int) -> None:
         self._request("deleteMessage", chat_id=chat_id, message_id=message_id)
@@ -140,6 +173,26 @@ class Notifier:
         else:
             preview = render_preview(item, variants)
         return self.api.send_message(self.chat_id, preview, markup)
+
+    def send_video_preview(self, render: VideoRender, video: bytes) -> None:
+        if len(video) > _VIDEO_LIMIT:
+            self.send_alert(
+                f"Video render {render.id} exceeds Telegram's 50 MB upload limit."
+            )
+            return
+        self.api.send_video(
+            self.chat_id,
+            video,
+            "AI-generated avatar video (label burned in) - approve to allow Instagram/Facebook",
+            {
+                "inline_keyboard": [
+                    [
+                        {"text": "Approve", "callback_data": f"vapprove:{render.id}"},
+                        {"text": "Reject", "callback_data": f"vreject:{render.id}"},
+                    ]
+                ]
+            },
+        )
 
     def send_alert(self, text: str) -> None:
         self.api.send_message(self.chat_id, _truncate(text))

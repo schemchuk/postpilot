@@ -1,3 +1,5 @@
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -34,6 +36,28 @@ class VideoStore:
     def __init__(self, conn: Connection[TupleRow]) -> None:
         self.conn = conn
 
+    @contextmanager
+    def render_lock(self) -> Iterator[bool]:
+        # Keep the budget check and claim serialized without an open transaction.
+        with self.conn.transaction():
+            row = self.conn.execute("SELECT pg_try_advisory_lock(730013)").fetchone()
+        assert row is not None
+        acquired = bool(row[0])
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                with self.conn.transaction():
+                    self.conn.execute("SELECT pg_advisory_unlock(730013)")
+
+    def rendering_ids(self) -> list[UUID]:
+        with self.conn.transaction():
+            rows = self.conn.execute(
+                "SELECT id FROM video_renders WHERE lang = 'de' AND status = 'RENDERING'"
+                " ORDER BY requested_at, id"
+            ).fetchall()
+        return [row[0] for row in rows]
+
     def claim(self, item_id: UUID, lang: str, *, retry: bool = False) -> UUID | None:
         # Give the retry a fresh ID so a late write from the first attempt cannot attach.
         with self.conn.transaction():
@@ -43,7 +67,8 @@ class VideoStore:
                 VALUES (%s, %s, 'RENDERING')
                 ON CONFLICT (item_id, lang) DO UPDATE SET
                     id = EXCLUDED.id, status = EXCLUDED.status,
-                    requested_at = EXCLUDED.requested_at, retried = true
+                    requested_at = EXCLUDED.requested_at, retried = true,
+                    heygen_video_id = NULL, script = NULL, video = NULL, duration = NULL
                 WHERE %s AND video_renders.status = 'FAILED' AND NOT video_renders.retried
                 RETURNING id
                 """,
@@ -68,10 +93,10 @@ class VideoStore:
             (heygen_video_id, script, video, duration, render_id),
         )
 
-    def mark_failed(self, render_id: UUID) -> bool:
+    def mark_failed(self, render_id: UUID, *, preview: bool = False) -> bool:
         return self._update(
-            "UPDATE video_renders SET status = 'FAILED' WHERE id = %s AND status = 'RENDERING'",
-            (render_id,),
+            "UPDATE video_renders SET status = 'FAILED' WHERE id = %s AND status = %s",
+            (render_id, "READY" if preview else "RENDERING"),
         )
 
     def count_this_month(self, now: datetime) -> int:
