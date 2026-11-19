@@ -1,6 +1,6 @@
 # 014. Instagram and Facebook Reels publishing
 
-Status: PROPOSED (Claude Code, 2026-11-19)
+Status: ACCEPTED (Volodymyr, 2026-11-19)
 
 ## Context
 
