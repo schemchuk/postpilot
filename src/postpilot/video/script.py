@@ -19,8 +19,8 @@ def generate_script(model: TextModel, text: str) -> str:
         script = model.complete(SCRIPT_SYSTEM_PROMPT, text).strip()
     except AIError:
         raise ScriptError("Script generation failed") from None
-    if not 80 <= len(script.split()) <= 120 or _FORBIDDEN.search(script):
+    if not 50 <= len(script.split()) <= 140 or _FORBIDDEN.search(script):
         raise ScriptError(
-            "Script must contain 80–120 words without URLs, hashtags or emoji"
+            "Script must contain 50–140 words without URLs, hashtags or emoji"
         )
     return script
