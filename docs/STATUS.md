@@ -1,7 +1,8 @@
 # STATUS
 
 - Active agent: claude-code (orchestrating Codex, docs/HANDOFF.md)
-- Current task: T13f (PR #23) merged 2026-11-19: `connect(schema=...)` refuses `-pooler` hosts and sets search_path via the libpq startup option (no session SET); production `connect()` sends no session statements. Verified: 477 tests incl. integration against the direct host, production search_path is `"$user", public`. Integration tests still need `TEST_DATABASE_URL` = DATABASE_URL without `-pooler`. Next window: T14.
+- Current task: T14a (ADR 014 ACCEPTED 2026-11-19; split T14a Facebook Reels + job/workflow/table, T14b Instagram). Waiting at prerequisite checks: Volodymyr confirms he has a Facebook Page and an Instagram professional account linked to it; then the Meta app use cases check, then the Page token secret gate. No code yet.
+- (older note) T13f (PR #23) merged 2026-11-19: `connect(schema=...)` refuses `-pooler` hosts and sets search_path via the libpq startup option (no session SET); production `connect()` sends no session statements. Integration tests need `TEST_DATABASE_URL` = DATABASE_URL without `-pooler`.
 - (older note) T13e (PR #22, ADR 013 ACCEPTED) merged 2026-11-19: Threads posts have no visible footer; the container ID is stored before `threads_publish` (migration 0008, applied on job start) and recovery reads the container status, falling back to an exact-text match within claim time minus 5 min. Live check pending: is `GET /{container}?fields=status` readable after publishing (verify on the next real Threads post). 
 - (older note) T13b (+ hotfixes T13c #19, T13d #20) is merged and verified live: first video rendered (26.7 s, cost $1.01, wallet now $22.92) and APPROVED in Telegram on 2026-11-19.
 - (older note) T13b is merged (PR #18: render-video CLI + workflow, script prompt, budget gate, Telegram video approval, ADR 012 ACCEPTED). Next: T14.
