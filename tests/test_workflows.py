@@ -57,7 +57,7 @@ def test_scheduled_workflow(name, cron):
         command = next(
             step for step in job["steps"] if step.get("run") == f"postpilot {name}"
         )
-        assert set(command["env"]) == {
+        expected = {
             "DATABASE_URL",
             "TELEGRAM_BOT_TOKEN",
             "TELEGRAM_CHAT_ID",
@@ -67,5 +67,8 @@ def test_scheduled_workflow(name, cron):
             "LINKEDIN_REDIRECT_URI",
             "LINKEDIN_SCOPES",
         }
+        if name == "poll-telegram":
+            expected.add("ANTHROPIC_API_KEY")
+        assert set(command["env"]) == expected
         for variable, value in command["env"].items():
             assert value == "${{ secrets." + variable + " }}"
