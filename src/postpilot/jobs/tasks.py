@@ -1,4 +1,5 @@
 import logging
+import os
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from functools import partial
@@ -24,6 +25,7 @@ from postpilot.tokens.base import TokenManager, days_left
 from postpilot.tokens.crypto import TokenCipher
 from postpilot.tokens.linkedin import LinkedInTokenManager
 from postpilot.tokens.store import TokenStore
+from postpilot.tokens.threads import TOKEN_LIFETIME, ThreadsTokenManager
 
 logger = logging.getLogger(__name__)
 
@@ -35,19 +37,27 @@ def _now() -> datetime:
 def _managers(
     settings: Settings, store: TokenStore, client: httpx.Client
 ) -> dict[str, TokenManager]:
-    config = settings.linkedin
-    if config is None:
-        return {}
-    manager = LinkedInTokenManager(
-        config.client_id,
-        config.client_secret,
-        config.redirect_uri,
-        list(config.scopes),
-        store,
-        client,
-        _now,
-    )
-    return {manager.provider: manager}
+    managers: dict[str, TokenManager] = {}
+    if (linkedin := settings.linkedin) is not None:
+        managers["linkedin"] = LinkedInTokenManager(
+            linkedin.client_id,
+            linkedin.client_secret,
+            linkedin.redirect_uri,
+            list(linkedin.scopes),
+            store,
+            client,
+            _now,
+        )
+    if (threads := settings.threads) is not None:
+        managers["threads"] = ThreadsTokenManager(
+            threads.app_id,
+            threads.app_secret,
+            threads.redirect_uri,
+            store,
+            client,
+            _now,
+        )
+    return managers
 
 
 def _publisher(
@@ -124,7 +134,7 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
 
 
 def check_tokens(settings: Settings, conn: Connection[TupleRow]) -> None:
-    if settings.linkedin is None:
+    if settings.linkedin is None and settings.threads is None:
         return
     state = ItemRepo(conn).bot_state
     store = TokenStore(conn, TokenCipher(settings.token_encryption_key))
@@ -162,6 +172,14 @@ def publish_due(settings: Settings, conn: Connection[TupleRow]) -> None:
                 publisher,
                 repo.list_unfinished_item_ids() + repo.list_approved_item_ids(),
             )
+
+
+def threads_import_token(settings: Settings, conn: Connection[TupleRow]) -> None:
+    token = os.getenv("THREADS_ACCESS_TOKEN")
+    if not token or not token.strip():
+        raise ValueError("THREADS_ACCESS_TOKEN is required")
+    store = TokenStore(conn, TokenCipher(settings.token_encryption_key))
+    store.save("threads", token, _now() + TOKEN_LIFETIME)
 
 
 def not_implemented() -> int:

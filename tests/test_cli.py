@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock, call
 
 import pytest
@@ -28,6 +29,7 @@ def test_unknown_command_exits_nonzero():
         ("poll-telegram", True),
         ("publish-due", True),
         ("check-tokens", True),
+        ("threads-import-token", True),
     ],
 )
 def test_dispatch(monkeypatch, command, database):
@@ -57,3 +59,18 @@ def test_dispatch(monkeypatch, command, database):
     else:
         connect.assert_not_called()
         assert steps.mock_calls == [call.job()]
+
+
+def test_threads_import_uses_environment_and_stores_expiry(monkeypatch, capsys):
+    now = datetime(2026, 11, 19, tzinfo=UTC)
+    settings = Settings("fake-db", "fake-bot-token", 123, "fake-key")
+    store = Mock()
+    monkeypatch.setattr(cli.tasks, "TokenStore", Mock(return_value=store))
+    monkeypatch.setattr(cli.tasks, "TokenCipher", Mock())
+    monkeypatch.setattr(cli.tasks, "_now", lambda: now)
+    monkeypatch.setenv("THREADS_ACCESS_TOKEN", "mock-import-token")
+    cli.tasks.threads_import_token(settings, Mock())
+    store.save.assert_called_once_with(
+        "threads", "mock-import-token", now + timedelta(days=60)
+    )
+    assert capsys.readouterr() == ("", "")

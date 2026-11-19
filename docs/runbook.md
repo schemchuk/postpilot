@@ -22,3 +22,24 @@ gh secret list
 
 Coordinate a token encryption key change with re-encryption of stored tokens
 or renew those tokens with the new key. A key change also invalidates pending renewal links.
+
+## Import and renew a Threads access token
+
+Use the one-time import with a newly generated long-lived Threads access token.
+From the repository root, pass the token from the unquoted `THREADS_ACCESS_TOKEN`
+entry in your local `.env` to the process without echoing it:
+
+```sh
+THREADS_ACCESS_TOKEN="$(grep '^THREADS_ACCESS_TOKEN=' .env | cut -d= -f2-)" \
+  postpilot threads-import-token
+```
+
+The command stores the token encrypted and records an expiry 60 days from import.
+Remove the import-only entry from `.env` after success. Configure
+`THREADS_APP_ID` and `THREADS_APP_SECRET` for the jobs that use Threads.
+`THREADS_REDIRECT_URI` defaults to `LINKEDIN_REDIRECT_URI`. Register the effective
+callback URI in the Threads app.
+
+With Threads settings available to the job, `check-tokens` attempts refresh within
+14 days of expiry. For assisted renewal, send `/renew threads` in Telegram, open
+the authorization link, and send the command produced by the callback page.

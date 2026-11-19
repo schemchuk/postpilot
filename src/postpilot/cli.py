@@ -19,6 +19,7 @@ _DATABASE_COMMANDS = {
     "poll-telegram": tasks.poll_telegram,
     "publish-due": tasks.publish_due,
     "check-tokens": tasks.check_tokens,
+    "threads-import-token": tasks.threads_import_token,
 }
 _COMMANDS = (
     "draft-weekly",
@@ -26,6 +27,7 @@ _COMMANDS = (
     "publish-due",
     "snapshot-traffic",
     "check-tokens",
+    "threads-import-token",
 )
 
 

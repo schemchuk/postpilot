@@ -19,6 +19,13 @@ class LinkedInSettings:
 
 
 @dataclass(frozen=True)
+class ThreadsSettings:
+    app_id: str = field(repr=False)
+    app_secret: str = field(repr=False)
+    redirect_uri: str = field(repr=False)
+
+
+@dataclass(frozen=True)
 class Settings:
     database_url: str = field(repr=False)
     telegram_bot_token: str = field(repr=False)
@@ -26,6 +33,7 @@ class Settings:
     token_encryption_key: str = field(repr=False)
     linkedin: LinkedInSettings | None = None
     anthropic_api_key: str | None = field(default=None, repr=False)
+    threads: ThreadsSettings | None = None
 
     @classmethod
     def from_env(cls, dotenv: Path | None = None) -> "Settings":
@@ -54,6 +62,14 @@ class Settings:
             if client_id and client_secret and redirect_uri and scopes
             else None
         )
+        app_id = values.get("THREADS_APP_ID")
+        app_secret = values.get("THREADS_APP_SECRET")
+        threads_redirect = values.get("THREADS_REDIRECT_URI") or redirect_uri
+        threads = (
+            ThreadsSettings(app_id, app_secret, threads_redirect)
+            if app_id and app_secret and threads_redirect
+            else None
+        )
         return cls(
             database_url,
             bot_token,
@@ -61,6 +77,7 @@ class Settings:
             key,
             linkedin,
             values.get("ANTHROPIC_API_KEY") or None,
+            threads,
         )
 
     def secret_values(self) -> tuple[str, ...]:
@@ -75,6 +92,12 @@ class Settings:
                 self.linkedin.client_id,
                 self.linkedin.client_secret,
                 self.linkedin.redirect_uri,
+            )
+        if self.threads is not None:
+            values += (
+                self.threads.app_id,
+                self.threads.app_secret,
+                self.threads.redirect_uri,
             )
         return values
 
