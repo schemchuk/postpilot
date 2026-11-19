@@ -1,6 +1,6 @@
 # 007. AI client and humanizer
 
-Status: PROPOSED
+Status: ACCEPTED
 
 Context: Weekly S1 drafts need style and factual checks before they enter the approval queue.
 S2 Telegram texts follow the author-preservation rule in F2.2.
