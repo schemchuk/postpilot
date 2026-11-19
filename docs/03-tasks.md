@@ -60,6 +60,10 @@ preview, edit DE, publish right after approval. Accept: text unchanged apart fro
 cap, second approval. Secret gates: new `HEYGEN_API_KEY`, `HEYGEN_AVATAR_ID`, `HEYGEN_VOICE_ID`.
 **T14 Instagram + Facebook Reels.** Separate credentials, container flow with polling, resumable upload.
 Secret gates: IG and FB tokens. Accept: contract suite green; label present; no video without approval.
+Split per ADR 014: **T14a** `video_publications` table (migration 0009), `publish-reels` job and
+workflow, Facebook Page Reels channel, `facebook` token import and check (secret gate: Page token).
+**T14b** Instagram Reels channel via Facebook Login for Business with resumable upload,
+`instagram` token import and check (secret gate: IG token).
 
 ## Phase 4: extras and cutover
 
