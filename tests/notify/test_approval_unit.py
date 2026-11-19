@@ -7,6 +7,7 @@ import pytest
 from postpilot.core.models import Item
 from postpilot.core.states import ItemState
 from postpilot.notify.approval import ApprovalHandler
+from postpilot.notify.telegram import TelegramError
 
 USER = 321
 CHAT = 123
@@ -31,14 +32,23 @@ class MemoryRepo:
 
 
 class RecordingApi:
-    def __init__(self):
+    def __init__(self, fail_on=None):
         self.calls = []
+        self.fail_on = fail_on
+
+    def record(self, operation, *args):
+        self.calls.append((operation, *args))
+        if self.fail_on == operation:
+            raise TelegramError("sensitive reply details")
 
     def answer_callback_query(self, callback_id, text=None):
-        self.calls.append(("answer", callback_id, text))
+        self.record("answer", callback_id, text)
 
     def edit_message_text(self, chat_id, message_id, text):
-        self.calls.append(("edit", chat_id, message_id, text))
+        self.record("edit", chat_id, message_id, text)
+
+    def edit_message_caption(self, chat_id, message_id, caption):
+        self.record("caption", chat_id, message_id, caption)
 
 
 def callback(data, sender=USER):
@@ -63,13 +73,46 @@ def test_foreign_sender_is_ignored_before_any_calls():
     assert repo.calls == api.calls == []
 
 
-def test_approve_records_sender():
+@pytest.mark.parametrize("fail_on", [None, "answer", "edit"])
+def test_approve_records_sender(fail_on, caplog):
     repo = MemoryRepo(ItemState.AWAITING_APPROVAL)
-    api = RecordingApi()
+    api = RecordingApi(fail_on)
     ApprovalHandler(repo, api, USER).handle_update(callback(f"approve:{repo.item.id}"))
     assert repo.item.state == ItemState.APPROVED
     assert repo.item.approved_by == USER
     assert api.calls == [("answer", "button", None), ("edit", CHAT, 12, "Approved")]
+    if fail_on:
+        assert caplog.messages == ["Telegram callback reply failed"]
+
+
+@pytest.mark.parametrize("fail_on", ["answer", "caption"])
+def test_video_approval_persists_when_reply_fails(fail_on):
+    class MemoryVideoStore:
+        approved_by = None
+
+        def approve(self, render_id, sender, approved_at):
+            assert render_id == item_id
+            self.approved_by = sender
+            return True
+
+    repo = MemoryRepo(ItemState.APPROVED)
+    item_id = repo.item.id
+    store = MemoryVideoStore()
+    api = RecordingApi(fail_on)
+    data = f"vapprove:{item_id}"
+    update = callback(data)
+    update["callback_query"]["message"].update(
+        video={"file_id": "preview"},
+        reply_markup={"inline_keyboard": [[{"callback_data": data}]]},
+    )
+
+    ApprovalHandler(repo, api, USER, video_store=store).handle_update(update)
+
+    assert store.approved_by == USER
+    assert api.calls == [
+        ("answer", "button", None),
+        ("caption", CHAT, 12, "Video approved"),
+    ]
 
 
 @pytest.mark.parametrize("state", set(ItemState) - {ItemState.AWAITING_APPROVAL})
