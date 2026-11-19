@@ -75,3 +75,53 @@ def test_publisher_recovers_a_send_after_a_crash_without_sending_again() -> None
         item.id, channel.name, next(iter(channel.posts)), claim=recovered
     )
     repo.finish_publishing.assert_called_once_with(item.id, {channel.name})
+
+
+def test_lost_claim_during_ref_save_leaves_publication_pending() -> None:
+    from collections.abc import Callable
+
+    from postpilot.store.repo import LostPublicationClaim
+
+    now = datetime.now(UTC)
+    item = Item(uuid4(), "github", ItemState.PUBLISHING, now, now, 1, now)
+    variants = [Variant(item.id, "de", "Ein Beitrag")]
+    claim = Claim(
+        Publication(
+            item.id, "container", PublicationStatus.PUBLISHING, None, None, now
+        ),
+        recovered=False,
+    )
+    repo = create_autospec(ItemRepo, instance=True)
+    repo.get_item.return_value = item
+    repo.get_variants.return_value = variants
+    repo.list_publications.return_value = [claim.publication]
+    repo.claim_publication.return_value = claim
+    repo.save_publication_ref.side_effect = LostPublicationClaim
+
+    class ContainerChannel:
+        name = "container"
+
+        def validate(self, item: Item, variants: list[Variant]) -> None:
+            pass
+
+        def publish_with_ref(
+            self,
+            item: Item,
+            variants: list[Variant],
+            *,
+            ref: str | None,
+            claimed_at: datetime,
+            save_ref: Callable[[str], None],
+        ) -> str:
+            assert ref is None
+            assert claimed_at == now
+            save_ref("container-1")
+            pytest.fail("The channel must stop before sending after losing its claim")
+
+    report = Publisher(repo, [ContainerChannel()]).publish_item(item.id)
+
+    assert report.channels["container"] == ChannelResult("pending")
+    repo.save_publication_ref.assert_called_once_with(claim, "container-1")
+    repo.mark_published.assert_not_called()
+    repo.mark_failed.assert_not_called()
+    repo.release_publication.assert_not_called()

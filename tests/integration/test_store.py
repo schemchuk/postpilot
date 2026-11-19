@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 from uuid import uuid4
 
 import pytest
@@ -9,7 +10,7 @@ from postpilot.core.models import PublicationStatus, Variant
 from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.store import migrate
 from postpilot.store.db import connect
-from postpilot.store.repo import ItemRepo
+from postpilot.store.repo import ItemRepo, LostPublicationClaim
 
 DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 pytestmark = [
@@ -86,9 +87,20 @@ def test_migration_up_noop_and_down(conn):
         "0005_inbox_updates",
         "0006_link_tracking",
         "0007_video_renders",
+        "0008_publication_remote_ref",
     ]
     migrate.up(conn)
     assert applied_migrations(conn) == initial
+
+    migrate.down(conn)
+    assert applied_migrations(conn) == initial[:7]
+    with conn.transaction():
+        columns = conn.execute(
+            "SELECT column_name FROM information_schema.columns"
+            " WHERE table_schema = current_schema() AND table_name = 'publications'"
+        ).fetchall()
+    assert ("remote_ref",) not in columns
+    assert ("remote_ref_claimed_at",) not in columns
 
     migrate.down(conn)
     assert table_names(conn) == full_schema - video_tables
@@ -190,6 +202,45 @@ def test_failed_publication_can_be_reclaimed(conn, repo, approved_item):
     assert claimed.publication.status is PublicationStatus.PUBLISHING
     assert claimed.publication.error is None
     assert repo.claim_publication(item_id, "example") is None
+
+
+def test_publication_ref_survives_stale_reclaim_and_is_cleared_after_failure(
+    repo, approved_item
+):
+    item_id = approved_item.id
+    first = repo.claim_publication(item_id, "threads")
+    assert first is not None
+    assert first.remote_ref is None
+    repo.save_publication_ref(first, "container-1")
+    stored = repo.list_publications(item_id)[0]
+    assert stored.remote_ref == "container-1"
+    assert (
+        stored.updated_at
+        == stored.remote_ref_claimed_at
+        == first.publication.updated_at
+    )
+
+    stale = repo.claim_publication(item_id, "threads", stale_after=timedelta(0))
+    assert stale is not None and stale.stale
+    assert stale.remote_ref == "container-1"
+    assert stale.publication.remote_ref_claimed_at == first.publication.updated_at
+    with pytest.raises(LostPublicationClaim):
+        repo.save_publication_ref(first, "stale-write")
+    repo.save_publication_ref(stale, "container-1")
+    assert repo.list_publications(item_id)[0].remote_ref_claimed_at == stored.updated_at
+
+    repo.save_publication_ref(stale, "container-2")
+    stored = repo.list_publications(item_id)[0]
+    assert stored.remote_ref == "container-2"
+    assert stored.remote_ref_claimed_at == stale.publication.updated_at
+
+    repo.mark_failed(item_id, "threads", "Rejected", claim=stale)
+    with pytest.raises(LostPublicationClaim):
+        repo.save_publication_ref(stale, "late-write")
+    retried = repo.claim_publication(item_id, "threads")
+    assert retried is not None and not retried.stale
+    assert retried.remote_ref is None
+    assert retried.publication.remote_ref_claimed_at is None
 
 
 def test_variant_foreign_key_and_unique_constraints(repo):

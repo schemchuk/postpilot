@@ -18,7 +18,7 @@ from postpilot.core.states import IllegalTransition, ItemState, ensure_transitio
 from postpilot.store.bot_state import BotState
 
 _ITEM_COLUMNS = "id, source, state, created_at, updated_at, approved_by, approved_at"
-_PUBLICATION_COLUMNS = "item_id, channel, status, remote_id, error, updated_at"
+_PUBLICATION_COLUMNS = "item_id, channel, status, remote_id, error, updated_at, remote_ref, remote_ref_claimed_at"
 
 
 def _item(row: TupleRow) -> Item:
@@ -35,9 +35,16 @@ def _item(row: TupleRow) -> Item:
 
 
 def _publication(row: TupleRow) -> Publication:
-    item_id, channel, status, remote_id, error, updated_at = row
+    item_id, channel, status, remote_id, error, updated_at, ref, ref_claimed_at = row
     return Publication(
-        item_id, channel, PublicationStatus(status), remote_id, error, updated_at
+        item_id,
+        channel,
+        PublicationStatus(status),
+        remote_id,
+        error,
+        updated_at,
+        ref,
+        ref_claimed_at,
     )
 
 
@@ -46,6 +53,10 @@ class Claim:
     publication: Publication
     recovered: bool
     stale: bool = False
+
+    @property
+    def remote_ref(self) -> str | None:
+        return self.publication.remote_ref
 
 
 class LostPublicationClaim(IllegalTransition):
@@ -280,7 +291,10 @@ class ItemRepo:
             row = self.conn.execute(
                 f"""
                 UPDATE publications SET status = 'PUBLISHING', error = NULL,
-                    remote_id = NULL, updated_at = clock_timestamp()
+                    remote_id = NULL, updated_at = clock_timestamp(),
+                    remote_ref = CASE WHEN status = 'PUBLISHING' THEN remote_ref END,
+                    remote_ref_claimed_at = CASE WHEN status = 'PUBLISHING'
+                        THEN remote_ref_claimed_at END
                 WHERE item_id = %s AND channel = %s AND (
                     status = 'FAILED' OR (
                         status = 'PUBLISHING' AND
@@ -299,6 +313,29 @@ class ItemRepo:
                 stale=previous is not None
                 and previous[0] == PublicationStatus.PUBLISHING,
             )
+
+    def save_publication_ref(self, claim: Claim, remote_ref: str) -> None:
+        publication = claim.publication
+        with self.conn.transaction():
+            self._lock_state(publication.item_id)
+            result = self.conn.execute(
+                """
+                UPDATE publications SET remote_ref = %s,
+                    remote_ref_claimed_at = CASE WHEN remote_ref = %s
+                        THEN remote_ref_claimed_at ELSE updated_at END
+                WHERE item_id = %s AND channel = %s AND status = 'PUBLISHING'
+                    AND updated_at = %s
+                """,
+                (
+                    remote_ref,
+                    remote_ref,
+                    publication.item_id,
+                    publication.channel,
+                    publication.updated_at,
+                ),
+            )
+            if result.rowcount == 0:
+                raise LostPublicationClaim("Publication claim is no longer current")
 
     def release_publication(self, claim: Claim) -> None:
         publication = claim.publication
