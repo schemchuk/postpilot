@@ -6,7 +6,7 @@ from functools import partial
 from uuid import UUID
 
 import httpx
-from psycopg import Connection
+from psycopg import Connection, Error
 from psycopg.rows import TupleRow
 
 from postpilot.ai.client import ClaudeClient
@@ -14,10 +14,14 @@ from postpilot.channels.registry import build_channels
 from postpilot.config import Settings
 from postpilot.core.publisher import Publisher
 from postpilot.core.states import IllegalTransition, ItemState
+from postpilot.links.shortio import ShortioClient
+from postpilot.links.store import LinkStore
 from postpilot.notify.approval import ApprovalHandler
 from postpilot.notify.poller import poll_once
 from postpilot.notify.renewal import RenewalHandler
 from postpilot.notify.telegram import Notifier, TelegramApi
+from postpilot.sources.github import GitHubClient, GitHubError
+from postpilot.sources.series import SeriesStore
 from postpilot.sources.telegram import TelegramInbox
 from postpilot.store.repo import ItemRepo
 from postpilot.tokens import service
@@ -180,6 +184,50 @@ def threads_import_token(settings: Settings, conn: Connection[TupleRow]) -> None
         raise ValueError("THREADS_ACCESS_TOKEN is required")
     store = TokenStore(conn, TokenCipher(settings.token_encryption_key))
     store.save("threads", token, _now() + TOKEN_LIFETIME)
+
+
+def snapshot_traffic(settings: Settings, conn: Connection[TupleRow]) -> None:
+    store = LinkStore(conn)
+    repos = SeriesStore(conn).posted_repos()
+    links = store.list_links()
+    if not repos and not links:
+        return
+
+    day = _now().date()
+    succeeded = False
+    with httpx.Client() as client:
+        github = GitHubClient(
+            settings.github_owner, settings.github_token, client=client
+        )
+        for repo in sorted(repos):
+            try:
+                traffic = github.traffic(repo, day=day)
+                if traffic is not None:
+                    store.upsert_traffic(repo, day, traffic)
+                    succeeded = True
+                    continue
+            except (GitHubError, Error):
+                pass
+            logger.warning("Traffic snapshot failed for %s", repo)
+
+    shortio = ShortioClient(settings.shortio) if links and settings.shortio else None
+    try:
+        for link in links:
+            try:
+                clicks = shortio.total_clicks(link.link_id) if shortio else None
+                if clicks is not None:
+                    store.upsert_clicks(link.link_id, day, clicks)
+                    succeeded = True
+                    continue
+            except Error:
+                pass
+            logger.warning("Click snapshot failed for %s", link.link_id)
+    finally:
+        if shortio is not None:
+            shortio.close()
+
+    if not succeeded:
+        raise RuntimeError("All traffic and click snapshots failed")
 
 
 def not_implemented() -> int:

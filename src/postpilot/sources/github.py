@@ -1,7 +1,7 @@
 from base64 import b64decode
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from itertools import count
 from typing import Any
 from urllib.parse import quote
@@ -36,6 +36,31 @@ class RepoMeta:
 class ActiveRepo:
     meta: RepoMeta
     commits: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RepoTraffic:
+    views: int
+    unique_views: int
+    clones: int
+    unique_clones: int
+    referrers: dict[str, int]
+
+
+def _daily_counts(rows: list[dict[str, Any]], day: str) -> tuple[int, int]:
+    by_day = {
+        date.fromisoformat(row["timestamp"][:10]).isoformat(): row for row in rows
+    }
+    if not by_day:
+        return 0, 0
+    row = by_day[day if day in by_day else max(by_day)]
+    return _count(row["count"]), _count(row["uniques"])
+
+
+def _count(value: object) -> int:
+    if type(value) is not int or value < 0:
+        raise ValueError
+    return value
 
 
 def _repo_meta(data: dict[str, Any]) -> RepoMeta:
@@ -74,7 +99,11 @@ class GitHubClient:
             self._client.close()
 
     def _get(
-        self, path: str, *, params: dict[str, str | int] | None = None
+        self,
+        path: str,
+        *,
+        params: dict[str, str | int] | None = None,
+        allow_forbidden: bool = False,
     ) -> httpx.Response | None:
         try:
             response = self._client.get(
@@ -85,7 +114,9 @@ class GitHubClient:
             )
         except httpx.RequestError:
             raise GitHubError("GitHub request failed.") from None
-        if response.status_code == 404:
+        if response.status_code == 404 or (
+            allow_forbidden and response.status_code == 403
+        ):
             return None
         if not response.is_success:
             raise GitHubError(f"GitHub returned HTTP {response.status_code}.")
@@ -132,6 +163,28 @@ class GitHubClient:
             if "next" not in response.links:
                 break
         return active
+
+    def traffic(self, name: str, *, day: date | None = None) -> RepoTraffic | None:
+        """Fetch daily traffic using a token with push access to the repository."""
+        if not self._authenticated:
+            return None
+        path = self._repo_path(name) + "/traffic/"
+        today = (day or datetime.now(UTC).date()).isoformat()
+        try:
+            responses = []
+            for endpoint in ("views", "clones", "popular/referrers"):
+                response = self._get(path + endpoint, allow_forbidden=True)
+                if response is None:
+                    return None
+                responses.append(response)
+            views, clones, referrers = responses
+            return RepoTraffic(
+                *_daily_counts(views.json()["views"], today),
+                *_daily_counts(clones.json()["clones"], today),
+                {row["referrer"]: _count(row["count"]) for row in referrers.json()},
+            )
+        except (KeyError, TypeError, AttributeError, ValueError):
+            raise GitHubError("GitHub returned invalid traffic data.") from None
 
     def get_repo(self, name: str) -> RepoMeta | None:
         response = self._get(self._repo_path(name))

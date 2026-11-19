@@ -43,3 +43,19 @@ callback URI in the Threads app.
 With Threads settings available to the job, `check-tokens` attempts refresh within
 14 days of expiry. For assisted renewal, send `/renew threads` in Telegram, open
 the authorization link, and send the command produced by the callback page.
+
+## Traffic snapshots
+
+The `snapshot-traffic` workflow runs daily at 07:30 UTC and supports manual
+dispatch. It reads repositories from `posted_repos` and refreshes cumulative
+clicks for stored short links. Configure `SHORTIO_API_KEY` and `SHORTIO_DOMAIN`
+for Short.io. Provide a GitHub token with push access to the tracked repositories
+as the `GH_TRAFFIC_TOKEN` Actions secret or `GITHUB_TOKEN` for local runs.
+The repository owner defaults to `schemchuk` and can be overridden locally with
+`GITHUB_OWNER`.
+
+GitHub views and clones use today's UTC row when available and otherwise use
+the latest available row. Snapshots are stored under the UTC run date. Rerunning
+the workflow on the same date overwrites that day's values. Individual failures
+are logged, and a run with tracked targets and zero successful snapshots sends
+a job failure alert.

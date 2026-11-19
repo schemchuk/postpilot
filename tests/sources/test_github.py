@@ -10,6 +10,7 @@ from postpilot.sources.github import (
     GitHubClient,
     GitHubError,
     RepoMeta,
+    RepoTraffic,
     pick_project,
 )
 from postpilot.sources.series import Series
@@ -145,3 +146,60 @@ def test_pick_project_ranks_unposted_repos_and_breaks_ties_by_name():
 def test_pick_project_returns_none_when_no_repo_is_eligible():
     assert pick_project([active_repo("a", 1)], {"a"}, None) is None
     assert pick_project([], set(), None) is None
+
+
+def test_traffic_uses_today_or_latest_daily_counts():
+    def respond(request):
+        assert request.headers["Authorization"] == "Bearer mock-traffic-token"
+        path = request.url.path.removeprefix("/repos/Owner/repo/traffic/")
+        return httpx.Response(
+            200,
+            json={
+                "views": {
+                    "count": 200,
+                    "views": [
+                        {"timestamp": "2026-11-19T00:00:00Z", "count": 7, "uniques": 4},
+                        {"timestamp": "2026-11-20T00:00:00Z", "count": 2, "uniques": 1},
+                    ],
+                },
+                "clones": {
+                    "clones": [
+                        {"timestamp": "2026-11-18T00:00:00Z", "count": 3, "uniques": 2},
+                        {"timestamp": "2026-11-17T00:00:00Z", "count": 1, "uniques": 1},
+                    ],
+                },
+                "popular/referrers": [{"referrer": "github.com", "count": 9}],
+            }[path],
+        )
+
+    client = GitHubClient(
+        "Owner", "mock-traffic-token", transport=httpx.MockTransport(respond)
+    )
+    try:
+        assert client.traffic("repo", day=date(2026, 11, 19)) == RepoTraffic(
+            7, 4, 3, 2, {"github.com": 9}
+        )
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("status", [403, 404, 500, 200, None])
+def test_traffic_errors_redact_response_and_credentials(status, caplog):
+    token = "mock-private-traffic-token"
+
+    def respond(request):
+        if status is None:
+            raise httpx.ConnectError(token, request=request)
+        return httpx.Response(status, json={"message": token})
+
+    client = GitHubClient("Owner", token, transport=httpx.MockTransport(respond))
+    try:
+        if status in (403, 404):
+            assert client.traffic("repo") is None
+        else:
+            with pytest.raises(GitHubError) as error:
+                client.traffic("repo")
+            assert token not in str(error.value)
+        assert token not in caplog.text
+    finally:
+        client.close()

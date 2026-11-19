@@ -26,6 +26,12 @@ class ThreadsSettings:
 
 
 @dataclass(frozen=True)
+class ShortioSettings:
+    api_key: str = field(repr=False)
+    domain: str
+
+
+@dataclass(frozen=True)
 class Settings:
     database_url: str = field(repr=False)
     telegram_bot_token: str = field(repr=False)
@@ -34,6 +40,9 @@ class Settings:
     linkedin: LinkedInSettings | None = None
     anthropic_api_key: str | None = field(default=None, repr=False)
     threads: ThreadsSettings | None = None
+    shortio: ShortioSettings | None = None
+    github_owner: str = "schemchuk"
+    github_token: str | None = field(default=None, repr=False)
 
     @classmethod
     def from_env(cls, dotenv: Path | None = None) -> "Settings":
@@ -70,6 +79,8 @@ class Settings:
             if app_id and app_secret and threads_redirect
             else None
         )
+        shortio_key = values.get("SHORTIO_API_KEY")
+        shortio_domain = values.get("SHORTIO_DOMAIN")
         return cls(
             database_url,
             bot_token,
@@ -78,6 +89,11 @@ class Settings:
             linkedin,
             values.get("ANTHROPIC_API_KEY") or None,
             threads,
+            ShortioSettings(shortio_key, shortio_domain)
+            if shortio_key and shortio_domain
+            else None,
+            values.get("GITHUB_OWNER") or "schemchuk",
+            values.get("GITHUB_TOKEN") or None,
         )
 
     def secret_values(self) -> tuple[str, ...]:
@@ -99,6 +115,10 @@ class Settings:
                 self.threads.app_secret,
                 self.threads.redirect_uri,
             )
+        if self.shortio is not None:
+            values += (self.shortio.api_key,)
+        if self.github_token is not None:
+            values += (self.github_token,)
         return values
 
 
