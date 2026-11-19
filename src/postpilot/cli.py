@@ -12,6 +12,7 @@ from postpilot import __version__
 from postpilot.config import ConfigError, Settings
 from postpilot.jobs import tasks
 from postpilot.jobs.runner import run_job
+from postpilot.store import migrate
 from postpilot.store.db import connect
 
 _DATABASE_COMMANDS = {
@@ -32,6 +33,7 @@ def _with_database(
     job: Callable[[Settings, Connection[TupleRow]], None], settings: Settings
 ) -> None:
     with connect(settings.database_url) as conn:
+        migrate.up(conn)
         job(settings, conn)
 
 

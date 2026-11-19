@@ -1,5 +1,5 @@
 from contextlib import nullcontext
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 
@@ -37,7 +37,9 @@ def test_dispatch(monkeypatch, command, database):
     monkeypatch.setattr(cli, "run_job", runner)
     connect = Mock(return_value=nullcontext("connection"))
     monkeypatch.setattr(cli, "connect", connect)
-    operation = Mock()
+    steps = Mock()
+    operation = steps.job
+    monkeypatch.setattr(cli.migrate, "up", steps.up)
     monkeypatch.setattr(cli.tasks, "not_implemented", operation)
     monkeypatch.setattr(
         cli, "_DATABASE_COMMANDS", {command: operation} if database else {}
@@ -48,7 +50,10 @@ def test_dispatch(monkeypatch, command, database):
     job()
     if database:
         connect.assert_called_once_with(settings.database_url)
-        operation.assert_called_once_with(settings, "connection")
+        assert steps.mock_calls == [
+            call.up("connection"),
+            call.job(settings, "connection"),
+        ]
     else:
         connect.assert_not_called()
-        operation.assert_called_once_with()
+        assert steps.mock_calls == [call.job()]
