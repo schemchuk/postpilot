@@ -1,15 +1,15 @@
 # STATUS
 
 - Active agent: claude-code (orchestrating Codex, docs/HANDOFF.md)
-- Current task: T12 is merged (PR #13). Next: T09 or T13 per docs/03-tasks.md order (T12 -> T09 -> T13).
+- Current task: T09 is merged (PR #16). Next: T13 per docs/03-tasks.md order.
 - Done: T01 skeleton + CI (#1), T02 store + models + state machine (#2), T03 publisher + fake channel (#3),
   T04 Telegram notifier + approval (#4), T05a token core (#5), T05b LinkedIn assisted renewal + Pages
-  callback (#6), T06 CLI jobs + failure alerts + scheduled workflows (#7), T06a hotfix: migrations on job start, failure type to stderr (#8), T07 AI client + prompts + humanizer (#9), T11 LinkedIn channel DE+UA (#12), T12 Threads channel + token manager + import (#13; ADR 010 ACCEPTED), T10 Telegram inbox S2 (#11, ANTHROPIC_API_KEY now passed to poll-telegram), T08 GitHub source + series + repo safety (#10; migration 0004 applied on job start). 333 tests green incl. integration
+  callback (#6), T06 CLI jobs + failure alerts + scheduled workflows (#7), T06a hotfix: migrations on job start, failure type to stderr (#8), T07 AI client + prompts + humanizer (#9), T11 LinkedIn channel DE+UA (#12), T12 Threads channel + token manager + import (#13; ADR 010 ACCEPTED), T09 short.io links + daily traffic snapshot (#16; migration 0006; ADR 011 PROPOSED), T10 Telegram inbox S2 (#11, ANTHROPIC_API_KEY now passed to poll-telegram), T08 GitHub source + series + repo safety (#10; migration 0004 applied on job start). 333 tests green incl. integration
   tests against Neon. Pages live: https://schemchuk.github.io/postpilot/callback/. Redirect URI is registered
   in the LinkedIn app (Volodymyr confirmed).
 - Branch: main
 - Last commit: see `git log -1`
-- Next step: T09 short links + traffic snapshot (secret gate: short.io key; Volodymyr decided 2026-11-19 to reuse the old key from work_in_Linkedin, which he recently created; copy it into .env without printing, then add to GitHub Secrets via the gh command if CI needs it). Threads is unblocked: token imported into Neon 2026-11-19, THREADS_APP_ID/SECRET in GitHub Secrets and passed to workflows (#14).
+- Next step: T13 HeyGen video (secret gates: HEYGEN_API_KEY is in .env; HEYGEN_AVATAR_ID, HEYGEN_VOICE_ID still needed). Confirm ADR 011. Short links are not yet wired into publishing; the snapshot job found nothing to snapshot on its first manual run (no posted repos or links yet). GH_TRAFFIC_TOKEN (fine-grained PAT, Administration read, expires within 1 year, does not auto-renew) is in GitHub Secrets together with SHORTIO_API_KEY and SHORTIO_DOMAIN; the first snapshot-traffic run (workflow_dispatch) was green.
 - ADR 009 ACCEPTED (Volodymyr, 2026-11-19): visible footer `postpilot:<uuid>/<lang>` on LinkedIn posts. LinkedIn channel is untested against live LinkedIn (no token issued yet; needs r_member_social check).
 - Blocked on: nothing. Verified 2026-11-18 19:01 EET: secret `DATABASE_URL` fixed, migrations 0001-0003 applied
   to the production Neon database by hand, `check-tokens` and `poll-telegram` workflows green.
