@@ -1,18 +1,15 @@
 # STATUS
 
 - Active agent: claude-code (orchestrating Codex, docs/HANDOFF.md)
-- Current task: T06 is merged (PR #7). Next: T07 AI client + prompts + humanizer (docs/03-tasks.md).
+- Current task: T06a hotfix is merged (PR #8). Next: T07 AI client + prompts + humanizer (docs/03-tasks.md).
 - Done: T01 skeleton + CI (#1), T02 store + models + state machine (#2), T03 publisher + fake channel (#3),
   T04 Telegram notifier + approval (#4), T05a token core (#5), T05b LinkedIn assisted renewal + Pages
-  callback (#6), T06 CLI jobs + failure alerts + scheduled workflows (#7). 230 tests green incl. integration
+  callback (#6), T06 CLI jobs + failure alerts + scheduled workflows (#7), T06a hotfix: migrations on job start, failure type to stderr (#8). 230 tests green incl. integration
   tests against Neon. Pages live: https://schemchuk.github.io/postpilot/callback/. Redirect URI is registered
   in the LinkedIn app (Volodymyr confirmed).
 - Branch: main
 - Last commit: see `git log -1`
-- Next step: T06a hotfix first (small, Codex): (1) jobs must apply pending migrations on start
-  (`migrate.up` is idempotent and lock-protected) so a fresh database never breaks a scheduled run;
-  (2) `run_job` must also log the exception TYPE and the failing job to stderr (Actions log), not only to
-  Telegram. Then T07 AI client + prompts + humanizer.
+- Next step: T07 AI client + prompts + humanizer (Codex, branch feat/T07-ai-client).
 - Blocked on: nothing. Verified 2026-11-18 19:01 EET: secret `DATABASE_URL` fixed, migrations 0001-0003 applied
   to the production Neon database by hand, `check-tokens` and `poll-telegram` workflows green.
 - Follow-ups: purge unused oauth nonces in bot_state; local fallback `postpilot auth linkedin --open`;
@@ -26,5 +23,5 @@
 - Secrets: ANTHROPIC_API_KEY, LinkedIn app credentials, DATABASE_URL are set. Telegram bot token and chat id are set
   (bot @volodymyr_postpilot_bot). TOKEN_ENCRYPTION_KEY is set (copy in a password
   manager is recommended). Later: HeyGen key/avatar, Meta app, Threads, IG, FB credentials.
-- Decisions: git user.name stays `schemchuk`.
+- Decisions: git user.name stays `schemchuk`. Volodymyr allowed `gh pr merge` for the agent (project .claude/settings.json).
 - Pending cleanup: delete GitHub repo social_bridge and "lumara" Projects (confirm first).
