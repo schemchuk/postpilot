@@ -1,6 +1,6 @@
 # 013. Threads idempotency without a visible footer
 
-Status: PROPOSED (supersedes the footer part of ADR 010 for Threads only; LinkedIn and ADR 009 are unchanged)
+Status: ACCEPTED (Volodymyr, 2026-11-19; supersedes the footer part of ADR 010 for Threads only; LinkedIn and ADR 009 are unchanged)
 
 ## Context
 
