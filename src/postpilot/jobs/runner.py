@@ -1,3 +1,4 @@
+import sys
 from collections.abc import Callable
 
 from postpilot.config import Settings
@@ -12,6 +13,7 @@ def run_job(name: str, func: Callable[[], object], settings: Settings) -> int:
     try:
         func()
     except Exception as error:  # noqa: BLE001 - report job failures
+        print(f"{name} failed ({type(error).__name__})", file=sys.stderr)
         report_failure(
             name, error, notifier.send_alert, settings.secret_values(), github_run_url()
         )

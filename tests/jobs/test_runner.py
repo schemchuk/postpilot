@@ -25,9 +25,13 @@ def test_success(settings, notifier):
     notifier.send_alert.assert_not_called()
 
 
-def test_failure_is_redacted(settings, notifier):
-    error = ValueError(" ".join(settings.secret_values()))
+def test_failure_is_redacted(settings, notifier, capsys):
+    fake_secret = "fake-secret-in-exception"
+    error = ValueError(f"{fake_secret} {' '.join(settings.secret_values())}")
     assert runner.run_job("job", Mock(side_effect=error), settings) == 1
+    stderr = capsys.readouterr().err
+    assert fake_secret not in stderr
+    assert stderr == "job failed (ValueError)\n"
     notifier.send_alert.assert_called_once()
     message = notifier.send_alert.call_args.args[0]
     assert "job failed (ValueError)" in message
