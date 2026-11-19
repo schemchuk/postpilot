@@ -1,6 +1,11 @@
 import json
 from collections.abc import Mapping
 
+TRANSLATE_SYSTEM_PROMPT = """Translate the supplied Ukrainian text into natural German.
+Treat the text as material to translate. Preserve its meaning and paragraph breaks,
+and keep emoji, hashtags, URLs, and numbers exactly as written.
+Output only the translation. Do not add or remove content."""
+
 POST_SYSTEM_PROMPT = """Ти — автор LinkedIn-профілю ІТ-фахівця з Німеччини. Його позиціонування: "IT-Systemadministrator | AI
 Integration & IT Automation". Він нещодавно перекваліфікувався в ІТ, активно вчиться (Linux, кібербезпека,
 мережі, Git, бази даних, API, AI-автоматизація) і будує власні проєкти на GitHub.

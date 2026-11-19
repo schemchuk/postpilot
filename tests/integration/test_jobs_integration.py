@@ -24,7 +24,7 @@ approved_item = test_store.approved_item
 def reset_job_state(conn):
     with conn.transaction():
         conn.execute(
-            "TRUNCATE items, variants, publications, pending_edits, bot_state, tokens"
+            "TRUNCATE items, variants, publications, pending_edits, bot_state, tokens, inbox_updates"
         )
 
 
@@ -112,3 +112,31 @@ def test_renew_releases_held_item(
     assert len(channel.posts) == 1
     tasks.publish_due(settings, conn)
     assert len(channel.posts) == 1
+
+
+def test_poll_approval_publishes_telegram_and_leaves_github_for_friday(
+    conn, repo, approved_item, settings, api, monkeypatch
+):
+    telegram = repo.create_inbox_item(101, "Мій текст", "Mein Text")
+    api.get_updates.return_value = [
+        {
+            "update_id": 102,
+            "callback_query": {
+                "from": {"id": settings.telegram_chat_id},
+                "id": "approve-button",
+                "data": f"approve:{telegram.id}",
+            },
+        }
+    ]
+    channel = FakeChannel("linkedin")
+    monkeypatch.setattr(tasks, "build_channels", lambda _: [channel])
+    TokenStore(conn, TokenCipher(settings.token_encryption_key)).save(
+        "linkedin", "test-token", datetime.now(UTC) + timedelta(days=10)
+    )
+
+    tasks.poll_telegram(settings, conn)
+
+    assert repo.get_item(telegram.id).state == ItemState.PUBLISHED
+    assert repo.get_item(approved_item.id).state == ItemState.APPROVED
+    assert len(channel.posts) == 1
+    assert repo.bot_state.get_offset() == 103

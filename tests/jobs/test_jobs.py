@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -61,6 +62,8 @@ class State:
 @pytest.fixture
 def repo(monkeypatch):
     repo = Mock(bot_state=State())
+    repo.list_approved_item_ids.return_value = []
+    repo.has_inbox_update.return_value = False
     monkeypatch.setattr(tasks, "ItemRepo", Mock(return_value=repo))
     return repo
 
@@ -174,3 +177,81 @@ def test_publish_due_processes_unfinished_and_approved_items(
         (unfinished_id,),
         (approved_id,),
     ]
+
+
+@pytest.mark.parametrize("outcome", ["published", "failed"])
+def test_poll_publishes_telegram_approval_after_saving_offset(
+    settings, repo, api, monkeypatch, outcome
+):
+    telegram_id, github_id = uuid4(), uuid4()
+    repo.get_item.return_value = SimpleNamespace(
+        state=tasks.ItemState.AWAITING_APPROVAL
+    )
+    repo.list_approved_item_ids.side_effect = lambda *, source=None: (
+        [telegram_id] if source == "telegram" else [github_id, telegram_id]
+    )
+    api.get_updates.return_value = [
+        {
+            "update_id": 41,
+            "callback_query": {
+                "from": {"id": settings.telegram_chat_id},
+                "id": "button",
+                "data": f"approve:{telegram_id}",
+            },
+        }
+    ]
+
+    def publish(item_id):
+        assert item_id == telegram_id
+        assert repo.bot_state.get_offset() == 42
+        repo.transition.assert_called_once_with(
+            telegram_id,
+            tasks.ItemState.APPROVED,
+            expected_state=tasks.ItemState.AWAITING_APPROVAL,
+            approved_by=settings.telegram_chat_id,
+        )
+        return SimpleNamespace(channels={"test": SimpleNamespace(outcome=outcome)})
+
+    publisher = Mock(publish_item=Mock(side_effect=publish))
+    monkeypatch.setattr(tasks, "_publisher", Mock(return_value=publisher))
+    if outcome == "failed":
+        with pytest.raises(RuntimeError, match="Channel publishing failed"):
+            tasks.poll_telegram(settings, None)
+    else:
+        tasks.poll_telegram(settings, None)
+    publisher.publish_item.assert_called_once_with(telegram_id)
+    repo.list_approved_item_ids.assert_called_once_with(source="telegram")
+
+
+@pytest.mark.parametrize("key", [None, "test-api-key"])
+def test_poll_only_creates_translation_client_with_key(
+    settings, repo, api, monkeypatch, key
+):
+    settings = replace(settings, anthropic_api_key=key)
+    repo.apply_pending_edit.return_value = None
+    repo.create_inbox_item.return_value = None
+    client = Mock()
+    client.return_value.complete.return_value = "Mein Text"
+    monkeypatch.setattr(tasks, "ClaudeClient", client)
+    api.get_updates.return_value = [
+        {
+            "update_id": 50,
+            "message": {
+                "from": {"id": settings.telegram_chat_id},
+                "chat": {"id": settings.telegram_chat_id},
+                "text": "Мій текст",
+            },
+        }
+    ]
+
+    tasks.poll_telegram(settings, None)
+
+    if key is None:
+        client.assert_not_called()
+        repo.create_inbox_item.assert_not_called()
+        api.send_message.assert_called_once_with(
+            settings.telegram_chat_id, "Translation is not configured."
+        )
+    else:
+        client.assert_called_once_with(key)
+        repo.create_inbox_item.assert_called_once_with(50, "Мій текст", "Mein Text")

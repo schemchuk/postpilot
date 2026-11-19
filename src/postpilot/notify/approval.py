@@ -2,11 +2,13 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
+from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
 from postpilot.core.models import Language
 from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.notify.renewal import RenewalHandler
 from postpilot.notify.telegram import Notifier, TelegramApi
-from postpilot.store.repo import ItemRepo
+from postpilot.sources.telegram import TelegramInbox
+from postpilot.store.repo import EditTooLong, ItemRepo
 
 _AWAITING = ItemState.AWAITING_APPROVAL
 _ACTIONS = {
@@ -29,8 +31,10 @@ class ApprovalHandler:
         *,
         on_regenerate: Callable[[UUID], None] | None = None,
         renewal: RenewalHandler | None = None,
+        inbox: TelegramInbox | None = None,
     ) -> None:
         self.renewal = renewal
+        self.inbox = inbox
         self.repo = repo
         self.api = api
         self.allowed_user_id = allowed_user_id
@@ -57,11 +61,34 @@ class ApprovalHandler:
                     self.renewal.handle_message(chat_id, message_id, event["text"])
                 return
             if type(chat_id) is int:
-                item = self.repo.apply_pending_edit(sender, event["text"])
-                if item is not None:
-                    Notifier(self.api, chat_id).send_preview(
-                        item, self.repo.get_variants(item.id)
-                    )
+                self._handle_text(
+                    sender, chat_id, event["text"], update.get("update_id")
+                )
+
+    def _handle_text(
+        self, sender: int, chat_id: int, text: str, update_id: object
+    ) -> None:
+        if self.inbox is None:
+            item = self.repo.apply_pending_edit(sender, text)
+        else:
+            if type(update_id) is not int or not text.strip() or text.startswith("/"):
+                return
+            if self.repo.has_inbox_update(update_id):
+                return
+            try:
+                item = self.repo.apply_pending_edit(sender, text, update_id=update_id)
+            except EditTooLong:
+                self.api.send_message(
+                    chat_id, f"Edit exceeds the {LINKEDIN_TEXT_LIMIT}-character limit."
+                )
+                return
+            if item is None:
+                self.inbox.handle_text(update_id, chat_id, text)
+                return
+        if item is not None:
+            Notifier(self.api, chat_id).send_preview(
+                item, self.repo.get_variants(item.id)
+            )
 
     def _handle_callback(self, event: dict[str, Any], sender: int) -> None:
         data, callback_id = event.get("data"), event.get("id")
@@ -83,12 +110,19 @@ class ApprovalHandler:
             self.api.answer_callback_query(callback_id, "Already handled")
             return
 
+        if action == "regen" and item.source == "telegram":
+            self.api.answer_callback_query(callback_id, "Regeneration is unavailable")
+            return
+
         if action == "edit":
             if type(chat_id) is not int:
                 return
             variants = self.repo.get_variants(item_id)
             lang: Language = (
-                "de" if any(variant.lang == "de" for variant in variants) else "ua"
+                "de"
+                if item.source == "telegram"
+                or any(variant.lang == "de" for variant in variants)
+                else "ua"
             )
             self.repo.bot_state.set_pending_edit(sender, item_id, lang)
             self.api.answer_callback_query(callback_id)

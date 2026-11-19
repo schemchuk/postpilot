@@ -45,7 +45,7 @@ class FakeApi:
 
 
 def awaiting(repo, *languages):
-    item = repo.create_item("telegram")
+    item = repo.create_item("github")
     for language in languages:
         repo.add_variant(item.id, language, "Original")
     return repo.transition(item.id, ItemState.AWAITING_APPROVAL).id
