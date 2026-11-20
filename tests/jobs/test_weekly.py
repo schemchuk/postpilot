@@ -9,13 +9,16 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from cryptography.fernet import Fernet
+from psycopg import Error
 
+from postpilot.ai import humanizer
 from postpilot.ai.client import AIError
 from postpilot.ai.prompts import POST_SYSTEM_PROMPT, SERIES_SYSTEM_PROMPT
 from postpilot.config import ConfigError, Settings, ShortioSettings
 from postpilot.core.models import Item, Variant
 from postpilot.core.states import ItemState
-from postpilot.jobs import tasks
+from postpilot.jobs import alerts, tasks
 from postpilot.notify.telegram import TelegramError, render_preview
 from postpilot.sources.series import Series, SeriesPart
 
@@ -65,8 +68,8 @@ def job(monkeypatch):
     repo.get_variants.side_effect = lambda _: [
         Variant(item.id, lang, text) for lang, text in variants.items()
     ]
-    repo.update_variant_text.side_effect = lambda _, lang, text: variants.update(
-        {lang: text}
+    repo.update_variant_text.side_effect = lambda _, lang, text, **kwargs: (
+        variants.update({lang: text})
     )
     links = Mock()
     state = SimpleNamespace(
@@ -78,6 +81,9 @@ def job(monkeypatch):
         item=item,
         links=links,
         messages=[],
+        updates=[],
+        telegram_calls=[],
+        commit_counts=None,
         paths=[],
         active=["alpha", "beta"],
         license=True,
@@ -97,7 +103,18 @@ def job(monkeypatch):
     def respond(request):
         path = request.url.path
         if request.url.host == "api.telegram.org":
-            state.messages.append(json.loads(request.content)["text"])
+            body = json.loads(request.content)
+            state.telegram_calls.append((path.rsplit("/", 1)[-1], body))
+            if path.endswith("/getUpdates"):
+                return httpx.Response(
+                    200,
+                    json={
+                        "ok": True,
+                        "result": state.updates if body["offset"] == 0 else [],
+                    },
+                )
+            if path.endswith("/sendMessage"):
+                state.messages.append(body["text"])
             return httpx.Response(
                 state.telegram_status, json={"ok": True, "result": {"message_id": 1}}
             )
@@ -115,6 +132,13 @@ def job(monkeypatch):
                 200, json=[{**meta, "name": name} for name in state.active]
             )
         if path.endswith("/commits"):
+            if state.commit_counts is not None:
+                assert request.url.params["per_page"] == "100"
+                count = state.commit_counts[path.split("/")[-2]]
+                return httpx.Response(
+                    200,
+                    json=[{"commit": {"message": f"Commit {i}"}} for i in range(count)],
+                )
             commits = (
                 [{"commit": {"message": "Add test"}}]
                 if series.get_active.return_value is None
@@ -131,8 +155,8 @@ def job(monkeypatch):
                     "encoding": "base64",
                 },
             )
-        assert path == "/repos/owner/alpha"
-        return httpx.Response(200, json=meta)
+        assert path in {"/repos/owner/alpha", "/repos/owner/beta"}
+        return httpx.Response(200, json={**meta, "name": path.split("/")[-1]})
 
     client_factory = httpx.Client
     shortio_factory = tasks.ShortioClient
@@ -149,6 +173,7 @@ def job(monkeypatch):
         "ShortioClient",
         lambda settings: shortio_factory(settings, transport=transport),
     )
+    monkeypatch.setattr(httpx, "post", client_factory(transport=transport).post)
     monkeypatch.setattr(tasks, "WeeklyStore", lambda _: weekly)
     monkeypatch.setattr(tasks, "SeriesStore", lambda _: series)
     monkeypatch.setattr(tasks, "ItemRepo", lambda _: repo)
@@ -160,7 +185,7 @@ def job(monkeypatch):
         "fake-db",
         "fake-bot",
         123,
-        "fake-key",
+        Fernet.generate_key().decode(),
         anthropic_api_key="fixture",
         github_token="fixture",
         github_owner="owner",
@@ -403,9 +428,7 @@ def test_model_skip(job, in_series):
 )
 def test_invalid_generation_creates_no_row(job, draft):
     script(job, draft)
-    with pytest.raises(
-        RuntimeError, match="Weekly draft generation or quality gate failed"
-    ):
+    with pytest.raises(RuntimeError, match="Weekly draft failed:"):
         run(job)
     job.weekly.create_drafted.assert_not_called()
     job.weekly.record_outcome.assert_not_called()
@@ -413,9 +436,7 @@ def test_invalid_generation_creates_no_row(job, draft):
 
 def test_humanizer_failure_creates_no_row(job):
     script(job, None, DE, VERDICT, AIError("sensitive draft text"))
-    with pytest.raises(
-        RuntimeError, match="Weekly draft generation or quality gate failed"
-    ):
+    with pytest.raises(RuntimeError, match="Weekly draft failed:"):
         run(job)
     job.weekly.create_drafted.assert_not_called()
     job.weekly.record_outcome.assert_not_called()
@@ -521,3 +542,276 @@ def test_publish_due_records_only_pending_published_rows(job, monkeypatch):
         (WEEK,),
         (plain_week,),
     ]
+
+
+def response(**changes):
+    return json.dumps(
+        {
+            "decision": "post",
+            "repo": "alpha",
+            "post_de": DE,
+            "post_uk": UA,
+            "reason": "sensitive draft text",
+            **changes,
+        }
+    )
+
+
+@pytest.mark.parametrize("series", [False, True])
+def test_real_commit_count_and_capped_payload(job, series):
+    if series:
+        start_series(job)
+    job.commit_counts = {"alpha": 21, "beta": 25}
+    name = "alpha" if series else "beta"
+    model = script(job, response(repo=name), DE, VERDICT, UA, VERDICT)
+    run(job)
+    payload = json.loads(model.calls[0][1])
+    facts = job.weekly.create_drafted.call_args.args[4]
+    assert json.loads(tasks.generation_message(facts["payload"])) == payload
+    assert facts["prompt"] == ("series" if series else "post")
+    assert facts["repo_url"] == f"https://github.com/owner/{name}"
+    if series:
+        count, commits = payload["commit_count"], payload["recent_commits"]
+    else:
+        (project,) = payload["projects"]
+        assert project["name"] == "beta"
+        count, commits = project["commit_count"], project["commits"]
+    assert count == job.commit_counts[name]
+    assert len(commits) == 20
+    assert f"· {count} commits ·" in job.messages[0]
+
+
+@pytest.mark.parametrize("prompt", [POST_SYSTEM_PROMPT, SERIES_SYSTEM_PROMPT])
+def test_generation_prompt_requires_plain_paragraphs(prompt):
+    assert "plain paragraphs with no bullet or numbered lists" in prompt
+    assert "no lines starting with -, *, • or digits followed by a dot" in prompt
+    assert "no em or en dashes" in prompt
+
+
+MODEL_FAILURES = [
+    ((AIError("sensitive draft text"),), "generation (AI request)"),
+    (("{sensitive draft text",), "generation (invalid JSON)"),
+    ((response(), DE, VERDICT, AIError("sensitive draft text")), "humanizer (ua)"),
+    ((response(post_de="x" * 3001),), "length (de)"),
+]
+
+
+@pytest.mark.parametrize(
+    ("scripted", "step"),
+    [*MODEL_FAILURES, ((response(repo="wrong"),), "generation (wrong repo)")],
+)
+def test_draft_weekly_failure_alert_is_safe(job, scripted, step):
+    script(job, *scripted)
+    with pytest.raises(RuntimeError) as caught:
+        run(job)
+    alerts.report_failure("draft-weekly", caught.value, job.messages.append, (), None)
+    assert job.messages == [
+        f"draft-weekly failed (RuntimeError): Weekly draft failed: {step}"
+    ]
+
+
+@pytest.fixture
+def regeneration(job):
+    source = "Source: alpha · part 2/3 · 21 commits · link allowed"
+    payload = {"part": 2, "previous_parts": [], "recent_commits": ["A commit"]}
+    job.model_factory.side_effect = None
+    job.model_factory.return_value = ScriptedModel()
+    job.row = SimpleNamespace(
+        item_id=job.item.id,
+        repo="alpha",
+        facts={
+            "payload": payload,
+            "prompt": "series",
+            "repo_url": URL,
+            "link_allowed": True,
+            "link_reasons": [],
+            "source_details": source,
+        },
+    )
+    job.source = source
+    job.weekly.conn = job.conn
+    job.weekly.get_by_item.return_value = job.row
+    job.weekly.list_interrupted.return_value = []
+    job.variants.update(de="Old German", ua="Old Ukrainian")
+    job.repo.get_item.side_effect = lambda _: job.item
+    job.repo.bot_state.get_offset.return_value = 0
+
+    def transition(item_id, state, *, expected_state, **kwargs):
+        assert item_id == job.item.id and job.item.state == expected_state
+        job.item = replace(job.item, state=state)
+        return job.item
+
+    @contextmanager
+    def transaction():
+        texts = job.variants.copy()
+        item = job.item
+        try:
+            yield
+        except Exception:
+            job.variants.update(texts)
+            job.item = item
+            raise
+
+    job.repo.transition.side_effect = transition
+    job.conn.transaction.side_effect = transaction
+    job.updates = [
+        {
+            "update_id": 20,
+            "callback_query": {
+                "from": {"id": job.settings.telegram_chat_id},
+                "id": "regenerate",
+                "data": f"regen:{job.item.id}",
+                "message": {
+                    "chat": {"id": job.settings.telegram_chat_id},
+                    "message_id": 9,
+                },
+            },
+        }
+    ]
+    return job
+
+
+def poll(job):
+    tasks.poll_telegram(job.settings, job.conn)
+    assert job.item.state == ItemState.AWAITING_APPROVAL
+    assert job.paths == []
+    job.repo.bot_state.set_offset.assert_called_once_with(21)
+
+
+@pytest.mark.parametrize("status", [200, 500])
+def test_regenerate_replaces_both_variants_and_redoes_tracking(regeneration, status):
+    job = regeneration
+    job.shortio_status = status
+    job.settings = replace(
+        job.settings, shortio=ShortioSettings("fixture", "short.test")
+    )
+    model = script(
+        job, draft_with_links(), f"{DE}\n{URL}", VERDICT, f"{UA}\n{URL}", VERDICT
+    )
+    complete = model.complete
+
+    def after_feedback(*args):
+        assert [method for method, _ in job.telegram_calls[:3]] == [
+            "getUpdates",
+            "answerCallbackQuery",
+            "editMessageText",
+        ]
+        assert job.telegram_calls[2][1]["text"] == "Regenerating"
+        assert job.item.state == ItemState.DRAFT
+        return complete(*args)
+
+    model.complete = after_feedback
+    poll(job)
+    expect_url = lambda lang: f"https://short.test/{lang}" if status == 200 else URL
+    assert job.variants == {
+        "de": f"{DE}\n{expect_url('de')}",
+        "ua": f"{UA}\n{expect_url('ua')}",
+    }
+    links = [call.args[0] for call in job.links.save_link.call_args_list]
+    assert [(link.lang, link.item_id) for link in links] == (
+        [("de", job.item.id), ("ua", job.item.id)] if status == 200 else []
+    )
+    (preview,) = job.messages
+    assert preview.endswith(job.source)
+    assert all(text in preview for text in job.variants.values())
+    assert model.calls[0][:2] == (
+        SERIES_SYSTEM_PROMPT,
+        tasks.generation_message(job.row.facts["payload"]),
+    )
+
+
+@pytest.mark.parametrize(
+    ("scripted", "step"),
+    [*MODEL_FAILURES, ((response(decision="skip"),), "model skip")],
+)
+def test_regeneration_failure_keeps_previous_preview(
+    regeneration, scripted, step, caplog
+):
+    job = regeneration
+    script(job, *scripted)
+    job.updates.append(
+        {
+            "update_id": 20,
+            "message": {
+                "from": {"id": job.settings.telegram_chat_id},
+                "chat": {"id": job.settings.telegram_chat_id},
+                "text": "/series",
+            },
+        }
+    )
+    poll(job)
+    assert job.variants == {"de": "Old German", "ua": "Old Ukrainian"}
+    alert, preview, series_reply = job.messages
+    assert alert == f"Regeneration failed, previous draft kept ({step})"
+    assert "Old German" in preview and "Old Ukrainian" in preview
+    assert preview.endswith(job.source)
+    assert series_reply.startswith("No active series.")
+    assert "sensitive draft text" not in caplog.text
+    job.series.complete.assert_not_called()
+    job.weekly.record_outcome.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["storage", "short links"])
+def test_regenerate_rolls_back_replace_errors(regeneration, failure):
+    job = regeneration
+    script(job, draft_with_links(), f"{DE}\n{URL}", VERDICT, f"{UA}\n{URL}", VERDICT)
+    if failure == "storage":
+        update = job.repo.update_variant_text.side_effect
+
+        def fail_second(item_id, lang, text, **kwargs):
+            if lang == "ua":
+                raise Error("private database detail")
+            update(item_id, lang, text, **kwargs)
+
+        job.repo.update_variant_text.side_effect = fail_second
+    else:
+        job.settings = replace(
+            job.settings, shortio=ShortioSettings("fixture", "short.test")
+        )
+        job.links.save_link.side_effect = Error("private database detail")
+    poll(job)
+    assert job.variants == {"de": "Old German", "ua": "Old Ukrainian"}
+    assert job.messages[0] == f"Regeneration failed, previous draft kept ({failure})"
+    assert job.messages[1].endswith(job.source)
+
+
+@pytest.mark.parametrize("series", [False, True])
+def test_regenerates_legacy_flat_facts(regeneration, series):
+    job = regeneration
+    payload = {"previous_parts": []} if series else {"projects": [{"name": "alpha"}]}
+    job.row.facts = {**payload, "link_allowed": True, "source_details": job.source}
+    model = script(job, None, DE, VERDICT, UA, VERDICT)
+    poll(job)
+    assert model.calls[0][0] == (SERIES_SYSTEM_PROMPT if series else POST_SYSTEM_PROMPT)
+    assert json.loads(model.calls[0][1]) == payload
+    assert job.variants == {"de": DE, "ua": UA}
+
+
+def test_regeneration_without_weekly_row(regeneration):
+    job = regeneration
+    job.weekly.get_by_item.return_value = None
+    poll(job)
+    assert job.messages == ["Regeneration is unavailable for this item"]
+
+
+def test_poll_restores_interrupted_draft_before_processing_replayed_callback(
+    regeneration,
+):
+    job = regeneration
+    job.item = replace(job.item, state=ItemState.DRAFT)
+    job.weekly.list_interrupted.return_value = [job.row]
+    poll(job)
+    alert, preview = job.messages
+    assert alert == "Regeneration interrupted, previous draft kept"
+    assert "Old German" in preview and preview.endswith(job.source)
+    assert job.telegram_calls[-2][1]["text"] == "Already handled"
+    job.weekly.get_by_item.assert_not_called()
+
+
+def test_length_is_checked_after_humanizer(regeneration, monkeypatch):
+    job = regeneration
+    monkeypatch.setattr(humanizer, "MAX_CHARS", 4000)
+    script(job, None, f"{DE} {'x' * 3001}", VERDICT, UA, VERDICT)
+    poll(job)
+    assert job.messages[0] == "Regeneration failed, previous draft kept (length (de))"
+    assert job.variants == {"de": "Old German", "ua": "Old Ukrainian"}

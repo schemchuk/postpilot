@@ -88,6 +88,7 @@ def tracked_link(
     lang: str,
     *,
     item_id: UUID | None = None,
+    strict_storage: bool = False,
 ) -> str:
     if client is not None:
         link = client.create_record(destination, repo, lang, item_id=item_id)
@@ -96,5 +97,7 @@ def tracked_link(
                 store.save_link(link)
                 return link.short_url
             except Error:
+                if strict_storage:
+                    raise
                 logger.warning("Short link storage failed")
     return destination

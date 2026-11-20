@@ -25,6 +25,8 @@ from postpilot.engagement.threads import (
 )
 from postpilot.notify.renewal import RenewalHandler
 from postpilot.notify.telegram import Notifier, TelegramApi, TelegramError
+from postpilot.sources.github import GitHubClient, GitHubError
+from postpilot.sources.series import ActiveSeriesExists, SeriesStore
 from postpilot.sources.telegram import TelegramInbox
 from postpilot.stats import StatsStore, format_stats
 from postpilot.store.bot_state import PROFILE_LIMIT
@@ -36,6 +38,10 @@ _LOG = logging.getLogger(__name__)
 _PROFILE_COMMAND = re.compile(
     r"^/(profile_add|profile_clear|profile|advise)(?:@[a-zA-Z0-9_]+)?(?=\s|$)"
 )
+_SERIES_COMMAND = re.compile(
+    r"^/(series_start|series_stop|series)(?:@[a-zA-Z0-9_]+)?(?=\s|$)"
+)
+_SERIES_USAGE = "Usage: /series_start <repo> [parts (2-10)]"
 _AWAITING = ItemState.AWAITING_APPROVAL
 _ACTIONS = {
     "approve": (ItemState.APPROVED, "Approved"),
@@ -63,6 +69,10 @@ class ApprovalHandler:
         allowed_user_id: int,
         *,
         on_regenerate: Callable[[UUID], None] | None = None,
+        recovered_regenerations: set[UUID] | None = None,
+        series: SeriesStore | None = None,
+        github_factory: Callable[[], GitHubClient] | None = None,
+        github_owner: str = "",
         renewal: RenewalHandler | None = None,
         inbox: TelegramInbox | None = None,
         video_store: VideoStore | None = None,
@@ -72,6 +82,10 @@ class ApprovalHandler:
         threads_reply_client: Callable[[], ThreadsReplyClient | None] | None = None,
     ) -> None:
         self.advice_chat_id: int | None = None
+        self.recovered_regenerations = recovered_regenerations or set()
+        self.series = series
+        self.github_factory = github_factory
+        self.github_owner = github_owner
         self.stats = stats
         self.threads_reply_client = threads_reply_client
         self.engagement = engagement
@@ -110,6 +124,12 @@ class ApprovalHandler:
                         chat_id, match[1], event["text"][match.end() :].strip()
                     )
                 return
+            if match := _SERIES_COMMAND.match(event["text"]):
+                if type(chat_id) is int:
+                    self._handle_series_command(
+                        chat_id, match[1], event["text"][match.end() :].split()
+                    )
+                return
             if event["text"].startswith("/renew"):
                 message_id = event.get("message_id")
                 if (
@@ -131,6 +151,78 @@ class ApprovalHandler:
                 self._handle_text(
                     sender, chat_id, event["text"], update.get("update_id")
                 )
+
+    def _handle_series_command(
+        self, chat_id: int, command: str, args: list[str]
+    ) -> None:
+        store = self.series
+        try:
+            if store is None:
+                reply = "Series commands are unavailable."
+            elif command == "series_start":
+                reply = self._start_series(store, args)
+            elif args:
+                reply = f"Usage: /{command}"
+            elif command == "series_stop":
+                stopped = store.stop()
+                reply = (
+                    f"Series about {stopped.repo} stopped after part {stopped.part - 1}."
+                    if stopped
+                    else "No active series."
+                )
+            elif active := store.get_active():
+                reply = f"Active series: {active.repo}, next part {active.part}"
+                if active.total_parts is not None:
+                    reply += f"/{active.total_parts}"
+            else:
+                reply = "No active series."
+                if posted := sorted(store.posted_repos()):
+                    reply += f"\nPosted repos: {', '.join(posted)}."
+                reply += "\nStart one with /series_start <repo> [parts]."
+        except GitHubError:
+            reply = "GitHub check failed, series not started."
+        except Error:
+            reply = "Series storage operation failed."
+        _reply(self.api.send_message, chat_id, reply)
+
+    def _start_series(self, store: SeriesStore, args: list[str]) -> str:
+        if not 1 <= len(args) <= 2 or not re.fullmatch(
+            r"[A-Za-z0-9._-]{1,100}", args[0]
+        ):
+            return _SERIES_USAGE
+        parts = None
+        if len(args) == 2:
+            try:
+                parts = int(args[1], 10)
+            except ValueError:
+                return _SERIES_USAGE
+            if not 2 <= parts <= 10:
+                return _SERIES_USAGE
+        try:
+            if store.get_active() is not None:
+                raise ActiveSeriesExists
+            if self.github_factory is None:
+                raise GitHubError
+            meta = self.github_factory().get_repo(args[0])
+            if (
+                meta is None
+                or meta.visibility != "public"
+                or meta.is_private
+                or meta.archived
+                or meta.fork
+                or meta.owner.casefold() != self.github_owner.casefold()
+            ):
+                return _SERIES_USAGE
+            started = store.start(meta.name, parts)
+        except ActiveSeriesExists:
+            active = store.get_active()
+            name = active.repo if active else args[0]
+            return (
+                f"A series about {name} is already active. Stop it with /series_stop."
+            )
+        return f"Series started: {started.repo}, " + (
+            f"{parts} parts" if parts else "open-ended"
+        )
 
     def _handle_profile_command(self, chat_id: int, command: str, text: str) -> None:
         if command == "advise":
@@ -244,8 +336,19 @@ class ApprovalHandler:
             _reply(self.api.answer_callback_query, callback_id, "Already handled")
             return
 
-        if action == "regen" and item.source == "telegram":
-            self.api.answer_callback_query(callback_id, "Regeneration is unavailable")
+        # Telegram may replay the callback that was in flight when the poll died.
+        if action == "regen" and item_id in self.recovered_regenerations:
+            _reply(self.api.answer_callback_query, callback_id, "Already handled")
+            return
+
+        if action == "regen" and (
+            item.source == "telegram" or self.on_regenerate is None
+        ):
+            _reply(
+                self.api.answer_callback_query,
+                callback_id,
+                "Regeneration is unavailable",
+            )
             return
 
         if action == "edit":
@@ -275,11 +378,11 @@ class ApprovalHandler:
             _reply(self.api.answer_callback_query, callback_id, "Already handled")
             return
 
-        if action == "regen" and self.on_regenerate is not None:
-            self.on_regenerate(item_id)
         _reply(self.api.answer_callback_query, callback_id)
         if type(chat_id) is int and type(message_id) is int:
             _reply(self.api.edit_message_text, chat_id, message_id, label)
+        if action == "regen" and self.on_regenerate is not None:
+            self.on_regenerate(item_id)
 
     def _redraft(
         self, id: UUID, chat_id: int, message_id: int, callback_id: str

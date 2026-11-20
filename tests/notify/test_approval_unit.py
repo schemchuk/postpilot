@@ -233,3 +233,20 @@ def test_profile_commands_preserve_text_and_only_reply_with_length(caplog):
         assert all(
             private not in call.args[1] for call in api.send_message.call_args_list
         )
+
+
+@pytest.mark.parametrize(
+    ("source", "has_callback"), [("github", False), ("telegram", True)]
+)
+def test_unavailable_regeneration_keeps_current_state(source, has_callback):
+    repo = MemoryRepo(ItemState.AWAITING_APPROVAL)
+    repo.item = replace(repo.item, source=source)
+    api = RecordingApi(fail_on="answer")
+    regenerate = Mock() if has_callback else None
+    ApprovalHandler(repo, api, USER, on_regenerate=regenerate).handle_update(
+        callback(f"regen:{repo.item.id}")
+    )
+    assert repo.item.state == ItemState.AWAITING_APPROVAL
+    assert api.calls == [("answer", "button", "Regeneration is unavailable")]
+    if regenerate:
+        regenerate.assert_not_called()

@@ -52,7 +52,7 @@ def test_list_active_repos_pages_filters_and_caps_commits():
             "/repos/owner/second/commits",
         }
         assert request.url.params["since"] == SINCE.isoformat()
-        assert request.url.params["per_page"] == "20"
+        assert request.url.params["per_page"] == "100"
         return httpx.Response(
             200, json=[{"commit": {"message": str(i)}} for i in range(22)]
         )
@@ -60,7 +60,7 @@ def test_list_active_repos_pages_filters_and_caps_commits():
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         active = GitHubClient("owner", client=client).list_active_repos(SINCE)
     assert [repo.meta.name for repo in active] == ["first", "second"]
-    assert active[0].commits == tuple(map(str, range(20)))
+    assert active[0].commits == tuple(map(str, range(22)))
 
 
 def test_authenticated_listing_uses_owner_affiliation(caplog):
@@ -105,6 +105,7 @@ def test_metadata_and_readme():
             "https://github.com/owner/project",
             "public",
             "Python",
+            owner="Owner",
         )
         assert api.get_readme_excerpt("project", 3) == "При"
         assert api.has_readme("project")

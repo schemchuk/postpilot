@@ -12,7 +12,8 @@ from postpilot.sources.series import Series
 
 _API = "https://api.github.com"
 _PAGE_SIZE = 100
-_COMMIT_LIMIT = 20
+_COMMIT_LIMIT = 100
+PROMPT_COMMIT_LIMIT = 20
 
 
 class GitHubError(RuntimeError):
@@ -26,10 +27,14 @@ class RepoMeta:
     url: str
     visibility: str
     language: str | None
+    owner: str = ""
+    archived: bool = False
+    fork: bool = False
+    private: bool = False
 
     @property
     def is_private(self) -> bool:
-        return self.visibility == "private"
+        return self.visibility == "private" or self.private
 
 
 @dataclass(frozen=True)
@@ -118,12 +123,17 @@ def _count(value: object) -> int:
 
 
 def _repo_meta(data: dict[str, Any]) -> RepoMeta:
+    owner = (data.get("owner") or {}).get("login")
     return RepoMeta(
         name=data["name"],
         description=data.get("description"),
         url=data["html_url"],
         visibility=data["visibility"],
         language=data.get("language"),
+        owner=_string(owner) if owner is not None else "",
+        archived=bool(data.get("archived")),
+        fork=bool(data.get("fork")),
+        private=bool(data.get("private")),
     )
 
 
@@ -334,7 +344,7 @@ class GitHubClient:
             return None
         try:
             return _repo_meta(response.json())
-        except (KeyError, TypeError, ValueError):
+        except (AttributeError, KeyError, TypeError, ValueError):
             raise GitHubError("GitHub returned invalid repository metadata.") from None
 
     def get_readme_excerpt(self, name: str, max_chars: int) -> str | None:

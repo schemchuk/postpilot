@@ -171,9 +171,16 @@ class ItemRepo:
             ).fetchall()
             return [Variant(*row) for row in rows]
 
-    def update_variant_text(self, item_id: UUID, lang: Language, text: str) -> None:
+    def update_variant_text(
+        self,
+        item_id: UUID,
+        lang: Language,
+        text: str,
+        *,
+        expected_state: ItemState = ItemState.AWAITING_APPROVAL,
+    ) -> None:
         with self.conn.transaction():
-            self._require_state(item_id, ItemState.AWAITING_APPROVAL)
+            self._require_state(item_id, expected_state)
             updated = self.conn.execute(
                 "UPDATE variants SET text = %s WHERE item_id = %s AND lang = %s",
                 (text, item_id, lang),

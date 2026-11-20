@@ -187,8 +187,18 @@ for approval before Friday's publication.
 
 Manual workflow dispatch generates a draft only when the current Berlin week has no
 `weekly_drafts` row. If the saved draft is awaiting approval, dispatch resends its Telegram
-preview from the stored variants. To force a new draft, manually delete that Monday's row by
-its `week` date before dispatching. Deleting the row leaves its item and publication history in place.
+preview from the stored variants. **Regenerate** uses the saved GitHub facts and sends a
+new preview on success. If regeneration fails, Telegram reports the failed step and
+resends the previous draft. If a poll is interrupted, the next poll that opens the
+database restores the draft to approval and resends its preview.
+
+Repository selection counts up to 100 commits per repository from the last seven days.
+Generation sees up to 20 commit messages and the count, which also appears in the preview.
+
+- `/series` shows the active series and its next part, or lists previously posted repositories.
+- `/series_start <repo> [parts]` starts a series about a public, unarchived, non-fork repository
+  owned by `GITHUB_OWNER`. Use 2–10 parts or omit the number for an open-ended series.
+- `/series_stop` stops the active series.
 
 ## External schedule trigger (cron-job.org)
 
