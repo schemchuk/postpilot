@@ -27,16 +27,16 @@ managed Postgres (ADR 001, 003). No always-on server.
 | `core/models.py` | `Item`, `Variant` (lang + text), `Publication` (item, channel, status, remote_id) |
 | `core/states.py` | Item states: DRAFT, AWAITING_APPROVAL, APPROVED, PUBLISHING, PUBLISHED, SKIPPED, FAILED |
 | `core/publisher.py` | Fan-out to channels; per item+channel idempotency key; retry of one channel |
-| `core/gates.py` | Humanizer (S1 only), RepoSafety, length limits per channel |
-| `sources/github.py` | Weekly activity, project choice, series state |
-| `sources/telegram.py` | Reads updates, creates S2 items, UA to DE translation |
+| `core/gates.py`, `core/repo_safety.py`, `core/limits.py` | Humanizer gate (S1 only), repository link checks, and text limits |
+| `sources/github.py`, `sources/series.py` | GitHub activity and project choice, series state and history |
+| `notify/poller.py`, `sources/telegram.py` | Polls Telegram updates, creates S2 items, and translates UA to DE |
 | `ai/` | Claude client, prompts, humanizer; the only place that imports the Anthropic SDK |
-| `video/heygen.py` | v3 API: create, poll, download; subtitles; AI label; monthly cap |
-| `channels/` | One file per network behind `Channel` protocol: `validate()`, `publish(item) -> remote_id` |
+| `video/` | HeyGen API client, render budget, subtitles and AI label, approval and Reels publishing |
+| `channels/` | Publishing adapters. Text adapters validate items and variants and publish through marker- or remote-reference-based interfaces |
 | `tokens/` | `TokenManager` per provider (LinkedIn, Threads, IG, FB): expiry tracking, silent refresh, assisted renewal (ADR 005) |
 | `notify/telegram.py` | Preview messages, buttons, failure and expiry alerts |
 | `store/` | Postgres access, migrations; no business logic |
-| `cli.py` | Entry points: `draft-weekly`, `poll-telegram`, `publish-due`, `snapshot-traffic`, `check-tokens` |
+| `cli.py` | Entry points for scheduled jobs and provider token imports |
 
 ## 3. Flows
 
