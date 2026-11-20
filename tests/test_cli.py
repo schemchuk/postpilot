@@ -27,6 +27,7 @@ def test_unknown_command_exits_nonzero():
         ("draft-weekly", False),
         ("snapshot-traffic", True),
         ("poll-telegram", True),
+        ("poll-engagement", True),
         ("publish-due", True),
         ("check-tokens", True),
         ("threads-import-token", True),

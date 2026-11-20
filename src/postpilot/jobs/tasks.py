@@ -18,6 +18,9 @@ from postpilot.channels.registry import build_channels
 from postpilot.config import ConfigError, HeyGenSettings, Settings
 from postpilot.core.publisher import Publisher
 from postpilot.core.states import IllegalTransition, ItemState
+from postpilot.engagement.drafts import ReplyDrafter
+from postpilot.engagement.job import poll_linkedin
+from postpilot.engagement.store import EngagementStore
 from postpilot.links.shortio import ShortioClient
 from postpilot.links.store import LinkStore
 from postpilot.notify.approval import ApprovalHandler
@@ -27,6 +30,7 @@ from postpilot.notify.telegram import Notifier, TelegramApi
 from postpilot.sources.github import GitHubClient, GitHubError
 from postpilot.sources.series import SeriesStore
 from postpilot.sources.telegram import TelegramInbox
+from postpilot.store.bot_state import BotState
 from postpilot.store.repo import ItemRepo
 from postpilot.tokens import service
 from postpilot.tokens.base import TokenManager, days_left
@@ -111,6 +115,22 @@ def _publish_items(publisher: Publisher, item_ids: Iterable[UUID]) -> None:
         raise RuntimeError("Channel publishing failed")
 
 
+def poll_engagement(settings: Settings, conn: Connection[TupleRow]) -> None:
+    if settings.imap is None:
+        logger.warning("IMAP credentials are not configured")
+        return
+    if not settings.anthropic_api_key:
+        raise ConfigError("ANTHROPIC_API_KEY is required for engagement")
+    poll_linkedin(
+        settings.imap,
+        BotState(conn),
+        EngagementStore(conn),
+        ReplyDrafter(ClaudeClient(settings.anthropic_api_key)),
+        TelegramApi(settings.telegram_bot_token),
+        settings.telegram_chat_id,
+    )
+
+
 def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
     repo = ItemRepo(conn)
     store = TokenStore(conn, TokenCipher(settings.token_encryption_key))
@@ -141,6 +161,8 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
             renewal=renewal,
             inbox=TelegramInbox(repo, api, model),
             video_store=VideoStore(conn),
+            engagement=EngagementStore(conn),
+            drafter=ReplyDrafter(model) if model is not None else None,
         )
         poll_once(api, handler, repo.bot_state, raise_errors=True)
 

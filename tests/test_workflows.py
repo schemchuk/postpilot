@@ -6,6 +6,7 @@ import yaml
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 SCHEDULES = {
+    "poll-engagement": "*/10 * * * *",
     "poll-telegram": "*/5 * * * *",
     "check-tokens": "0 7 * * *",
     "snapshot-traffic": "30 7 * * *",
@@ -64,7 +65,7 @@ def test_scheduled_workflow(name, cron):
     for job in workflow["jobs"].values():
         assert "permissions" not in job
         assert job["timeout-minutes"] > 0
-        if name == "poll-telegram":
+        if name in {"poll-engagement", "poll-telegram"}:
             assert job["timeout-minutes"] == 5
         assert {"uses": "actions/checkout@v4"} in job["steps"]
         assert {
@@ -112,6 +113,8 @@ def test_scheduled_workflow(name, cron):
                     "ANTHROPIC_API_KEY",
                 }
             )
+        elif name == "poll-engagement":
+            expected.update({"ANTHROPIC_API_KEY", "IMAP_USER", "IMAP_PASSWORD"})
         else:
             expected.update(channel_credentials)
         if name == "check-tokens":

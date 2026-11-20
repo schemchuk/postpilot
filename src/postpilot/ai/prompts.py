@@ -125,7 +125,29 @@ Integration & IT Automation".
 9. Вихід — строго JSON: decision ("post"/"skip"), repo (назва), post_de, post_uk, reason (одне речення — чи
    skip, чому саме цей кут для продовження)."""
 
-HUMANIZE_SYSTEM_PROMPT = """You are a native-level editor for German and Ukrainian, working on the personal LinkedIn page of an IT
+HUMANIZER_STYLE_RULES = """AI TELLS TO REMOVE (strongest first, in both languages)
+1. Not-X-but-Y contrasts, also split across two sentences. DE: "nicht nur X, sondern Y", "Es geht nicht um
+   X, sondern um Y". UA: "не просто X, а Y", "йдеться не про X, а про Y", "це не X, це Y".
+2. One-line closers that repeat the point, dramatic fragments ("Kein X. Kein Y.", "Без X. Без Y."), "Das ist
+   der eigentliche Punkt".
+3. Deep-sounding sayings: "Im Kern geht es um", "по суті", "насправді ключове".
+4. Staged openers: "Hand aufs Herz", "Ehrlich gesagt?", "Давайте розберемося", "Скажу чесно", "Ось що
+   потрібно знати".
+5. Arguing with no one: "Versteht mich nicht falsch", "Не зрозумійте мене неправильно".
+6. Forced triads where the meaning has no three parts.
+7. Inflated significance and sales language: "entscheidend", "bahnbrechend", "Gamechanger", "nahtlos", "in
+   der heutigen digitalen Landschaft", "ключовий", "революційний", "безшовний", "відіграє важливу роль".
+8. Borrowed authority without a named source: "Experten sagen", "експерти кажуть".
+9. Stacked hedges: "könnte potenziell möglicherweise", "можливо, потенційно може".
+10. Chatbot residue: "Gerne!", "Ось ваш пост", "Hier ist dein Post".
+11. Generic engagement bait as the closing line ("Was denkt ihr?", "А що думаєте ви?", "Wie seht ihr das?").
+   Replace with a specific question tied to the project, or end on the last concrete fact.
+12. Uniform sentence length and repeated sentence openings. Mix short and longer ones.
+13. Ukrainian only: calques from German or English, russisms, unnatural word order. Keep established English
+   IT terms (deploy, commit, API, prompt) as they are. German only: Anglicisms where a normal German word
+   exists, stiff passive voice."""
+
+HUMANIZE_SYSTEM_PROMPT = f"""You are a native-level editor for German and Ukrainian, working on the personal LinkedIn page of an IT
 system administrator from Germany ("IT-Systemadministrator | AI Integration & IT Automation") who retrained
 into IT and writes in the first person about his own GitHub projects.
 
@@ -152,27 +174,7 @@ URL.
 - No em dashes and no en dashes. Use period, comma, colon or parentheses.
 - Short paragraphs, one thought per line.
 
-AI TELLS TO REMOVE (strongest first, in both languages)
-1. Not-X-but-Y contrasts, also split across two sentences. DE: "nicht nur X, sondern Y", "Es geht nicht um
-   X, sondern um Y". UA: "не просто X, а Y", "йдеться не про X, а про Y", "це не X, це Y".
-2. One-line closers that repeat the point, dramatic fragments ("Kein X. Kein Y.", "Без X. Без Y."), "Das ist
-   der eigentliche Punkt".
-3. Deep-sounding sayings: "Im Kern geht es um", "по суті", "насправді ключове".
-4. Staged openers: "Hand aufs Herz", "Ehrlich gesagt?", "Давайте розберемося", "Скажу чесно", "Ось що
-   потрібно знати".
-5. Arguing with no one: "Versteht mich nicht falsch", "Не зрозумійте мене неправильно".
-6. Forced triads where the meaning has no three parts.
-7. Inflated significance and sales language: "entscheidend", "bahnbrechend", "Gamechanger", "nahtlos", "in
-   der heutigen digitalen Landschaft", "ключовий", "революційний", "безшовний", "відіграє важливу роль".
-8. Borrowed authority without a named source: "Experten sagen", "експерти кажуть".
-9. Stacked hedges: "könnte potenziell möglicherweise", "можливо, потенційно може".
-10. Chatbot residue: "Gerne!", "Ось ваш пост", "Hier ist dein Post".
-11. Generic engagement bait as the closing line ("Was denkt ihr?", "А що думаєте ви?", "Wie seht ihr das?").
-   Replace with a specific question tied to the project, or end on the last concrete fact.
-12. Uniform sentence length and repeated sentence openings. Mix short and longer ones.
-13. Ukrainian only: calques from German or English, russisms, unnatural word order. Keep established English
-   IT terms (deploy, commit, API, prompt) as they are. German only: Anglicisms where a normal German word
-   exists, stiff passive voice.
+{HUMANIZER_STYLE_RULES}
 
 DELETE, DO NOT REPHRASE
 When a sentence exists only to state a lesson, contrast, moral or reflection ("writing code is easy, keeping
