@@ -29,8 +29,8 @@ The bot also drafts replies to LinkedIn comments from Gmail notifications (I pos
 | Text approval in Telegram | Video approval in Telegram |
 | :---: | :---: |
 | <img src="docs/img/telegram-text-approval.png" width="380" alt="Telegram preview of a German and Ukrainian post with Approve, Edit and Skip buttons"> | <img src="docs/img/telegram-video-approval.png" width="300" alt="Telegram preview of the avatar video with Approve and Reject buttons"> |
-| **Published on LinkedIn** | **Published as an Instagram Reel** |
-| <img src="docs/img/linkedin-post.png" width="320" alt="The approved German post on LinkedIn"> | <img src="docs/img/instagram-reel.png" width="420" alt="The Reel with the burned-in KI-generierter Avatar label and Instagram's AI content tag"> |
+| **The same item on LinkedIn, in Ukrainian and German** | **Published as an Instagram Reel** |
+| <img src="docs/img/linkedin-post.png" width="480" alt="Item b7fcbc2c published on LinkedIn as separate Ukrainian and German posts, with the postpilot marker"> | <img src="docs/img/instagram-reel.png" width="420" alt="The Reel with the burned-in KI-generierter Avatar label and Instagram's AI content tag"> |
 
 **Published by Postpilot**
 
