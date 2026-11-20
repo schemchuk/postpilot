@@ -156,3 +156,15 @@ polling sources, even when no source is configured. Event rows remain for counts
 Send `/stats` in Telegram to see 30-day engagement and publication counts, short-link
 click totals and recent clicks, and the latest GitHub traffic snapshot. The
 `poll-telegram` job answers this command.
+
+## LinkedIn profile advisor
+
+- `/profile <text>` replaces the profile. `/profile_add <text>` appends on a new line.
+  Use several messages if needed, up to 20,000 characters total.
+- `/profile_clear` deletes the profile text from the database. It is stored as plain text
+  in PostgreSQL in `bot_state` under `linkedin_profile`.
+- `/advise` sends the stored profile and public GitHub repository data to Claude, then
+  returns a dated Markdown file in Telegram. The advisor never edits LinkedIn or publishes
+  drafts. Each poll processes approvals and attempts publishing before generating advice.
+  If advice fails, the bot attempts to reply `Advice failed` and the job still exits 0
+  unless another part of the poll fails.

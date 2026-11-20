@@ -25,7 +25,12 @@ class ClaudeClient:
         )
 
     def complete(
-        self, system: str, user: str, schema: dict[str, object] | None = None
+        self,
+        system: str,
+        user: str,
+        schema: dict[str, object] | None = None,
+        *,
+        max_tokens: int = 4000,
     ) -> str:
         options: OutputConfigParam | anthropic.Omit = anthropic.omit
         if schema is not None:
@@ -33,7 +38,7 @@ class ClaudeClient:
         try:
             response = self._client.messages.create(
                 model=self._model,
-                max_tokens=4000,
+                max_tokens=max_tokens,
                 system=system,
                 messages=[{"role": "user", "content": user}],
                 output_config=options,

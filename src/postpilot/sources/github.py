@@ -54,6 +54,11 @@ class PublicRepo:
     html_url: str
     stargazers_count: int
     forks_count: int
+    description: str | None = None
+    language: str | None = None
+    pushed_at: str | None = None
+    fork: bool = False
+    archived: bool = False
 
 
 @dataclass(frozen=True)
@@ -88,6 +93,11 @@ def _public_repo(row: dict[str, Any]) -> PublicRepo | None:
         _string(row["html_url"]),
         _count(row["stargazers_count"]),
         _count(row["forks_count"]),
+        row.get("description"),
+        row.get("language"),
+        row.get("pushed_at"),
+        row.get("fork", False),
+        row.get("archived", False),
     )
 
 

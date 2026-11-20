@@ -10,6 +10,7 @@ import httpx
 from psycopg import Connection, Error
 from psycopg.rows import TupleRow
 
+from postpilot.ai.advisor import AdvisorModel, generate_advice
 from postpilot.ai.client import ClaudeClient
 from postpilot.channels.base import TransientChannelError
 from postpilot.channels.facebook_reels import FacebookReelsChannel
@@ -238,9 +239,53 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
         )
         poll_once(api, handler, repo.bot_state, raise_errors=True)
 
-        item_ids = repo.list_approved_item_ids(source="telegram")
-        if item_ids and (publisher := _publisher(settings, repo, client)) is not None:
-            _publish_items(publisher, item_ids)
+        try:
+            item_ids = repo.list_approved_item_ids(source="telegram")
+            if (
+                item_ids
+                and (publisher := _publisher(settings, repo, client)) is not None
+            ):
+                _publish_items(publisher, item_ids)
+        finally:
+            if handler.advice_chat_id is not None:
+                _send_profile_advice(
+                    settings, repo.bot_state, api, handler.advice_chat_id, model, client
+                )
+
+
+def _send_profile_advice(
+    settings: Settings,
+    state: BotState,
+    api: TelegramApi,
+    chat_id: int,
+    model: AdvisorModel | None,
+    client: httpx.Client,
+) -> None:
+    try:
+        profile = state.get_linkedin_profile()
+        if not profile:
+            api.send_message(chat_id, "No profile stored. Send /profile <text> first.")
+        elif model is None:
+            api.send_message(chat_id, "Profile advice requires an AI key.")
+        else:
+            github = GitHubClient(
+                settings.github_owner, settings.github_token, client=client
+            )
+            advice = generate_advice(model, github, settings.github_owner, profile)
+            api.send_document(
+                chat_id,
+                f"profile-advice-{_now().date().isoformat()}.md",
+                advice.encode("utf-8"),
+                caption="Profile advice",
+            )
+    except Exception as error:  # noqa: BLE001 - advisory failures must not fail the poll
+        logger.warning("Profile advisor failed (%s)", type(error).__name__)
+        try:
+            api.send_message(chat_id, "Advice failed")
+        except Exception as reply_error:  # noqa: BLE001 - best-effort failure reply
+            logger.warning(
+                "Profile advisor reply failed (%s)", type(reply_error).__name__
+            )
 
 
 def validate_video_settings(settings: Settings) -> tuple[HeyGenSettings, str]:

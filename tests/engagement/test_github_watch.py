@@ -48,8 +48,8 @@ def test_public_repo_pagination_uses_fixed_endpoint_and_excludes_private():
     with httpx.Client(transport=httpx.MockTransport(handler)) as http:
         github = GitHubClient(OWNER, "test-token", client=http)
         assert github.list_public_repos(OWNER) == [
-            PublicRepo(1, REPO, URL, 0, 3),
-            PublicRepo(2, REPO, URL, 0, 3),
+            PublicRepo(1, REPO, URL, 0, 3, archived=True),
+            PublicRepo(2, REPO, URL, 0, 3, archived=True),
         ]
 
 

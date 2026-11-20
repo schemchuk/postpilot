@@ -9,6 +9,8 @@ from psycopg.rows import TupleRow
 
 from postpilot.core.models import Language
 
+PROFILE_LIMIT = 20_000
+
 
 class GitHubWatchCounts(TypedDict):
     stars: int
@@ -56,6 +58,37 @@ class BotState:
                 """,
                 (json.dumps({repo_id: counts}),),
             )
+
+    def get_linkedin_profile(self) -> str | None:
+        with self.conn.transaction():
+            row = self.conn.execute(
+                "SELECT value FROM bot_state WHERE key = 'linkedin_profile'"
+            ).fetchone()
+        return row[0] if row else None
+
+    def set_linkedin_profile(self, text: str, *, append: bool = False) -> int | None:
+        """Return the saved length, or None if the result would exceed the limit."""
+        if len(text) > PROFILE_LIMIT:
+            return None
+        with self.conn.transaction():
+            row = self.conn.execute(
+                """
+                INSERT INTO bot_state (key, value) VALUES ('linkedin_profile', %s)
+                ON CONFLICT (key) DO UPDATE SET value =
+                    CASE WHEN %s AND bot_state.value <> ''
+                        THEN bot_state.value || chr(10) || EXCLUDED.value
+                        ELSE EXCLUDED.value END
+                WHERE NOT %s OR bot_state.value = ''
+                    OR char_length(bot_state.value) + 1 + char_length(EXCLUDED.value) <= %s
+                RETURNING char_length(value)
+                """,
+                (text, append, append, PROFILE_LIMIT),
+            ).fetchone()
+        return row[0] if row else None
+
+    def delete_linkedin_profile(self) -> None:
+        with self.conn.transaction():
+            self.conn.execute("DELETE FROM bot_state WHERE key = 'linkedin_profile'")
 
     def get_offset(self) -> int:
         with self.conn.transaction():

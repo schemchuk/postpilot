@@ -19,11 +19,15 @@ from postpilot.notify.renewal import RenewalHandler
 from postpilot.notify.telegram import Notifier, TelegramApi, TelegramError
 from postpilot.sources.telegram import TelegramInbox
 from postpilot.stats import StatsStore, format_stats
+from postpilot.store.bot_state import PROFILE_LIMIT
 from postpilot.store.repo import EditTooLong, ItemRepo
 from postpilot.video.store import VideoStore
 
 _LOG = logging.getLogger(__name__)
 
+_PROFILE_COMMAND = re.compile(
+    r"^/(profile_add|profile_clear|profile|advise)(?:@[a-zA-Z0-9_]+)?(?=\s|$)"
+)
 _AWAITING = ItemState.AWAITING_APPROVAL
 _ACTIONS = {
     "approve": (ItemState.APPROVED, "Approved"),
@@ -58,6 +62,7 @@ class ApprovalHandler:
         drafter: ReplyDrafter | None = None,
         stats: StatsStore | None = None,
     ) -> None:
+        self.advice_chat_id: int | None = None
         self.stats = stats
         self.engagement = engagement
         self.drafter = drafter
@@ -89,6 +94,12 @@ class ApprovalHandler:
                         parse_mode="HTML",
                     )
                 return
+            if match := _PROFILE_COMMAND.match(event["text"]):
+                if type(chat_id) is int:
+                    self._handle_profile_command(
+                        chat_id, match[1], event["text"][match.end() :].strip()
+                    )
+                return
             if event["text"].startswith("/renew"):
                 message_id = event.get("message_id")
                 if (
@@ -102,6 +113,31 @@ class ApprovalHandler:
                 self._handle_text(
                     sender, chat_id, event["text"], update.get("update_id")
                 )
+
+    def _handle_profile_command(self, chat_id: int, command: str, text: str) -> None:
+        if command == "advise":
+            self.advice_chat_id = chat_id
+            return
+
+        state = self.repo.bot_state
+        try:
+            if command == "profile_clear":
+                state.delete_linkedin_profile()
+                reply = "Profile cleared."
+            elif not text:
+                reply = f"Usage: /{command} <text>"
+            else:
+                length = state.set_linkedin_profile(
+                    text, append=command == "profile_add"
+                )
+                reply = (
+                    f"Profile saved ({length} characters)."
+                    if length is not None
+                    else f"Profile exceeds the {PROFILE_LIMIT:,}-character limit."
+                )
+        except (Error, ValueError):
+            raise RuntimeError("Profile storage operation failed.") from None
+        _reply(self.api.send_message, chat_id, reply)
 
     def _handle_text(
         self, sender: int, chat_id: int, text: str, update_id: object

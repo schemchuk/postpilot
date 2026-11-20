@@ -128,10 +128,10 @@ def test_scheduled_workflow(name, cron):
         if name == "check-tokens":
             expected.update({"FACEBOOK_PAGE_ID", "INSTAGRAM_BUSINESS_ACCOUNT_ID"})
         if name == "poll-telegram":
-            expected.add("ANTHROPIC_API_KEY")
+            expected.update({"ANTHROPIC_API_KEY", "GITHUB_TOKEN", "GITHUB_OWNER"})
         assert set(command["env"]) == expected
         for variable, value in command["env"].items():
-            if name == "poll-engagement" and variable in {
+            if name in {"poll-engagement", "poll-telegram"} and variable in {
                 "GITHUB_TOKEN",
                 "GITHUB_OWNER",
             }:
