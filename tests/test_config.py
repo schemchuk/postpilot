@@ -30,6 +30,9 @@ def clean_env(monkeypatch):
         "SHORTIO_DOMAIN",
         "GITHUB_OWNER",
         "GITHUB_TOKEN",
+        "IMAP_USER",
+        "IMAP_PASSWORD",
+        "IMAP_HOST",
         "HEYGEN_API_KEY",
         "HEYGEN_AVATAR_ID",
         "HEYGEN_VOICE_ID",
@@ -183,3 +186,18 @@ def test_instagram_is_optional_and_shares_the_facebook_graph_version(monkeypatch
     settings = Settings.from_env()
     assert settings.instagram.graph_url == settings.facebook.graph_url
     assert settings.instagram.graph_version == "v28.0"
+
+
+def test_imap_config_is_optional_and_credentials_are_redacted(monkeypatch):
+    for name, value in REQUIRED.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("IMAP_USER", "mailbox@example.test")
+    assert Settings.from_env().imap is None
+    monkeypatch.setenv("IMAP_PASSWORD", "fake-password")
+    settings = Settings.from_env()
+    assert settings.imap.host == "imap.gmail.com"
+    for secret in ("mailbox@example.test", "fake-password"):
+        assert secret not in repr(settings)
+        assert secret in settings.secret_values()
+    monkeypatch.setenv("IMAP_HOST", "imap.example.test")
+    assert Settings.from_env().imap.host == "imap.example.test"

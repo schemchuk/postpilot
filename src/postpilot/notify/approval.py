@@ -1,12 +1,19 @@
 import logging
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from psycopg import Error
+
+from postpilot.ai.client import AIError
 from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
 from postpilot.core.models import Language
 from postpilot.core.states import IllegalTransition, ItemState
+from postpilot.engagement.drafts import ReplyDrafter
+from postpilot.engagement.job import comment_message
+from postpilot.engagement.store import EngagementStore
 from postpilot.notify.renewal import RenewalHandler
 from postpilot.notify.telegram import Notifier, TelegramApi, TelegramError
 from postpilot.sources.telegram import TelegramInbox
@@ -45,7 +52,11 @@ class ApprovalHandler:
         renewal: RenewalHandler | None = None,
         inbox: TelegramInbox | None = None,
         video_store: VideoStore | None = None,
+        engagement: EngagementStore | None = None,
+        drafter: ReplyDrafter | None = None,
     ) -> None:
+        self.engagement = engagement
+        self.drafter = drafter
         self.renewal = renewal
         self.inbox = inbox
         self.video_store = video_store
@@ -108,8 +119,13 @@ class ApprovalHandler:
         data, callback_id = event.get("data"), event.get("id")
         if not isinstance(data, str) or not isinstance(callback_id, str):
             return
-        action, _, raw_id = data.partition(":")
-        if action not in _ACTIONS and action not in {"edit", "vapprove", "vreject"}:
+        action, _, raw_id = data.rpartition(":")
+        if action not in _ACTIONS and action not in {
+            "edit",
+            "vapprove",
+            "vreject",
+            "eng:redraft",
+        }:
             return
         try:
             item_id = UUID(raw_id)
@@ -119,6 +135,10 @@ class ApprovalHandler:
         message = _object(event.get("message"))
         chat_id = _object(message.get("chat")).get("id")
         message_id = message.get("message_id")
+        if action == "eng:redraft":
+            if type(chat_id) is int and chat_id == sender and type(message_id) is int:
+                self._redraft(item_id, chat_id, message_id, callback_id)
+            return
         if action in {"vapprove", "vreject"}:
             store = self.video_store
             if store is None:
@@ -187,3 +207,41 @@ class ApprovalHandler:
         _reply(self.api.answer_callback_query, callback_id)
         if type(chat_id) is int and type(message_id) is int:
             _reply(self.api.edit_message_text, chat_id, message_id, label)
+
+    def _redraft(
+        self, id: UUID, chat_id: int, message_id: int, callback_id: str
+    ) -> None:
+        store, drafter = self.engagement, self.drafter
+        if store is None or drafter is None:
+            _reply(self.api.answer_callback_query, callback_id, "Redraft unavailable")
+            return
+        comment = store.get(id)
+        if (
+            comment is None
+            or comment.kind != "comment"
+            or not comment.text
+            or comment.telegram_message_id != message_id
+        ):
+            _reply(self.api.answer_callback_query, callback_id, "Comment unavailable")
+            return
+        try:
+            draft = drafter.redraft(comment.text, comment.reply_draft or "")
+        except AIError:
+            draft = None
+        if not draft:
+            _reply(self.api.answer_callback_query, callback_id, "Redraft unavailable")
+            return
+        try:
+            store.set_reply_draft(id, draft)
+        except Error:
+            raise RuntimeError("Could not save engagement draft") from None
+        text, keyboard = comment_message(replace(comment, reply_draft=draft))
+        _reply(
+            self.api.edit_message_text,
+            chat_id,
+            message_id,
+            text,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+        _reply(self.api.answer_callback_query, callback_id)

@@ -13,6 +13,26 @@ class BotState:
     def __init__(self, conn: Connection[TupleRow]) -> None:
         self.conn = conn
 
+    def get_imap_cursor(self) -> tuple[int, int] | None:
+        with self.conn.transaction():
+            row = self.conn.execute(
+                "SELECT value FROM bot_state WHERE key = 'linkedin_imap_cursor'"
+            ).fetchone()
+            if row is None:
+                return None
+            validity, uid = row[0].split(":")
+            return int(validity), int(uid)
+
+    def set_imap_cursor(self, validity: int, uid: int) -> None:
+        with self.conn.transaction():
+            self.conn.execute(
+                """
+                INSERT INTO bot_state (key, value) VALUES ('linkedin_imap_cursor', %s)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+                """,
+                (f"{validity}:{uid}",),
+            )
+
     def get_offset(self) -> int:
         with self.conn.transaction():
             row = self.conn.execute(

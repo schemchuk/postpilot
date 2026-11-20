@@ -58,9 +58,16 @@ class TelegramApi:
         raise TelegramError(f"Telegram {method} failed")
 
     def send_message(
-        self, chat_id: int, text: str, reply_markup: dict[str, Any] | None = None
+        self,
+        chat_id: int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+        *,
+        parse_mode: str | None = None,
     ) -> int:
         payload: dict[str, object] = {"chat_id": chat_id, "text": text}
+        if parse_mode is not None:
+            payload["parse_mode"] = parse_mode
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
         result = self._request("sendMessage", **payload)
@@ -95,10 +102,25 @@ class TelegramApi:
     def delete_message(self, chat_id: int, message_id: int) -> None:
         self._request("deleteMessage", chat_id=chat_id, message_id=message_id)
 
-    def edit_message_text(self, chat_id: int, message_id: int, text: str) -> None:
-        self._request(
-            "editMessageText", chat_id=chat_id, message_id=message_id, text=text
-        )
+    def edit_message_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        *,
+        parse_mode: str | None = None,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> None:
+        payload: dict[str, object] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+        }
+        if parse_mode is not None:
+            payload["parse_mode"] = parse_mode
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        self._request("editMessageText", **payload)
 
     def answer_callback_query(self, id: str, text: str | None = None) -> None:
         payload = {} if text is None else {"text": text}

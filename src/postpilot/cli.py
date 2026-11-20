@@ -16,6 +16,7 @@ from postpilot.store import migrate
 from postpilot.store.db import connect
 
 _DATABASE_COMMANDS = {
+    "poll-engagement": tasks.poll_engagement,
     "poll-telegram": tasks.poll_telegram,
     "publish-due": tasks.publish_due,
     "check-tokens": tasks.check_tokens,
@@ -26,6 +27,7 @@ _DATABASE_COMMANDS = {
 }
 _COMMANDS = (
     "draft-weekly",
+    "poll-engagement",
     "poll-telegram",
     "publish-due",
     "render-video",

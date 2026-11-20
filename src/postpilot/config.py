@@ -61,6 +61,13 @@ class InstagramSettings:
 
 
 @dataclass(frozen=True)
+class ImapSettings:
+    user: str = field(repr=False)
+    password: str = field(repr=False)
+    host: str = "imap.gmail.com"
+
+
+@dataclass(frozen=True)
 class Settings:
     database_url: str = field(repr=False)
     telegram_bot_token: str = field(repr=False)
@@ -78,6 +85,7 @@ class Settings:
     video_min_balance_usd: float = 3.0
     facebook: FacebookSettings | None = None
     instagram: InstagramSettings | None = None
+    imap: ImapSettings | None = None
 
     @classmethod
     def from_env(cls, dotenv: Path | None = None) -> "Settings":
@@ -134,6 +142,7 @@ class Settings:
         page_id = values.get("FACEBOOK_PAGE_ID")
         account_id = values.get("INSTAGRAM_BUSINESS_ACCOUNT_ID")
         graph_version = values.get("FACEBOOK_GRAPH_VERSION") or "v27.0"
+        imap_user, imap_password = values.get("IMAP_USER"), values.get("IMAP_PASSWORD")
         return cls(
             database_url,
             bot_token,
@@ -159,6 +168,11 @@ class Settings:
             balance,
             FacebookSettings(page_id, graph_version) if page_id else None,
             InstagramSettings(account_id, graph_version) if account_id else None,
+            ImapSettings(
+                imap_user, imap_password, values.get("IMAP_HOST") or "imap.gmail.com"
+            )
+            if imap_user and imap_password
+            else None,
         )
 
     def secret_values(self) -> tuple[str, ...]:
@@ -186,6 +200,8 @@ class Settings:
             values += (self.github_token,)
         if self.heygen is not None:
             values += (self.heygen.api_key,)
+        if self.imap is not None:
+            values += (self.imap.user, self.imap.password)
         return values
 
 
