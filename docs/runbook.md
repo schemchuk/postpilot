@@ -157,6 +157,31 @@ Send `/stats` in Telegram to see 30-day engagement and publication counts, short
 click totals and recent clicks, and the latest GitHub traffic snapshot. The
 `poll-telegram` job answers this command.
 
+## External schedule trigger (cron-job.org)
+
+GitHub `schedule` is unreliable for this repository (ADR 017), so cron-job.org dispatches the
+workflows. Each cron-job.org job: URL
+`https://api.github.com/repos/schemchuk/postpilot/actions/workflows/<file>/dispatches`, method
+POST, body `{"ref":"main"}`, headers `Authorization: Bearer <PAT>`,
+`Accept: application/vnd.github+json`, `X-GitHub-Api-Version: 2022-11-28`,
+`Content-Type: application/json`, timezone UTC, failure notifications on.
+
+| Workflow file | Schedule (UTC) |
+|---|---|
+| poll-telegram.yml | every 5 minutes |
+| poll-engagement.yml | every 10 minutes |
+| publish-reels.yml | every 15 minutes |
+| check-tokens.yml | daily 07:00 |
+| snapshot-traffic.yml | daily 07:30 |
+| publish-due.yml | Friday 09:00 |
+| render-video.yml | Friday 10:00 |
+
+PAT: fine-grained, resource owner `schemchuk`, only repository `postpilot`, Repository permissions
+Actions: Read and write, expiry 1 year. It is stored only in cron-job.org. Renewal: create a new PAT
+the same way, replace the header in every cron-job.org job, delete the old PAT. Check with
+`gh run list --workflow poll-telegram.yml -L 5` (event `workflow_dispatch` every ~5 minutes).
+PAT expiry: (set when created).
+
 ## LinkedIn profile advisor
 
 - `/profile <text>` replaces the profile. `/profile_add <text>` appends on a new line.

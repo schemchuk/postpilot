@@ -77,11 +77,21 @@ the 90-day purge of comment text.
 `poll-engagement` source (migration 0011 kinds `star`/`fork`, counts in `bot_state`, baseline without
 events, Telegram message per event, `github.token` in the workflow). **T16b** profile advisor:
 `/profile`, `/profile_add`, `/profile_clear`, `/advise` in `poll-telegram`, answer as a Markdown document.
+**T19 Reliable trigger + one-click Threads replies** (ADR 017, inserted before T17 on 2026-11-20).
+**T19a** external trigger: cron-job.org jobs call `workflow_dispatch` for every scheduled workflow,
+fine-grained PAT (postpilot only, Actions read/write) stored only in cron-job.org, GitHub `schedule`
+kept as fallback, no workflow change; runbook section; acceptance: for 1 hour every `poll-telegram`
+and `poll-engagement` slot has a `workflow_dispatch` run (secret gate: PAT + cron-job.org account,
+Volodymyr). **T19b** one-click Threads replies: migration 0012 reply columns, `eng:send:<id>`
+callback in `poll-telegram` with SENDING claim, container ID stored before publish and status-based
+recovery, edit by Telegram reply (verbatim), "Sent" + permalink, buttons removed; LinkedIn unchanged;
+one summary line per source in `poll-engagement`. Acceptance: tests for duplicate press, crash after
+publish, API/permission errors, edit-by-reply, LinkedIn unchanged; live: one real reply sent.
 **T17 Docs + portfolio.** README with architecture diagram, ADR index, demo, note that the LinkedIn app
 is reused and why.
 **T18 Cutover.** Run both agents side by side for two weeks, then disable and delete work_in_Linkedin
 (Volodymyr confirms). Also delete social_bridge and "lumara" Projects if not yet done.
 
 ## Order
-T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T17 -> T18.
+T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T17 -> T18.
 First useful vertical slice after T11: Telegram text to approval to LinkedIn.
