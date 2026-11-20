@@ -1,12 +1,18 @@
+import json
 from collections.abc import Callable
 from datetime import date
-from typing import cast
+from typing import TypedDict, cast
 from uuid import UUID
 
 from psycopg import Connection
 from psycopg.rows import TupleRow
 
 from postpilot.core.models import Language
+
+
+class GitHubWatchCounts(TypedDict):
+    stars: int
+    forks: int
 
 
 class BotState:
@@ -31,6 +37,24 @@ class BotState:
                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
                 """,
                 (f"{validity}:{uid}",),
+            )
+
+    def get_github_watch(self) -> dict[str, GitHubWatchCounts]:
+        with self.conn.transaction():
+            row = self.conn.execute(
+                "SELECT value FROM bot_state WHERE key = 'github_watch'"
+            ).fetchone()
+        return cast(dict[str, GitHubWatchCounts], json.loads(row[0])) if row else {}
+
+    def set_github_watch(self, repo_id: str, counts: GitHubWatchCounts) -> None:
+        with self.conn.transaction():
+            self.conn.execute(
+                """
+                INSERT INTO bot_state (key, value) VALUES ('github_watch', %s)
+                ON CONFLICT (key) DO UPDATE SET value =
+                    (bot_state.value::jsonb || EXCLUDED.value::jsonb)::text
+                """,
+                (json.dumps({repo_id: counts}),),
             )
 
     def get_offset(self) -> int:

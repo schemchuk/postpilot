@@ -143,6 +143,13 @@ The first run and any mailbox UIDVALIDITY change skip existing notifications.
 Threads replies are read for posts published in the last 14 days using the existing stored
 Threads token with `threads_read_replies` and require no extra secret.
 
+The GitHub watch polls public repositories for `GITHUB_OWNER` (default `schemchuk`).
+On first sight, it records existing stars and forks without Telegram notifications.
+Later polls fetch each list only when its count changes, up to ten pages per list.
+Counts are stored as JSON in
+the `github_watch` key of `bot_state`. To rebaseline on the next poll, run
+`DELETE FROM bot_state WHERE key = 'github_watch';`. Existing engagement rows are retained.
+
 Each run clears comment text, actor names and reply drafts older than 90 days before
 polling sources, even when no source is configured. Event rows remain for counts.
 

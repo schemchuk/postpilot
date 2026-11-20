@@ -1,5 +1,5 @@
 import os
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -8,6 +8,7 @@ from psycopg.errors import CheckViolation, ForeignKeyViolation, UniqueViolation
 
 from postpilot.core.models import PublicationStatus, Variant
 from postpilot.core.states import IllegalTransition, ItemState
+from postpilot.engagement.store import EngagementStore
 from postpilot.store import migrate
 from postpilot.store.db import connect
 from postpilot.store.repo import ItemRepo, LostPublicationClaim
@@ -91,9 +92,25 @@ def test_migration_up_noop_and_down(conn):
         "0008_publication_remote_ref",
         "0009_video_publications",
         "0010_engagement_events",
+        "0011_github_engagement",
     ]
     migrate.up(conn)
     assert applied_migrations(conn) == initial
+
+    events = EngagementStore(conn)
+    now = datetime.now(UTC)
+    star_args = ("github", "star", "star:123:10", None, None, None, None, now)
+    star = events.insert_if_new(*star_args, notified=True)
+    comment = events.insert_if_new(
+        "threads", "comment", "reply-id", None, None, None, None, now
+    )
+    migrate.down(conn)
+    assert applied_migrations(conn) == initial[:10]
+    assert table_names(conn) == full_schema
+    assert events.get(star.id) is None
+    assert events.get(comment.id) == comment
+    with pytest.raises(CheckViolation):
+        events.insert_if_new(*star_args)
 
     migrate.down(conn)
     full_schema.remove("engagement_events")

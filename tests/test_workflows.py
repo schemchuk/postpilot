@@ -114,7 +114,15 @@ def test_scheduled_workflow(name, cron):
                 }
             )
         elif name == "poll-engagement":
-            expected.update({"ANTHROPIC_API_KEY", "IMAP_USER", "IMAP_PASSWORD"})
+            expected.update(
+                {
+                    "ANTHROPIC_API_KEY",
+                    "IMAP_USER",
+                    "IMAP_PASSWORD",
+                    "GITHUB_TOKEN",
+                    "GITHUB_OWNER",
+                }
+            )
         else:
             expected.update(channel_credentials)
         if name == "check-tokens":
@@ -123,5 +131,17 @@ def test_scheduled_workflow(name, cron):
             expected.add("ANTHROPIC_API_KEY")
         assert set(command["env"]) == expected
         for variable, value in command["env"].items():
+            if name == "poll-engagement" and variable in {
+                "GITHUB_TOKEN",
+                "GITHUB_OWNER",
+            }:
+                assert (
+                    value
+                    == {
+                        "GITHUB_TOKEN": "${{ github.token }}",
+                        "GITHUB_OWNER": "schemchuk",
+                    }[variable]
+                )
+                continue
             secret = "GH_TRAFFIC_TOKEN" if variable == "GITHUB_TOKEN" else variable
             assert value == "${{ secrets." + secret + " }}"

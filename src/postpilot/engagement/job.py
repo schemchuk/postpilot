@@ -1,9 +1,10 @@
+import re
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from functools import partial
 from html import escape
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from psycopg import Error
 
@@ -14,7 +15,8 @@ from postpilot.engagement.imap import message_text, read_inbox
 from postpilot.engagement.store import EngagementEvent, EngagementStore
 from postpilot.engagement.threads import ThreadsEngagementClient, ThreadsEngagementError
 from postpilot.notify.telegram import TelegramApi, TelegramError
-from postpilot.store.bot_state import BotState
+from postpilot.sources.github import GitHubClient, GitHubError, RepoEngagement
+from postpilot.store.bot_state import BotState, GitHubWatchCounts
 
 _POST_DOMAINS = ("linkedin.com", "threads.com", "threads.net")
 _THREADS_DRAFT_CAP = 20
@@ -121,13 +123,71 @@ def collect_threads(
         raise ThreadsEngagementError("Could not read all Threads conversations")
 
 
+def collect_github(
+    client: GitHubClient, owner: str, state: BotState, store: EngagementStore
+) -> None:
+    watch = state.get_github_watch()
+    failed = False
+    for repo in client.list_public_repos(owner):
+        repo_id = str(repo.id)
+        previous = watch.get(repo_id)
+        counts = GitHubWatchCounts(stars=repo.stargazers_count, forks=repo.forks_count)
+        if previous == counts:
+            continue
+        baseline = previous is None
+        try:
+            lists: list[tuple[str, list[RepoEngagement]]] = []
+            if counts["stars"] != (previous["stars"] if previous else 0):
+                lists.append(("star", client.stargazers(owner, repo.name)))
+            if counts["forks"] != (previous["forks"] if previous else 0):
+                lists.append(("fork", client.forks(owner, repo.name)))
+            for kind, entries in lists:
+                refs = [f"{kind}:{repo_id}:{entry.id}" for entry in entries]
+                known = store.known_refs("github", refs)
+                for ref, entry in zip(refs, entries, strict=True):
+                    if ref not in known:
+                        store.insert_if_new(
+                            "github",
+                            kind,
+                            ref,
+                            entry.login,
+                            None,
+                            repo.html_url,
+                            None,
+                            entry.occurred_at,
+                            notified=baseline,
+                        )
+            state.set_github_watch(repo_id, counts)
+        except (GitHubError, Error):
+            failed = True
+    if failed:
+        raise GitHubError("Could not process all GitHub repositories")
+
+
+def _github_message(event: EngagementEvent) -> str:
+    login = event.actor or "Unknown actor"
+    actor = escape(login)
+    if re.fullmatch(r"[A-Za-z0-9-]{1,39}", login):
+        actor = f'<a href="https://github.com/{login}">{actor}</a>'
+    try:
+        repo = urlsplit(event.post_url or "").path.rstrip("/").rsplit("/", 1)[-1]
+    except ValueError:
+        repo = ""
+    action = "⭐" if event.kind == "star" else "🍴"
+    verb = "starred" if event.kind == "star" else "forked"
+    return f"{action} {actor} {verb} <b>{escape(unquote(repo) or 'Unknown repository')}</b>"
+
+
 def notify_pending(store: EngagementStore, api: TelegramApi, chat_id: int) -> None:
     failed = False
     events = store.list_unnotified()
     for event in events:
         message_id = None
-        if event.kind == "comment":
-            text, keyboard = comment_message(event)
+        if event.kind in ("comment", "star", "fork"):
+            if event.kind == "comment":
+                text, keyboard = comment_message(event)
+            else:
+                text, keyboard = _github_message(event), None
             try:
                 message_id = api.send_message(
                     chat_id, text, keyboard, parse_mode="HTML"

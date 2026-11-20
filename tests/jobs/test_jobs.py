@@ -377,7 +377,7 @@ def test_poll_engagement_purges_with_no_sources(settings, monkeypatch, expired):
     monkeypatch.setattr(tasks, "poll_engagement_sources", poll)
     engagement = Mock()
     monkeypatch.setattr(tasks, "EngagementStore", Mock(return_value=engagement))
-    tasks.poll_engagement(settings, Mock())
+    tasks.poll_engagement(replace(settings, github_owner=""), Mock())
     engagement.purge_personal_data.assert_called_once()
     store.get.assert_called_once_with("threads")
     poll.assert_not_called()
@@ -398,7 +398,9 @@ def test_poll_engagement_runs_threads_with_stored_token_without_imap(
     engagement.list_unnotified.return_value = []
     monkeypatch.setattr(tasks, "EngagementStore", Mock(return_value=engagement))
     conn = Mock()
-    tasks.poll_engagement(replace(settings, anthropic_api_key="fixture"), conn)
+    tasks.poll_engagement(
+        replace(settings, anthropic_api_key="fixture", github_owner=""), conn
+    )
     store.get.assert_called_once_with("threads")
     collect.assert_called_once()
 
@@ -418,6 +420,7 @@ def test_poll_engagement_isolates_threads_token_lookup_failure(settings, monkeyp
     conn = Mock()
     configured = replace(
         settings,
+        github_owner="",
         imap=ImapSettings("mailbox@example.test", "fixture"),
         anthropic_api_key="fixture",
     )
@@ -431,9 +434,11 @@ def test_poll_engagement_isolates_threads_token_lookup_failure(settings, monkeyp
     engagement.list_unnotified.assert_called_once_with()
 
 
-@pytest.mark.parametrize("purge_fails", [False, True])
+@pytest.mark.parametrize(
+    "purge_fails, github_fails", [(False, False), (True, False), (False, True)]
+)
 def test_poll_engagement_purges_before_sources_and_isolates_failure(
-    settings, monkeypatch, caplog, purge_fails
+    settings, monkeypatch, caplog, purge_fails, github_fails
 ):
     actions = Mock()
     actions.list_unnotified.return_value = []
@@ -445,12 +450,18 @@ def test_poll_engagement_purges_before_sources_and_isolates_failure(
     monkeypatch.setattr(tasks, "ClaudeClient", Mock())
     monkeypatch.setattr(tasks, "collect_linkedin", actions.linkedin)
     monkeypatch.setattr(tasks, "collect_threads", actions.threads)
+    monkeypatch.setattr(tasks, "collect_github", actions.github)
+    github = Mock()
+    monkeypatch.setattr(tasks, "GitHubClient", Mock(return_value=github))
+    if github_fails:
+        actions.github.side_effect = RuntimeError("private GitHub data")
     configured = replace(
         settings,
+        github_token="test-token",
         imap=ImapSettings("mailbox@example.test", "fixture"),
         anthropic_api_key="fixture",
     )
-    if purge_fails:
+    if purge_fails or github_fails:
         with pytest.raises(RuntimeError, match="Engagement source or notification"):
             tasks.poll_engagement(configured, Mock())
     else:
@@ -460,6 +471,32 @@ def test_poll_engagement_purges_before_sources_and_isolates_failure(
         "purge_personal_data",
         "linkedin",
         "threads",
+        "github",
         "list_unnotified",
     ]
+    assert tasks.GitHubClient.call_args.args == ("schemchuk", "test-token")
+    assert actions.github.call_args.args[:2] == (github, "schemchuk")
+    assert "private GitHub data" not in caplog.text
     assert "private event data" not in caplog.text
+
+
+def test_poll_engagement_runs_github_without_drafter_or_token(settings, monkeypatch):
+    monkeypatch.setattr(tasks, "_read_token", Mock(return_value=None))
+    collect = Mock()
+    monkeypatch.setattr(tasks, "collect_github", collect)
+    drafter = Mock()
+    monkeypatch.setattr(tasks, "ReplyDrafter", drafter)
+    store = Mock()
+    store.list_unnotified.return_value = []
+    monkeypatch.setattr(tasks, "EngagementStore", Mock(return_value=store))
+    conn = Mock()
+
+    tasks.poll_engagement(settings, conn)
+
+    client, owner, state, actual_store = collect.call_args.args
+    assert isinstance(client, tasks.GitHubClient)
+    assert owner == settings.github_owner
+    assert state.conn is conn
+    assert actual_store is store
+    drafter.assert_not_called()
+    store.list_unnotified.assert_called_once()
