@@ -26,6 +26,12 @@ The bot also drafts replies to LinkedIn comments from Gmail notifications (I pos
 3. The render job takes an approved German LinkedIn text and sends me a HeyGen video with subtitles and an AI-generated label.
 4. I watch the preview in Telegram and tap **Approve** to release it to the Reels job, or **Reject**. Telegram then reports the published link, or the error, for each channel.
 
+| Text approval in Telegram | Video approval in Telegram |
+| :---: | :---: |
+| <img src="docs/img/telegram-text-approval.png" width="380" alt="Telegram preview of a German and Ukrainian post with Approve, Edit and Skip buttons"> | <img src="docs/img/telegram-video-approval.png" width="300" alt="Telegram preview of the avatar video with Approve and Reject buttons"> |
+| **Published on LinkedIn** | **Published as an Instagram Reel** |
+| <img src="docs/img/linkedin-post.png" width="320" alt="The approved German post on LinkedIn"> | <img src="docs/img/instagram-reel.png" width="420" alt="The Reel with the burned-in KI-generierter Avatar label and Instagram's AI content tag"> |
+
 **Published by Postpilot**
 
 - [LinkedIn post](https://www.linkedin.com/feed/update/urn:li:share:7529221426441293825/)
