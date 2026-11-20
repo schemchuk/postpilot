@@ -68,6 +68,11 @@ workflow, Facebook Page Reels channel, `facebook` token import and check (secret
 ## Phase 4: extras and cutover
 
 **T15 Comments + engagement.** IMAP notifications to AI reply drafts, engagement log, /stats.
+Split per ADR 015 (scope: LinkedIn + Threads; IG/FB comments later): **T15a** migration 0010
+`engagement_events`, Gmail IMAP source for LinkedIn notification emails, AI extraction + reply draft,
+`poll-engagement` job and workflow, "Another variant" callback (secret gate: `IMAP_USER`,
+`IMAP_PASSWORD`). **T15b** Threads replies via `/{media-id}/conversation`. **T15c** `/stats` and
+the 90-day purge of comment text.
 **T16 Fork/star watch + profile advisor.** Ported, each optional.
 **T17 Docs + portfolio.** README with architecture diagram, ADR index, demo, note that the LinkedIn app
 is reused and why.
