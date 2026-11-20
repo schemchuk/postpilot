@@ -16,6 +16,7 @@ class VideoClaim:
     remote_ref: str | None
     recovered: bool
     stale: bool
+    remote_ref_claimed_at: datetime | None = None
 
     def key(self) -> tuple[UUID, str, datetime]:
         return self.render_id, self.channel, self.updated_at
@@ -76,7 +77,7 @@ class VideoPublicationStore:
                     updated_at = clock_timestamp()
                 WHERE (%s AND p.status = 'FAILED') OR (p.status = 'PUBLISHING'
                     AND p.updated_at < clock_timestamp() - %s::interval)
-                RETURNING updated_at, remote_ref
+                RETURNING updated_at, remote_ref, remote_ref_claimed_at
                 """,
                 (render_id, channel, retry, stale_after),
             ).fetchone()
@@ -89,6 +90,7 @@ class VideoPublicationStore:
             row[1],
             previous is not None,
             previous is not None and previous[0] == "PUBLISHING",
+            row[2],
         )
 
     def save_ref(self, claim: VideoClaim, remote_ref: str) -> None:

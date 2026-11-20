@@ -1,0 +1,201 @@
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from functools import partial
+from time import sleep
+from urllib.parse import quote
+
+import httpx
+
+from postpilot.channels.base import (
+    ChannelError,
+    ChannelHeld,
+    TransientChannelError,
+    UncertainPublication,
+)
+from postpilot.channels.meta_reels import request
+from postpilot.config import InstagramSettings
+from postpilot.video.label import AI_AVATAR_CAPTION_LABEL
+from postpilot.video.store import VideoRender, VideoStatus
+
+
+class InstagramReelsChannel:
+    name = "instagram-reels"
+    token_provider = "instagram"
+
+    def __init__(
+        self,
+        settings: InstagramSettings,
+        client: httpx.Client,
+        *,
+        sleep: Callable[[float], None] = sleep,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._settings = settings
+        self._request = partial(request, client, "Instagram Reels")
+        self._account = self._graph(settings.account_id)
+        self._sleep = sleep
+        self._clock = clock or partial(datetime.now, UTC)
+        self._permalinks: dict[str, str] = {}
+
+    def _graph(self, node: str) -> str:
+        return f"{self._settings.graph_url}/{quote(node, safe='')}"
+
+    def permalink(self, remote_id: str) -> str:
+        return self._permalinks.get(remote_id, f"instagram media {remote_id}")
+
+    def validate(self, render: VideoRender) -> None:
+        if render.status != VideoStatus.APPROVED or not render.video:
+            raise ChannelError("An approved video is required")
+        if not render.script or not render.script.strip():
+            raise ChannelError("A video script is required")
+        if render.duration is not None and not 3 <= render.duration <= 900:
+            raise ChannelError("Instagram Reels must be 3 to 900 seconds long")
+
+    def publish_with_ref(
+        self,
+        render: VideoRender,
+        token: str,
+        ref: str | None,
+        save_ref: Callable[[str], None],
+        *,
+        claimed_at: datetime,
+    ) -> str | None:
+        self.validate(render)
+        assert render.video is not None
+        caption = f"{render.script}\n\n{AI_AVATAR_CAPTION_LABEL}"
+        deadline = self._clock() + timedelta(minutes=5)
+        if ref is not None:
+            status = self._poll(ref, token, deadline, claimed_at)
+            if status == "IN_PROGRESS":
+                return None
+            if status not in ("ERROR", "EXPIRED"):
+                return self._finish(status, ref, caption, token, claimed_at, save_ref)
+
+        # At most one new container per run, including when recovering an old one.
+        container = self._request(
+            "POST",
+            f"{self._account}/media",
+            token,
+            data={
+                "media_type": "REELS",
+                "upload_type": "resumable",
+                "caption": caption,
+                "is_ai_generated": "true",
+            },
+        ).get("id")
+        if not isinstance(container, str) or not container:
+            raise TransientChannelError("Instagram Reels did not return a container ID")
+        save_ref(container)
+        upload = (
+            "https://rupload.facebook.com/ig-api-upload/"
+            f"{self._settings.graph_version}/{quote(container, safe='')}"
+        )
+        if (
+            self._request("POST", upload, token, video=render.video).get("success")
+            is not True
+        ):
+            raise TransientChannelError("Instagram Reels upload was not confirmed")
+        status = self._poll(container, token, deadline)
+        if status in ("FINISHED", "PUBLISHED"):
+            return self._finish(status, container, caption, token, claimed_at, save_ref)
+        return None
+
+    def _poll(
+        self,
+        ref: str,
+        token: str,
+        deadline: datetime,
+        claimed_at: datetime | None = None,
+    ) -> str:
+        url = f"{self._graph(ref)}?fields=status_code,status"
+        while True:
+            status = self._request("GET", url, token).get("status_code")
+            if status in ("FINISHED", "PUBLISHED", "ERROR", "EXPIRED"):
+                return str(status)
+            if status != "IN_PROGRESS":
+                raise TransientChannelError(
+                    "Instagram Reels container status unavailable"
+                )
+            now = self._clock()
+            if claimed_at is not None and now - claimed_at > timedelta(hours=1):
+                return "EXPIRED"
+            remaining = (deadline - now).total_seconds()
+            if remaining <= 0:
+                return "IN_PROGRESS"
+            self._sleep(min(10, remaining))
+
+    def _finish(
+        self,
+        status: str,
+        ref: str,
+        caption: str,
+        token: str,
+        claimed_at: datetime,
+        save_ref: Callable[[str], None],
+    ) -> str:
+        if status == "PUBLISHED":
+            remote_id = self._find_published(caption, claimed_at, token)
+        else:
+            # Check claim ownership again before making the publishing call.
+            save_ref(ref)
+            result = self._request(
+                "POST",
+                f"{self._account}/media_publish",
+                token,
+                data={"creation_id": ref},
+                finish=True,
+            ).get("id")
+            if not isinstance(result, str) or not result:
+                raise UncertainPublication("Instagram Reels did not return a media ID")
+            remote_id = result
+        try:
+            link = self._request(
+                "GET", f"{self._graph(remote_id)}?fields=permalink", token
+            )
+        except (ChannelError, ChannelHeld):
+            pass
+        else:
+            permalink = link.get("permalink")
+            if isinstance(permalink, str) and permalink:
+                self._permalinks[remote_id] = permalink
+        return remote_id
+
+    def _find_published(self, caption: str, claimed_at: datetime, token: str) -> str:
+        cutoff = claimed_at - timedelta(minutes=5)
+        endpoint = httpx.URL(f"{self._account}/media?fields=id,caption,timestamp")
+        url = endpoint
+        matches: set[str] = set()
+        for _ in range(5):
+            result = self._request("GET", str(url), token)
+            posts = result.get("data")
+            if not isinstance(posts, list):
+                break
+            for post in posts:
+                if not isinstance(post, dict) or post.get("caption") != caption:
+                    continue
+                try:
+                    posted_at = datetime.fromisoformat(post["timestamp"])
+                    remote_id = post["id"]
+                    if not isinstance(remote_id, str) or not remote_id:
+                        raise ValueError
+                    if posted_at >= cutoff:
+                        matches.add(remote_id)
+                except (KeyError, TypeError, ValueError):
+                    raise UncertainPublication(
+                        "Invalid Instagram media match"
+                    ) from None
+            paging = result.get("paging")
+            next_page = paging.get("next") if isinstance(paging, dict) else None
+            if not next_page:
+                if len(matches) == 1:
+                    return matches.pop()
+                break
+            # Rebuild the URL on the configured endpoint, dropping any access token.
+            try:
+                cursor = httpx.URL(next_page).params.get("after")
+            except (TypeError, httpx.InvalidURL):
+                break
+            if not cursor or cursor == url.params.get("after"):
+                break
+            url = endpoint.copy_merge_params({"after": cursor})
+        raise UncertainPublication("Instagram media could not be uniquely reconciled")

@@ -51,6 +51,16 @@ class FacebookSettings:
 
 
 @dataclass(frozen=True)
+class InstagramSettings:
+    account_id: str
+    graph_version: str = "v27.0"
+
+    @property
+    def graph_url(self) -> str:
+        return f"https://graph.facebook.com/{self.graph_version}"
+
+
+@dataclass(frozen=True)
 class Settings:
     database_url: str = field(repr=False)
     telegram_bot_token: str = field(repr=False)
@@ -67,6 +77,7 @@ class Settings:
     video_monthly_cap: int = 6
     video_min_balance_usd: float = 3.0
     facebook: FacebookSettings | None = None
+    instagram: InstagramSettings | None = None
 
     @classmethod
     def from_env(cls, dotenv: Path | None = None) -> "Settings":
@@ -121,6 +132,8 @@ class Settings:
         except ValueError:
             raise ConfigError("VIDEO_MIN_BALANCE_USD") from None
         page_id = values.get("FACEBOOK_PAGE_ID")
+        account_id = values.get("INSTAGRAM_BUSINESS_ACCOUNT_ID")
+        graph_version = values.get("FACEBOOK_GRAPH_VERSION") or "v27.0"
         return cls(
             database_url,
             bot_token,
@@ -144,9 +157,8 @@ class Settings:
             else None,
             cap,
             balance,
-            FacebookSettings(page_id, values.get("FACEBOOK_GRAPH_VERSION") or "v27.0")
-            if page_id
-            else None,
+            FacebookSettings(page_id, graph_version) if page_id else None,
+            InstagramSettings(account_id, graph_version) if account_id else None,
         )
 
     def secret_values(self) -> tuple[str, ...]:

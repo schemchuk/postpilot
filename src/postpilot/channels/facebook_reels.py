@@ -1,14 +1,16 @@
 from collections.abc import Callable
+from datetime import datetime
+from functools import partial
 from urllib.parse import quote
 
 import httpx
 
 from postpilot.channels.base import (
     ChannelError,
-    ChannelHeld,
     TransientChannelError,
     UncertainPublication,
 )
+from postpilot.channels.meta_reels import request
 from postpilot.config import FacebookSettings
 from postpilot.video.label import AI_AVATAR_CAPTION_LABEL
 from postpilot.video.store import VideoRender, VideoStatus
@@ -20,7 +22,7 @@ class FacebookReelsChannel:
 
     def __init__(self, settings: FacebookSettings, client: httpx.Client) -> None:
         self._settings = settings
-        self._client = client
+        self._request = partial(request, client, "Facebook Reels")
         self._endpoint = (
             f"{settings.graph_url}/{quote(settings.page_id, safe='')}/video_reels"
         )
@@ -36,67 +38,14 @@ class FacebookReelsChannel:
         if render.duration is not None and not 3 <= render.duration <= 90:
             raise ChannelError("Facebook Reels must be 3 to 90 seconds long")
 
-    def _request(
-        self,
-        method: str,
-        url: str,
-        token: str,
-        *,
-        data: dict[str, str] | None = None,
-        video: bytes | None = None,
-        offset: int = 0,
-        finish: bool = False,
-    ) -> dict[str, object]:
-        retry = UncertainPublication if finish else TransientChannelError
-        headers = {"Authorization": f"OAuth {token}"}
-        if video is not None:
-            headers.update(
-                {
-                    "offset": str(offset),
-                    "file_size": str(len(video)),
-                    "Content-Type": "application/octet-stream",
-                }
-            )
-        try:
-            response = self._client.request(
-                method,
-                url,
-                headers=headers,
-                data=data,
-                content=video[offset:] if video is not None else None,
-                timeout=60,
-                follow_redirects=False,
-            )
-            result = response.json()
-        except httpx.RequestError:
-            raise retry("Facebook Reels request failed") from None
-        except ValueError:
-            result = None
-        error = result.get("error") if isinstance(result, dict) else None
-        if isinstance(error, dict):
-            code = error.get("code")
-            if code == 190:
-                raise ChannelHeld("Facebook Page token is invalid")
-            if error.get("is_transient") is True or code in (1, 2, 4, 17, 32, 341, 613):
-                raise retry("Facebook Reels temporarily unavailable")
-        if response.status_code >= 500:
-            raise retry("Facebook Reels service unavailable")
-        if response.status_code == 429:
-            raise retry("Facebook Reels rate limit reached")
-        if not response.is_success:
-            raise ChannelError(
-                f"Facebook Reels request rejected (HTTP {response.status_code})"
-            )
-        if not isinstance(result, dict):
-            raise retry("Invalid Facebook Reels response")
-        return result
-
     def publish_with_ref(
         self,
         render: VideoRender,
         token: str,
         ref: str | None,
         save_ref: Callable[[str], None],
+        *,
+        claimed_at: datetime,
     ) -> str | None:
         self.validate(render)
         assert render.video is not None
@@ -138,9 +87,12 @@ class FacebookReelsChannel:
             ):
                 return None
             elif upload.get("status") != "complete":
-                offset = upload.get("bytes_transfered", 0)
-                if type(offset) is not int or not 0 <= offset <= len(render.video):
+                uploaded = upload.get(
+                    "bytes_transferred", upload.get("bytes_transfered", 0)
+                )
+                if type(uploaded) is not int or not 0 <= uploaded <= len(render.video):
                     raise TransientChannelError("Invalid Facebook Reels upload offset")
+                offset = uploaded
             elif publishing.get("status") == "not_started":
                 offset = len(render.video)
             else:

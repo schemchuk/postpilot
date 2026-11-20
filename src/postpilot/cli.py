@@ -21,6 +21,7 @@ _DATABASE_COMMANDS = {
     "check-tokens": tasks.check_tokens,
     "snapshot-traffic": tasks.snapshot_traffic,
     "facebook-import-token": tasks.facebook_import_token,
+    "instagram-import-token": tasks.instagram_import_token,
     "threads-import-token": tasks.threads_import_token,
 }
 _COMMANDS = (
@@ -30,6 +31,7 @@ _COMMANDS = (
     "render-video",
     "publish-reels",
     "facebook-import-token",
+    "instagram-import-token",
     "snapshot-traffic",
     "check-tokens",
     "threads-import-token",

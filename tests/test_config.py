@@ -36,6 +36,9 @@ def clean_env(monkeypatch):
         "HEYGEN_ENGINE",
         "VIDEO_MONTHLY_CAP",
         "VIDEO_MIN_BALANCE_USD",
+        "FACEBOOK_PAGE_ID",
+        "FACEBOOK_GRAPH_VERSION",
+        "INSTAGRAM_BUSINESS_ACCOUNT_ID",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -161,3 +164,22 @@ def test_invalid_video_budget(monkeypatch, name, value):
     monkeypatch.setenv(name, value)
     with pytest.raises(ConfigError, match=f"^{name}$"):
         Settings.from_env()
+
+
+def test_instagram_is_optional_and_shares_the_facebook_graph_version(monkeypatch):
+    for key, value in REQUIRED.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("INSTAGRAM_BUSINESS_ACCOUNT_ID", "")
+    assert Settings.from_env().instagram is None
+
+    monkeypatch.setenv("INSTAGRAM_BUSINESS_ACCOUNT_ID", "ig")
+    settings = Settings.from_env()
+    assert settings.facebook is None
+    assert settings.instagram.account_id == "ig"
+    assert settings.instagram.graph_url == "https://graph.facebook.com/v27.0"
+
+    monkeypatch.setenv("FACEBOOK_GRAPH_VERSION", "v28.0")
+    monkeypatch.setenv("FACEBOOK_PAGE_ID", "fb")
+    settings = Settings.from_env()
+    assert settings.instagram.graph_url == settings.facebook.graph_url
+    assert settings.instagram.graph_version == "v28.0"

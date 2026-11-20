@@ -74,6 +74,38 @@ them when selecting the oldest eligible render, run `postpilot publish-reels
 --retry` or enable `retry` when dispatching the workflow manually. The job
 checks any saved video ID before attempting to publish again.
 
+## Instagram token
+
+1. Open [Graph API Explorer](https://developers.facebook.com/tools/explorer/), select
+   the `postpilot-2` app and generate a User Token with `instagram_basic`,
+   `instagram_content_publish`, `pages_show_list`, `pages_read_engagement` and
+   `business_management`.
+2. Open the [Access Token Debugger](https://developers.facebook.com/tools/debug/accesstoken/),
+   inspect the token and choose **Extend Access Token**. Copy the long-lived User Token
+   into the unquoted `INSTAGRAM_ACCESS_TOKEN` entry in the gitignored `.env`.
+3. In Graph API Explorer, read the linked professional account ID from the Facebook
+   Page's `instagram_business_account` field and set `INSTAGRAM_BUSINESS_ACCOUNT_ID`
+   in `.env`.
+
+From the repository root, import the token without echoing it and sync the account ID
+for the scheduled jobs:
+
+```sh
+INSTAGRAM_ACCESS_TOKEN="$(grep '^INSTAGRAM_ACCESS_TOKEN=' .env | cut -d= -f2-)" \
+  postpilot instagram-import-token
+grep '^INSTAGRAM_BUSINESS_ACCOUNT_ID=' .env | cut -d= -f2- | tr -d '\n' | gh secret set INSTAGRAM_BUSINESS_ACCOUNT_ID
+gh secret list
+```
+
+The import validates and encrypts the token. Its stored expiry is the earliest
+nonzero value of `expires_at` and `data_access_expires_at`, or 60 days after import
+if neither is set. The token checked at setup had `expires_at=0` and a data-access
+expiry about 90 days out. Re-import a new long-lived token before data access
+expires. `check-tokens` alerts within 14 days of the stored expiry.
+
+Meta marks **API setup with Facebook login** as legacy. It continues to work and
+receives no new features. The API quota verified at setup was 100 posts per 24 hours.
+
 ## Traffic snapshots
 
 The `snapshot-traffic` workflow runs daily at 07:30 UTC and supports manual
