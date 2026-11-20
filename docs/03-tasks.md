@@ -87,11 +87,22 @@ callback in `poll-telegram` with SENDING claim, container ID stored before publi
 recovery, edit by Telegram reply (verbatim), "Sent" + permalink, buttons removed; LinkedIn unchanged;
 one summary line per source in `poll-engagement`. Acceptance: tests for duplicate press, crash after
 publish, API/permission errors, edit-by-reply, LinkedIn unchanged; live: one real reply sent.
+**T20 Weekly GitHub draft (S1 wiring)** (ADR 018, inserted before T17 on 2026-11-20: `draft-weekly`
+was never implemented). **T20a** migration 0013 `weekly_drafts`, `draft-weekly` job (public repos via
+`/users/{owner}/repos`, active series first, else `pick_project`; repo safety, DE+UA generation,
+humanizer, tracked links, preview with source block, older S1 drafts -> SKIPPED), `draft-weekly.yml` +
+cron-job.org job Wed 18:00 Europe/Berlin, `publish-due` records published S1 items (series part or
+posted repo). Accept: tests for rerun in the same week, no activity, model skip (plain and in a series),
+humanizer failure (no item, no row), link blocked vs allowed, short.io failure, expiry of the old draft,
+recording once after publication; live: one manual dispatch produces a preview in Telegram.
+**T20b** Regenerate for S1 from stored facts (failure keeps the old draft), `/series`,
+`/series_start <repo> [parts]`, `/series_stop`, poll-telegram timeout 10 min. Accept: tests for
+regenerate success/failure, series commands incl. invalid repo and an already active series.
 **T17 Docs + portfolio.** README with architecture diagram, ADR index, demo, note that the LinkedIn app
 is reused and why.
 **T18 Cutover.** Run both agents side by side for two weeks, then disable and delete work_in_Linkedin
 (Volodymyr confirms). Also delete social_bridge and "lumara" Projects if not yet done.
 
 ## Order
-T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T17 -> T18.
+T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18.
 First useful vertical slice after T11: Telegram text to approval to LinkedIn.
