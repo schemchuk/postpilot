@@ -1,6 +1,6 @@
 # 015. Comment monitoring, reply drafts and engagement log
 
-Status: PROPOSED (Claude Code, 2026-11-20)
+Status: ACCEPTED (Volodymyr, 2026-11-20)
 
 ## Context
 
