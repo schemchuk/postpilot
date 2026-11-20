@@ -164,23 +164,29 @@ workflows. Each cron-job.org job: URL
 `https://api.github.com/repos/schemchuk/postpilot/actions/workflows/<file>/dispatches`, method
 POST, body `{"ref":"main"}`, headers `Authorization: Bearer <PAT>`,
 `Accept: application/vnd.github+json`, `X-GitHub-Api-Version: 2022-11-28`,
-`Content-Type: application/json`, timezone UTC, failure notifications on.
+`Content-Type: application/json`, `User-Agent: postpilot-cron` (without it GitHub answers 403), timezone UTC, failure notifications on.
 
 | Workflow file | Schedule (UTC) |
 |---|---|
-| poll-telegram.yml | every 5 minutes |
-| poll-engagement.yml | every 10 minutes |
-| publish-reels.yml | every 15 minutes |
+| poll-telegram.yml | every 5 minutes (needs the DB-free fast path, T19a) |
+| poll-engagement.yml | every 30 minutes |
+| publish-reels.yml | hourly at :00 (`0 * * * *`) |
 | check-tokens.yml | daily 07:00 |
 | snapshot-traffic.yml | daily 07:30 |
 | publish-due.yml | Friday 09:00 |
 | render-video.yml | Friday 10:00 |
 
-PAT: fine-grained, resource owner `schemchuk`, only repository `postpilot`, Repository permissions
-Actions: Read and write, expiry 1 year. It is stored only in cron-job.org. Renewal: create a new PAT
+Keep the intervals: the Neon free plan has 100 CU-hours a month and every database run keeps the
+compute awake ~6 minutes (ADR 017 decision 5). `poll-telegram` skips the database when Telegram has no
+pending update (log line `poll-telegram: no pending updates, database not opened`), except in the first
+5 minutes of each UTC hour. Check Neon usage in the Neon console (Billing / Usage).
+
+PAT `postpilot-cron-dispatch`: fine-grained, resource owner `schemchuk`, only repository `postpilot`,
+Repository permissions Actions: Read and write, created 2026-11-20 without an expiry date (cannot be
+changed afterwards; regenerate with an expiry if wanted). A 403 from GitHub means a missing
+`User-Agent` header or a missing Actions permission. It is stored only in cron-job.org. Renewal: create a new PAT
 the same way, replace the header in every cron-job.org job, delete the old PAT. Check with
 `gh run list --workflow poll-telegram.yml -L 5` (event `workflow_dispatch` every ~5 minutes).
-PAT expiry: (set when created).
 
 ## LinkedIn profile advisor
 

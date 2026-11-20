@@ -2,6 +2,7 @@
 
 import argparse
 from collections.abc import Callable
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 
@@ -12,8 +13,11 @@ from postpilot import __version__
 from postpilot.config import ConfigError, Settings
 from postpilot.jobs import tasks
 from postpilot.jobs.runner import run_job
+from postpilot.notify.telegram import TelegramApi, TelegramError
 from postpilot.store import migrate
 from postpilot.store.db import connect
+
+_utc_now = partial(datetime.now, UTC)
 
 _DATABASE_COMMANDS = {
     "poll-engagement": tasks.poll_engagement,
@@ -48,7 +52,29 @@ def _with_database(
         job(settings, conn)
 
 
-def main(argv: list[str] | None = None) -> int:
+def _poll_telegram(
+    operation: Callable[[], object], settings: Settings, now: Callable[[], datetime]
+) -> None:
+    # ADR 017: keep the full poll in the first five minutes of each UTC hour.
+    full_run = now().astimezone(UTC).minute < 5
+    try:
+        pending = TelegramApi(settings.telegram_bot_token).get_updates(
+            offset=0, timeout=0, limit=1
+        )
+    except TelegramError:
+        operation()
+        return
+    if pending or full_run:
+        operation()
+    else:
+        print("poll-telegram: no pending updates, database not opened")
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    now: Callable[[], datetime] = _utc_now,
+) -> int:
     parser = argparse.ArgumentParser(
         prog="postpilot", description=f"postpilot {__version__}"
     )
@@ -80,6 +106,8 @@ def main(argv: list[str] | None = None) -> int:
         if database_job is not None
         else tasks.not_implemented
     )
+    if args.command == "poll-telegram":
+        operation = partial(_poll_telegram, operation, settings, now)
     return run_job(args.command, operation, settings)
 
 

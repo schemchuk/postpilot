@@ -39,7 +39,7 @@ class FakeApi:
     def edit_message_text(self, chat_id, message_id, text):
         pass
 
-    def get_updates(self, offset):
+    def get_updates(self, offset, timeout=0, *, limit=None):
         self.offsets.append(offset)
         return self.updates
 
@@ -139,7 +139,7 @@ def test_offset_persisted_after_batch_even_if_one_handler_fails(repo, caplog):
         {"update_id": 52, **callback("approve", next_item)},
     ]
     poll_once(api, handler, state)
-    assert api.offsets == [initial_offset]
+    assert api.offsets == [initial_offset, 53]
     assert seen == [(item_id, initial_offset)]
     assert repo.get_item(next_item).state == ItemState.APPROVED
     assert state.get_offset() == 53
