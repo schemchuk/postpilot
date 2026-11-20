@@ -71,3 +71,9 @@ Meta documentation checked on 2026-11-19:
   merge authorization covers it once the secrets exist), two channel adapters, two token providers.
 - Split into T14a (table, job, workflow, Facebook Reels) and T14b (Instagram Reels) to keep PRs small.
 - Open risk: Instagram recovery after `PUBLISHED` relies on caption equality, as Threads does.
+- Secret gate result (2026-11-20, T14b): Instagram accepts a long-lived USER token of app
+  `postpilot-2` (Facebook Login for Business; scopes `instagram_basic`,
+  `instagram_content_publish`, `pages_show_list`, `pages_read_engagement`, `business_management`).
+  `debug_token` reports no fixed expiry but a `data_access_expires_at` about 90 days out; the token
+  is stored with that date so `check-tokens` warns 14 days ahead. Meta labels "API setup with
+  Facebook login" as legacy (still supported, no new features); revisit if it is deprecated.
