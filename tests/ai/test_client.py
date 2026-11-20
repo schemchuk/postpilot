@@ -67,3 +67,9 @@ def test_sdk_is_imported_only_by_client():
                 ), path
             if isinstance(node, ast.ImportFrom) and node.level == 0:
                 assert (node.module or "").split(".")[0] != "anthropic", path
+
+
+def test_client_max_tokens_override(fake_sdk):
+    calls, _ = fake_sdk
+    client.ClaudeClient("fake").complete("system", "user", max_tokens=8000)
+    assert calls[0]["max_tokens"] == 8000

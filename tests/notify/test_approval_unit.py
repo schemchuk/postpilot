@@ -177,3 +177,59 @@ def test_stats_command_routing(text, sender, enabled, inbox_enabled, fails, repl
         )
     else:
         assert stats.mock_calls == api.mock_calls == []
+
+
+def test_profile_commands_preserve_text_and_only_reply_with_length(caplog):
+    class ProfileState:
+        profile = None
+
+        def set_linkedin_profile(self, text, *, append=False):
+            result = f"{self.profile}\n{text}" if append and self.profile else text
+            if len(result) > 20_000:
+                return None
+            self.profile = result
+            return len(result)
+
+        def delete_linkedin_profile(self):
+            self.profile = None
+
+    state = ProfileState()
+    api = Mock()
+    handler = ApprovalHandler(Mock(bot_state=state), api, USER)
+
+    def send(text, sender=USER):
+        handler.handle_update(
+            {"message": {"from": {"id": sender}, "chat": {"id": CHAT}, "text": text}}
+        )
+
+    send("/profile private", sender=999)
+    assert state.profile is None
+    api.send_message.assert_not_called()
+    send("/profile@SampleBot \n private\nбіографія \n")
+    assert state.profile == "private\nбіографія"
+    api.send_message.assert_called_with(
+        CHAT, f"Profile saved ({len(state.profile)} characters)."
+    )
+    send("/profile_add@SampleBot\nnext\nline")
+    assert state.profile == "private\nбіографія\nnext\nline"
+    send("/profile   ")
+    api.send_message.assert_called_with(CHAT, "Usage: /profile <text>")
+    send("/profile_add")
+    api.send_message.assert_called_with(CHAT, "Usage: /profile_add <text>")
+    assert state.profile == "private\nбіографія\nnext\nline"
+    send("/profile " + "я" * 20_000)
+    assert state.profile == "я" * 20_000
+    send("/profile_add overflow")
+    api.send_message.assert_called_with(
+        CHAT, "Profile exceeds the 20,000-character limit."
+    )
+    send("/profile " + "x" * 20_001)
+    assert state.profile == "я" * 20_000
+    send("/profile_clear@SampleBot")
+    assert state.profile is None
+    api.send_message.assert_called_with(CHAT, "Profile cleared.")
+    for private in ("private", "біографія", "next", "overflow", "яя"):
+        assert private not in caplog.text
+        assert all(
+            private not in call.args[1] for call in api.send_message.call_args_list
+        )

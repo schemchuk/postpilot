@@ -32,18 +32,22 @@ class TelegramApi:
         self._client = client
 
     def _request(
-        self, method: str, video: bytes | None = None, /, **payload: object
+        self,
+        method: str,
+        files: dict[str, tuple[str, bytes, str]] | None = None,
+        /,
+        **payload: object,
     ) -> Any:
         url = f"{_BOT_URL}{self._token}/{method}"
         post = httpx.post if self._client is None else self._client.post
         try:
-            if video is None:
+            if files is None:
                 response = post(url, json=payload, follow_redirects=False)
             else:
                 response = post(
                     url,
                     data=payload,
-                    files={"video": ("preview.mp4", video, "video/mp4")},
+                    files=files,
                     timeout=120.0,
                     follow_redirects=False,
                 )
@@ -83,11 +87,23 @@ class TelegramApi:
     ) -> None:
         self._request(
             "sendVideo",
-            video,
+            {"video": ("preview.mp4", video, "video/mp4")},
             chat_id=chat_id,
             caption=caption,
             supports_streaming="true",
             reply_markup=json.dumps(reply_markup),
+        )
+
+    def send_document(
+        self, chat_id: int, filename: str, content: bytes, caption: str | None = None
+    ) -> None:
+        payload: dict[str, object] = {"chat_id": chat_id}
+        if caption is not None:
+            payload["caption"] = caption
+        self._request(
+            "sendDocument",
+            {"document": (filename, content, "text/markdown")},
+            **payload,
         )
 
     def edit_message_caption(self, chat_id: int, message_id: int, caption: str) -> None:

@@ -500,3 +500,108 @@ def test_poll_engagement_runs_github_without_drafter_or_token(settings, monkeypa
     assert actual_store is store
     drafter.assert_not_called()
     store.list_unnotified.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "mode", ["ok", "missing", "no-key", "github-error", "ai-error", "upload-error"]
+)
+def test_poll_advice_after_approval_and_publish(
+    settings, repo, api, monkeypatch, caplog, mode
+):
+    from postpilot.notify.telegram import TelegramError
+
+    private = "Private profile details"
+    settings = replace(
+        settings,
+        anthropic_api_key=None if mode == "no-key" else "fake-key",
+        github_owner="portfolio-owner",
+        github_token="fake-github-key",
+    )
+    now = datetime(2025, 1, 2, tzinfo=UTC)
+    monkeypatch.setattr(tasks, "_now", lambda: now)
+    item_id = uuid4()
+    repo.get_item.return_value = Item(
+        item_id, "telegram", ItemState.AWAITING_APPROVAL, now, now, None, None
+    )
+    repo.bot_state.get_linkedin_profile = Mock(
+        return_value=None if mode == "missing" else private
+    )
+    repo.list_approved_item_ids.side_effect = lambda **_: (
+        [item_id] if repo.transition.called else []
+    )
+    publisher = Mock()
+    publisher.publish_item.return_value.channels = {}
+    monkeypatch.setattr(tasks, "_publisher", Mock(return_value=publisher))
+
+    chat = {"id": settings.telegram_chat_id}
+    advice = {"from": chat, "chat": chat, "text": "/advise@ExampleBot"}
+    api.get_updates.return_value = [
+        {"update_id": 20, "message": advice},
+        {"update_id": 21, "message": advice},
+        {
+            "update_id": 22,
+            "callback_query": {
+                "from": chat,
+                "id": "approve",
+                "data": f"approve:{item_id}",
+                "message": {"chat": chat, "message_id": 1},
+            },
+        },
+    ]
+    github_calls = []
+    model_calls = []
+
+    def respond(request):
+        publisher.publish_item.assert_called_once_with(item_id)
+        assert repo.bot_state.get_offset() == 23
+        assert request.url.path == "/users/portfolio-owner/repos"
+        assert request.headers["Authorization"] == "Bearer fake-github-key"
+        github_calls.append(request.url.path)
+        return httpx.Response(500 if mode == "github-error" else 200, json=[])
+
+    class FakeModel:
+        def complete(self, system, user, *, max_tokens):
+            model_calls.append(max_tokens)
+            if mode == "ai-error":
+                raise RuntimeError(private)
+            return "# Поради"
+
+    if mode == "upload-error":
+        api.send_document.side_effect = TelegramError(private)
+        api.send_message.side_effect = TelegramError(private)
+
+    client = httpx.Client(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(tasks.httpx, "Client", lambda: client)
+    monkeypatch.setattr(tasks, "ClaudeClient", lambda _: FakeModel())
+    tasks.poll_telegram(settings, None)
+
+    publisher.publish_item.assert_called_once_with(item_id)
+    repo.bot_state.get_linkedin_profile.assert_called_once()
+    assert private not in caplog.text
+    if mode in {"missing", "no-key"}:
+        assert not github_calls
+        assert not model_calls
+        api.send_document.assert_not_called()
+        expected = (
+            "No profile stored. Send /profile <text> first."
+            if mode == "missing"
+            else "Profile advice requires an AI key."
+        )
+        api.send_message.assert_called_once_with(chat["id"], expected)
+    else:
+        assert len(github_calls) == 1
+        assert model_calls == ([] if mode == "github-error" else [8000])
+        if mode in {"ok", "upload-error"}:
+            api.send_document.assert_called_once_with(
+                chat["id"],
+                "profile-advice-2025-01-02.md",
+                "# Поради".encode(),
+                caption="Profile advice",
+            )
+        else:
+            api.send_document.assert_not_called()
+        if mode == "ok":
+            api.send_message.assert_not_called()
+        else:
+            api.send_message.assert_called_once_with(chat["id"], "Advice failed")
+            assert "Profile advisor failed (" in caplog.text

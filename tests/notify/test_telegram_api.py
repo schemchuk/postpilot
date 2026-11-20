@@ -113,3 +113,41 @@ def test_long_first_variant_leaves_room_for_second_language():
     )
     assert len(preview) == 4096
     assert preview.endswith("…\n\nUA\nПривіт")
+
+
+@pytest.mark.parametrize("caption", [None, "Profile advice"])
+def test_send_document_multipart(caption):
+    content = "## Поради".encode()
+
+    def respond(request):
+        assert request.method == "POST"
+        assert str(request.url) == f"{URL}/sendDocument"
+        assert request.headers["content-type"].startswith(
+            "multipart/form-data; boundary="
+        )
+        body = request.read()
+        assert b'name="chat_id"\r\n\r\n42\r\n' in body
+        assert b'name="document"; filename="profile-advice-2025-01-01.md"' in body
+        assert b"Content-Type: text/markdown\r\n\r\n" + content in body
+        if caption:
+            assert b'name="caption"\r\n\r\nProfile advice\r\n' in body
+        else:
+            assert b'name="caption"' not in body
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 12}})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        TelegramApi(TOKEN, client=client).send_document(
+            42, "profile-advice-2025-01-01.md", content, caption
+        )
+
+
+def test_send_document_error_excludes_token():
+    def respond(request):
+        raise httpx.ConnectError(str(request.url), request=request)
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(respond)) as client,
+        pytest.raises(TelegramError, match="^Telegram sendDocument failed$") as error,
+    ):
+        TelegramApi(TOKEN, client=client).send_document(42, "advice.md", b"advice")
+    assert error.value.__context__ is None
