@@ -42,6 +42,7 @@ def test_request_shapes(caplog):
         api.answer_callback_query("callback")
         api.answer_callback_query("old", "Already handled")
         assert api.get_updates(8) == [{"update_id": 8}]
+        assert api.get_updates(8, limit=1) == [{"update_id": 8}]
     assert calls == [
         (
             "sendMessage",
@@ -55,6 +56,7 @@ def test_request_shapes(caplog):
             {"callback_query_id": "old", "text": "Already handled"},
         ),
         ("getUpdates", {"offset": 8, "timeout": 0}),
+        ("getUpdates", {"offset": 8, "timeout": 0, "limit": 1}),
     ]
     assert TOKEN not in caplog.text
     assert TOKEN not in repr(api)

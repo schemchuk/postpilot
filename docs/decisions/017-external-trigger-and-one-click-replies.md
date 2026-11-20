@@ -27,8 +27,9 @@ itself" in ADR 015 for Threads. LinkedIn keeps the ADR 015 behaviour.
 
 1. **cron-job.org calls `workflow_dispatch`.** One cron-job.org job per workflow sends
    `POST https://api.github.com/repos/schemchuk/postpilot/actions/workflows/<file>/dispatches`
-   with body `{"ref":"main"}`. Intervals: `poll-telegram` every 5 min, `poll-engagement` every
-   10 min, `publish-reels` every 15 min. The daily and weekly workflows (`check-tokens`,
+   with body `{"ref":"main"}`. Intervals (see decision 5 for why): `poll-telegram` every 5 min
+   (every 15 min until the fast path below is merged), `poll-engagement` every 30 min,
+   `publish-reels` hourly at :00, all aligned on :00/:15/:30/:45. The daily and weekly workflows (`check-tokens`,
    `snapshot-traffic`, `publish-due`, `render-video`) get one job each at their current cron time
    (UTC), so a missed GitHub schedule no longer skips a week.
 2. **Credential: one fine-grained PAT**, resource owner `schemchuk`, only repository `postpilot`,
@@ -42,16 +43,27 @@ itself" in ADR 015 for Threads. LinkedIn keeps the ADR 015 behaviour.
 4. **Failure visibility:** cron-job.org emails Volodymyr when a dispatch fails (non-2xx, e.g. an
    expired PAT). The PAT expiry date goes into the runbook.
 
+5. **Neon budget (added 2026-11-20 after measuring).** The Neon free plan gives 100 CU-hours a
+   month and suspends the compute after 5 idle minutes, so every run that opens the database costs
+   at least ~6 minutes at 0.25 CU. A 5-minute job that always connects keeps the database awake all
+   month (~180 CU-hours) and would stop every job around day 16. Therefore `poll-telegram` first
+   peeks at Telegram `getUpdates` without the database and exits when nothing is pending; it does a
+   full database run when updates are pending, when the peek fails, and in the first 5 minutes of
+   every UTC hour (publishing of approved items and retries). Processed updates are confirmed right
+   after the offset is stored, so the next peek does not see them again. Other jobs run at most
+   every 30 minutes and on the same minutes, so their wake-ups overlap. Expected use: ~60-70
+   CU-hours a month. Check usage in the Neon console after the first week.
+
 ### B. One-click Threads replies (task T19b)
 
-5. **Buttons on Threads engagement messages:** `Send` (`eng:send:<event_id>`), `Another variant`
+6. **Buttons on Threads engagement messages:** `Send` (`eng:send:<event_id>`), `Another variant`
    (unchanged), `Open post` (unchanged). LinkedIn messages keep `Open post` + `Another variant`.
-6. **Pressing `Send` is the Telegram approval** required by the spec. One tap, no confirm step.
-7. **Edit by replying.** If Volodymyr replies (Telegram "Reply") to an engagement message with his
+7. **Pressing `Send` is the Telegram approval** required by the spec. One tap, no confirm step.
+8. **Edit by replying.** If Volodymyr replies (Telegram "Reply") to an engagement message with his
    own text, that text replaces `reply_draft` verbatim (no AI, no rewrite), and the bot edits the
    message to show the new draft with the same buttons. Only messages from the configured chat
    count, as for every other command.
-8. **Idempotent sending, same pattern as ADR 013.** Migration 0012 adds to `engagement_events`:
+9. **Idempotent sending, same pattern as ADR 013.** Migration 0012 adds to `engagement_events`:
    `reply_status` (`NULL`, `SENDING`, `SENT`, `FAILED`), `reply_container_id`, `reply_remote_id`,
    `reply_sent_at`. On `Send`:
    - a conditional `UPDATE ... SET reply_status = 'SENDING' WHERE reply_status IS NULL OR
@@ -65,19 +77,19 @@ itself" in ADR 015 for Threads. LinkedIn keeps the ADR 015 behaviour.
      second post), otherwise the container is retried with `threads_publish` once;
    - an API error sets `FAILED` and answers "Send failed"; the buttons stay, so a later press retries.
      A permission error (code 10) answers "Token lacks threads_manage_replies, re-issue it (runbook)".
-9. **After sending** the message is edited to "Sent" plus the permalink of our reply (or the post
+10. **After sending** the message is edited to "Sent" plus the permalink of our reply (or the post
    URL if the permalink is unavailable), and the `Send` / `Another variant` buttons are removed.
    `Another variant` and edit-by-reply are refused for a `SENT` event.
-10. **`reply_draft` purge (ADR 015 decision 8) is unchanged**; the new columns hold IDs only and are
+11. **`reply_draft` purge (ADR 015 decision 8) is unchanged**; the new columns hold IDs only and are
     kept for `/stats` (a later `/stats` may count sent replies).
-11. **Small extra in T19b:** `poll-engagement` prints one line per source on success
+12. **Small extra in T19b:** `poll-engagement` prints one line per source on success
     (`<source>: found N, notified M`), so a run can be checked from the Actions log without the DB.
 
 ## Consequences
 
 - Latency of approvals and buttons drops from hours to about 5 minutes plus runner start-up
-  (~1 min). It is still not instant; true instant buttons would need a webhook host (not chosen).
-- More Actions runs: about 288 + 144 + 96 a day. The repository is public, so runner minutes are
+  (~1 min) for `poll-telegram`, 30 minutes for new comments. It is still not instant; true instant buttons would need a webhook host (not chosen).
+- More Actions runs: about 288 + 48 + 24 a day. The repository is public, so runner minutes are
   free; runs stay short.
 - A third place holds a credential (cron-job.org). It has the smallest possible scope and expires.
 - The first live `Send` doubles as the check that the stored Threads token has

@@ -1,7 +1,7 @@
 import json
 import logging
 from collections.abc import Iterable
-from typing import Any, cast
+from typing import Any
 from uuid import UUID
 
 import httpx
@@ -142,11 +142,16 @@ class TelegramApi:
         payload = {} if text is None else {"text": text}
         self._request("answerCallbackQuery", callback_query_id=id, **payload)
 
-    def get_updates(self, offset: int, timeout: int = 0) -> list[dict[str, Any]]:
-        return cast(
-            list[dict[str, Any]],
-            self._request("getUpdates", offset=offset, timeout=timeout),
-        )
+    def get_updates(
+        self, offset: int, timeout: int = 0, *, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        payload = {"offset": offset, "timeout": timeout}
+        if limit is not None:
+            payload["limit"] = limit
+        result = self._request("getUpdates", **payload)
+        if not isinstance(result, list):
+            raise TelegramError("Telegram getUpdates returned an invalid result")
+        return result
 
 
 def _truncate(text: str, limit: int = _MESSAGE_LIMIT) -> str:

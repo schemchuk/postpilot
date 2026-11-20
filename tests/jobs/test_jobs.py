@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -91,11 +92,41 @@ def test_publisher_rejects_no_channels_before_reading_item(repo):
     assert repo.mock_calls == []
 
 
-def test_poll_telegram_advances_offset(settings, repo, api):
-    api.get_updates.return_value = [{"update_id": 41}]
-    tasks.poll_telegram(settings, None)
-    api.get_updates.assert_called_once_with(0)
+@pytest.mark.parametrize("confirm_fails", [False, True])
+def test_poll_telegram_confirms_saved_offset(
+    settings, repo, monkeypatch, caplog, confirm_fails
+):
+    processed = {"update_id": 41}
+    pending = {"update_id": 42}
+    payloads = []
+    handler = Mock(advice_chat_id=None)
+    monkeypatch.setattr(tasks, "ApprovalHandler", Mock(return_value=handler))
+
+    def respond(request):
+        assert request.url.path.endswith("/getUpdates")
+        payload = json.loads(request.content)
+        payloads.append(payload)
+        if payload["offset"] == 0:
+            return httpx.Response(200, json={"ok": True, "result": [processed]})
+        assert repo.bot_state.get_offset() == 42
+        if confirm_fails:
+            raise httpx.ConnectError("private payload", request=request)
+        return httpx.Response(200, json={"ok": True, "result": [pending]})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        monkeypatch.setattr(httpx, "post", client.post)
+        tasks.poll_telegram(settings, None)
+
+    assert payloads == [
+        {"offset": 0, "timeout": 0},
+        {"offset": 42, "timeout": 0, "limit": 1},
+    ]
+    handler.handle_update.assert_called_once_with(processed)
     assert repo.bot_state.get_offset() == 42
+    repo.list_approved_item_ids.assert_called_once_with(source="telegram")
+    assert caplog.messages == (
+        ["Telegram update confirmation failed (TelegramError)"] if confirm_fails else []
+    )
 
 
 def test_check_tokens_deduplicates_daily_alert_and_renewal(

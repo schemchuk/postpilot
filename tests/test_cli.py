@@ -1,7 +1,9 @@
+import json
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock, call
 
+import httpx
 import pytest
 
 from postpilot import cli
@@ -26,7 +28,6 @@ def test_unknown_command_exits_nonzero():
     [
         ("draft-weekly", False),
         ("snapshot-traffic", True),
-        ("poll-telegram", True),
         ("poll-engagement", True),
         ("publish-due", True),
         ("check-tokens", True),
@@ -63,6 +64,59 @@ def test_dispatch(monkeypatch, command, database):
     else:
         connect.assert_not_called()
         assert steps.mock_calls == [call.job()]
+
+
+@pytest.mark.parametrize(
+    "minute, result, full_run",
+    [
+        (5, [], False),
+        (4, [], True),
+        (15, [{"update_id": 42}], True),
+        (15, None, True),
+    ],
+    ids=["empty", "hourly", "pending", "peek-error"],
+)
+def test_poll_telegram_dispatch(monkeypatch, capsys, minute, result, full_run):
+    settings = Settings("fake-db", "fake-token", 123, "fake-key")
+    monkeypatch.setattr(cli.Settings, "from_env", Mock(return_value=settings))
+    steps = Mock()
+    steps.connect.return_value = nullcontext("connection")
+    if not full_run:
+        steps.connect.side_effect = AssertionError("Unexpected database connection")
+    monkeypatch.setattr(cli, "connect", steps.connect)
+    monkeypatch.setattr(cli.migrate, "up", steps.up)
+    monkeypatch.setitem(cli._DATABASE_COMMANDS, "poll-telegram", steps.job)
+
+    def respond(request):
+        assert request.url.path.endswith("/getUpdates")
+        steps.peek(json.loads(request.content))
+        if result is None:
+            raise httpx.ConnectError("offline", request=request)
+        return httpx.Response(200, json={"ok": True, "result": result})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        monkeypatch.setattr(httpx, "post", client.post)
+        assert (
+            cli.main(
+                ["poll-telegram"],
+                now=lambda: datetime(2026, 11, 20, minute=minute, tzinfo=UTC),
+            )
+            == 0
+        )
+    expected = [call.peek({"offset": 0, "timeout": 0, "limit": 1})]
+    if full_run:
+        expected += [
+            call.connect(settings.database_url),
+            call.up("connection"),
+            call.job(settings, "connection"),
+        ]
+        assert capsys.readouterr() == ("", "")
+    else:
+        assert capsys.readouterr() == (
+            "poll-telegram: no pending updates, database not opened\n",
+            "",
+        )
+    assert steps.mock_calls == expected
 
 
 def test_threads_import_uses_environment_and_stores_expiry(monkeypatch, capsys):
