@@ -73,7 +73,10 @@ Split per ADR 015 (scope: LinkedIn + Threads; IG/FB comments later): **T15a** mi
 `poll-engagement` job and workflow, "Another variant" callback (secret gate: `IMAP_USER`,
 `IMAP_PASSWORD`). **T15b** Threads replies via `/{media-id}/conversation`. **T15c** `/stats` and
 the 90-day purge of comment text.
-**T16 Fork/star watch + profile advisor.** Ported, each optional.
+**T16 Fork/star watch + profile advisor.** Both ported per ADR 016: **T16a** fork/star watch as a
+`poll-engagement` source (migration 0011 kinds `star`/`fork`, counts in `bot_state`, baseline without
+events, Telegram message per event, `github.token` in the workflow). **T16b** profile advisor:
+`/profile`, `/profile_add`, `/profile_clear`, `/advise` in `poll-telegram`, answer as a Markdown document.
 **T17 Docs + portfolio.** README with architecture diagram, ADR index, demo, note that the LinkedIn app
 is reused and why.
 **T18 Cutover.** Run both agents side by side for two weeks, then disable and delete work_in_Linkedin
