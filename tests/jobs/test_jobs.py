@@ -263,6 +263,8 @@ def test_poll_publishes_telegram_approval_after_saving_offset(
 def test_poll_only_creates_translation_client_with_key(
     settings, repo, api, monkeypatch, key
 ):
+    read_token = Mock()
+    monkeypatch.setattr(tasks, "_read_token", read_token)
     settings = replace(settings, anthropic_api_key=key)
     repo.apply_pending_edit.return_value = None
     repo.create_inbox_item.return_value = None
@@ -282,6 +284,7 @@ def test_poll_only_creates_translation_client_with_key(
 
     tasks.poll_telegram(settings, None)
 
+    read_token.assert_not_called()
     if key is None:
         client.assert_not_called()
         repo.create_inbox_item.assert_not_called()
@@ -422,7 +425,7 @@ def test_poll_engagement_runs_threads_with_stored_token_without_imap(
         access_token="stored", expires_at=datetime.now(UTC) + timedelta(days=1)
     )
     monkeypatch.setattr(tasks, "TokenStore", Mock(return_value=store))
-    collect = Mock()
+    collect = Mock(return_value=0)
     monkeypatch.setattr(tasks, "collect_threads", collect)
     monkeypatch.setattr(tasks, "ClaudeClient", Mock())
     engagement = Mock()

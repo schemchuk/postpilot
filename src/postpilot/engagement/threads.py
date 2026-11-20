@@ -115,3 +115,84 @@ class ThreadsEngagementClient:
             timestamp,
             _required_string(row.get("permalink")),
         )
+
+
+class ThreadsReplyError(RuntimeError):
+    pass
+
+
+class ThreadsReplyPermissionError(ThreadsReplyError):
+    pass
+
+
+class UncertainThreadsReply(ThreadsReplyError):
+    pass
+
+
+THREADS_REPLY_LIMIT = 500
+
+
+class ThreadsReplyClient:
+    def __init__(self, client: httpx.Client, token: str) -> None:
+        self._client = client
+        self._token = token
+
+    def _field(
+        self, method: str, path: str, field: str, *, data: dict[str, str] | None = None
+    ) -> str:
+        publishing = path == "me/threads_publish"
+        try:
+            response = self._client.request(
+                method,
+                f"{_API}/{path}",
+                headers={"Authorization": f"Bearer {self._token}"},
+                params={"fields": field} if method == "GET" else None,
+                data=data,
+                timeout=30,
+                follow_redirects=False,
+            )
+        except (httpx.HTTPError, httpx.StreamError, httpx.InvalidURL, ValueError):
+            pass
+        else:
+            try:
+                body = response.json()
+            except ValueError:
+                body = None
+            if isinstance(body, dict):
+                error = body.get("error")
+                if isinstance(error, dict) and error.get("code") == 10:
+                    raise ThreadsReplyPermissionError(
+                        "Threads reply permission missing"
+                    )
+                value = body.get(field)
+                if response.is_success and isinstance(value, str) and value.strip():
+                    return value
+            if 400 <= response.status_code < 500 and response.status_code != 429:
+                raise ThreadsReplyError("Threads reply request rejected")
+        if publishing or field == "status":
+            raise UncertainThreadsReply("Threads reply publication uncertain")
+        raise ThreadsReplyError("Threads reply request failed")
+
+    def create_reply_container(self, reply_to_id: str, text: str) -> str:
+        if not text.strip() or len(text) > THREADS_REPLY_LIMIT:
+            raise ThreadsReplyError("Invalid Threads reply length")
+        return self._field(
+            "POST",
+            "me/threads",
+            "id",
+            data={"media_type": "TEXT", "text": text, "reply_to_id": reply_to_id},
+        )
+
+    def publish(self, container_id: str) -> str:
+        return self._field(
+            "POST", "me/threads_publish", "id", data={"creation_id": container_id}
+        )
+
+    def container_status(self, container_id: str) -> str:
+        return self._field("GET", quote(container_id, safe=""), "status")
+
+    def permalink(self, media_id: str) -> str | None:
+        try:
+            return self._field("GET", quote(media_id, safe=""), "permalink")
+        except ThreadsReplyError:
+            return None
