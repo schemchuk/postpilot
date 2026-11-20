@@ -133,10 +133,12 @@ Use `postpilot render-video --retry` to retry the oldest eligible FAILED render
 once after checking HeyGen for any charge or completed render from the previous
 attempt. Investigate alerts for RENDERING rows before making any manual changes.
 
-## LinkedIn engagement
+## Engagement monitoring
 
 `poll-engagement` runs every ten minutes. Run it manually with
 `gh workflow run poll-engagement.yml` or `postpilot poll-engagement`.
-Set the `IMAP_USER` and `IMAP_PASSWORD` GitHub Secrets to the mailbox address and Gmail app
+For LinkedIn, set the `IMAP_USER` and `IMAP_PASSWORD` GitHub Secrets to the mailbox address and Gmail app
 password. The local command also supports an optional `IMAP_HOST` (default `imap.gmail.com`).
 The first run and any mailbox UIDVALIDITY change skip existing notifications.
+Threads replies are read for posts published in the last 14 days using the existing stored
+Threads token with `threads_read_replies` and require no extra secret.

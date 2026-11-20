@@ -8,7 +8,7 @@ import httpx
 import pytest
 from cryptography.fernet import Fernet
 
-from postpilot.config import LinkedInSettings, Settings
+from postpilot.config import ImapSettings, LinkedInSettings, Settings
 from postpilot.core.models import Item
 from postpilot.core.publisher import Publisher
 from postpilot.core.states import ItemState
@@ -360,3 +360,69 @@ def test_snapshot_traffic(settings, monkeypatch, caplog, mode):
         shortio.close.assert_called_once()
         assert "unavailable" in caplog.text
     assert "mock-traffic-token" not in caplog.text
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_poll_engagement_no_sources_is_noop(settings, monkeypatch, expired):
+    store = Mock()
+    store.get.return_value = (
+        SimpleNamespace(
+            access_token="stored", expires_at=datetime.now(UTC) - timedelta(days=1)
+        )
+        if expired
+        else None
+    )
+    monkeypatch.setattr(tasks, "TokenStore", Mock(return_value=store))
+    poll = Mock()
+    monkeypatch.setattr(tasks, "poll_engagement_sources", poll)
+    tasks.poll_engagement(settings, Mock())
+    store.get.assert_called_once_with("threads")
+    poll.assert_not_called()
+
+
+def test_poll_engagement_runs_threads_with_stored_token_without_imap(
+    settings, monkeypatch
+):
+    store = Mock()
+    store.get.return_value = SimpleNamespace(
+        access_token="stored", expires_at=datetime.now(UTC) + timedelta(days=1)
+    )
+    monkeypatch.setattr(tasks, "TokenStore", Mock(return_value=store))
+    collect = Mock()
+    monkeypatch.setattr(tasks, "collect_threads", collect)
+    monkeypatch.setattr(tasks, "ClaudeClient", Mock())
+    engagement = Mock()
+    engagement.list_unnotified.return_value = []
+    monkeypatch.setattr(tasks, "EngagementStore", Mock(return_value=engagement))
+    conn = Mock()
+    tasks.poll_engagement(replace(settings, anthropic_api_key="fixture"), conn)
+    store.get.assert_called_once_with("threads")
+    collect.assert_called_once()
+
+
+def test_poll_engagement_isolates_threads_token_lookup_failure(settings, monkeypatch):
+    monkeypatch.setattr(
+        tasks,
+        "_read_token",
+        Mock(side_effect=RuntimeError("private token store error")),
+    )
+    linkedin = Mock()
+    monkeypatch.setattr(tasks, "collect_linkedin", linkedin)
+    monkeypatch.setattr(tasks, "ClaudeClient", Mock())
+    engagement = Mock()
+    engagement.list_unnotified.return_value = []
+    monkeypatch.setattr(tasks, "EngagementStore", Mock(return_value=engagement))
+    conn = Mock()
+    configured = replace(
+        settings,
+        imap=ImapSettings("mailbox@example.test", "fixture"),
+        anthropic_api_key="fixture",
+    )
+
+    with pytest.raises(
+        RuntimeError, match="^Engagement source or notification delivery failed$"
+    ):
+        tasks.poll_engagement(configured, conn)
+
+    linkedin.assert_called_once()
+    engagement.list_unnotified.assert_called_once_with()
