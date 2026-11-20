@@ -77,3 +77,19 @@ Status: ACCEPTED (Volodymyr, 2026-11-20). Implements spec F1 and F4 with the bui
   LICENSE; Volodymyr chose MIT on 2026-11-20 (added to the repository root).
 - Two tasks: **T20a** decisions 1-8 (migration, job, workflow, cron-job.org job, recording);
   **T20b** decisions 9-10 (Regenerate, series commands, poll-telegram timeout).
+
+## Amendment 2026-11-20 (Volodymyr): rollout order
+
+- The old agent (`work_in_Linkedin`) runs a 5-part series about handmake (part 1 on 2026-11-15, part 2 on
+  2026-11-20, parts 3-5 on the Fridays up to 2026-12-11). It keeps publishing the weekly posts until that
+  series ends. Posts about handmake are allowed.
+- Until then `draft-weekly` is paused: the workflow is disabled (`gh workflow disable draft-weekly.yml`,
+  which also stops the GitHub `schedule`) and cron-job.org job 8906614 is disabled. Live checks use a
+  temporary manual dispatch.
+- After 2026-12-11 (T18): copy the old agent's posted repositories into `posted_repos`, start a 5-part
+  series about postpilot (`/series_start postpilot 5`), enable the workflow and the cron-job.org job. First
+  postpilot draft Wednesday 2026-12-16, first publication Friday 2026-12-18. After that series the normal
+  weekly rhythm applies.
+- First live dispatch (run 44760632324, 2026-11-20) failed in the quality gate: the 20-commit cap made
+  postpilot and handmake tie (name order picked handmake), and the humanizer rejected both texts after 3
+  rounds (generated bullet lists count as markdown; strict fact review). Fixes are part of T20b.

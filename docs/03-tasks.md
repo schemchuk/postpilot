@@ -98,10 +98,18 @@ recording once after publication; live: one manual dispatch produces a preview i
 **T20b** Regenerate for S1 from stored facts (failure keeps the old draft), `/series`,
 `/series_start <repo> [parts]`, `/series_stop`, poll-telegram timeout 10 min. Accept: tests for
 regenerate success/failure, series commands incl. invalid repo and an already active series.
+T20b also fixes the first live run (ADR 018 amendment): count up to 100 commits per repo for
+`pick_project` (prompt still gets at most 20 messages); generation prompts ask for plain paragraphs
+without bullet lists or dashes; the failure alert names the failed step and language (no post text).
+Live: temporary manual dispatch gives a preview in Telegram (Volodymyr presses Skip), workflow disabled
+again afterwards.
 **T17 Docs + portfolio.** README with architecture diagram, ADR index, demo, note that the LinkedIn app
 is reused and why.
 **T18 Cutover.** Run both agents side by side for two weeks, then disable and delete work_in_Linkedin
 (Volodymyr confirms). Also delete social_bridge and "lumara" Projects if not yet done.
+T18 is not before 2026-12-11 (end of the old agent's handmake series, ADR 018 amendment): copy the old
+agent's posted repos into `posted_repos`, `/series_start postpilot 5`, enable `draft-weekly.yml` and
+cron-job.org job 8906614 (first draft Wed 2026-12-16).
 
 ## Order
 T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18.
