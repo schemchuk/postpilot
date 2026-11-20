@@ -66,6 +66,11 @@ class State:
 @pytest.fixture
 def repo(monkeypatch):
     repo = Mock(bot_state=State())
+    monkeypatch.setattr(
+        tasks,
+        "WeeklyStore",
+        Mock(return_value=Mock(list_interrupted=Mock(return_value=[]))),
+    )
     repo.list_approved_item_ids.return_value = []
     repo.has_inbox_update.return_value = False
     monkeypatch.setattr(tasks, "ItemRepo", Mock(return_value=repo))

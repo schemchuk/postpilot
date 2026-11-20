@@ -66,8 +66,10 @@ def test_scheduled_workflow(name, cron):
     for job in workflow["jobs"].values():
         assert "permissions" not in job
         assert job["timeout-minutes"] > 0
-        if name in {"poll-engagement", "poll-telegram"}:
+        if name == "poll-engagement":
             assert job["timeout-minutes"] == 5
+        if name == "poll-telegram":
+            assert job["timeout-minutes"] == 10
         assert {"uses": "actions/checkout@v4"} in job["steps"]
         assert {
             "uses": "actions/setup-python@v5",
@@ -141,6 +143,7 @@ def test_scheduled_workflow(name, cron):
             expected.update({"FACEBOOK_PAGE_ID", "INSTAGRAM_BUSINESS_ACCOUNT_ID"})
         if name == "poll-telegram":
             expected.update({"ANTHROPIC_API_KEY", "GITHUB_TOKEN", "GITHUB_OWNER"})
+            expected.update({"SHORTIO_API_KEY", "SHORTIO_DOMAIN"})
         assert set(command["env"]) == expected
         for variable, value in command["env"].items():
             if name in {

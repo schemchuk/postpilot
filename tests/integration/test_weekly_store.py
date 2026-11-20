@@ -3,6 +3,7 @@ from unittest.mock import Mock
 
 import pytest
 import test_store
+from psycopg import Error
 from psycopg.errors import UniqueViolation
 
 from postpilot.config import Settings
@@ -136,3 +137,61 @@ def test_complete_only_matching_active_series(conn):
     assert store.complete(series_id=series.id).status == "completed"
     assert store.get_active() is None
     assert store.complete() is None
+
+
+def test_weekly_lookup_and_interrupted_query(conn):
+    weekly = WeeklyStore(conn)
+    repo = ItemRepo(conn)
+    week = WEEK + timedelta(weeks=10)
+    interrupted = weekly.create_drafted(week, "alpha", None, None, {}, "de", "ua")
+    waiting = weekly.create_drafted(
+        week + timedelta(days=7), "beta", None, None, {}, "de", "ua"
+    )
+    unrelated = repo.create_item("github")
+    weekly.record_outcome(week + timedelta(days=14), "no_activity", None, {})
+    repo.transition(interrupted.id, ItemState.DRAFT)
+
+    assert weekly.get_by_item(waiting.id) == weekly.get(week + timedelta(days=7))
+    assert weekly.get_by_item(unrelated.id) is None
+    assert weekly.list_interrupted() == [weekly.get_by_item(interrupted.id)]
+    repo.transition(interrupted.id, ItemState.AWAITING_APPROVAL)
+
+
+@pytest.mark.parametrize("fail_second", [False, True])
+def test_regenerate_atomic_variant_replace(conn, monkeypatch, fail_second):
+    weekly = WeeklyStore(conn)
+    repo = ItemRepo(conn)
+    facts = {"link_allowed": False, "source_details": "Source: alpha"}
+    week = WEEK + timedelta(weeks=13 + int(fail_second))
+    item = weekly.create_drafted(week, "alpha", None, None, facts, "Old DE", "Old UA")
+    repo.transition(item.id, ItemState.DRAFT)
+    model = Mock()
+    notifier = Mock()
+    monkeypatch.setattr(
+        tasks, "_generate_weekly", Mock(return_value=("New DE", "New UA"))
+    )
+    update = repo.update_variant_text
+
+    def update_text(item_id, lang, text, **kwargs):
+        if fail_second and lang == "ua":
+            assert repo.get_variants(item_id)[0].text == "New DE"
+            raise Error("second variant write failed")
+        update(item_id, lang, text, **kwargs)
+
+    monkeypatch.setattr(repo, "update_variant_text", update_text)
+    settings = Settings("fake-db", "fake-bot", 123, "fake-key")
+    tasks._regenerate_weekly(settings, repo, weekly, notifier, model, item.id)
+    assert repo.get_item(item.id).state == ItemState.AWAITING_APPROVAL
+    assert weekly.list_interrupted() == []
+    assert weekly.get_by_item(item.id).facts == facts
+    expected = ["Old DE", "Old UA"] if fail_second else ["New DE", "New UA"]
+    assert [variant.text for variant in repo.get_variants(item.id)] == expected
+    if fail_second:
+        notifier.send_alert.assert_called_once_with(
+            "Regeneration failed, previous draft kept (storage)"
+        )
+    else:
+        notifier.send_alert.assert_not_called()
+    assert [
+        variant.text for variant in notifier.send_preview.call_args.args[1]
+    ] == expected

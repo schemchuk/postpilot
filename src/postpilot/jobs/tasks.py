@@ -14,8 +14,8 @@ from psycopg import Connection, Error
 from psycopg.rows import TupleRow
 
 from postpilot.ai.advisor import AdvisorModel, generate_advice
-from postpilot.ai.client import AIError, ClaudeClient
-from postpilot.ai.humanizer import HumanizerError, humanize_pair
+from postpilot.ai.client import ClaudeClient, TextModel
+from postpilot.ai.humanizer import humanize_post
 from postpilot.ai.prompts import (
     POST_SYSTEM_PROMPT,
     SERIES_SYSTEM_PROMPT,
@@ -27,6 +27,7 @@ from postpilot.channels.instagram_reels import InstagramReelsChannel
 from postpilot.channels.registry import build_channels
 from postpilot.config import ConfigError, HeyGenSettings, Settings
 from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
+from postpilot.core.models import Item
 from postpilot.core.publisher import Publisher
 from postpilot.core.repo_safety import check_repo, finalize_links
 from postpilot.core.states import IllegalTransition, ItemState
@@ -44,14 +45,19 @@ from postpilot.links.store import LinkStore
 from postpilot.notify.approval import ApprovalHandler
 from postpilot.notify.poller import poll_once
 from postpilot.notify.renewal import RenewalHandler
-from postpilot.notify.telegram import Notifier, TelegramApi
-from postpilot.sources.github import GitHubClient, GitHubError, pick_project
+from postpilot.notify.telegram import Notifier, TelegramApi, TelegramError
+from postpilot.sources.github import (
+    PROMPT_COMMIT_LIMIT,
+    GitHubClient,
+    GitHubError,
+    pick_project,
+)
 from postpilot.sources.series import SeriesStore
 from postpilot.sources.telegram import TelegramInbox
 from postpilot.stats import StatsStore
 from postpilot.store.bot_state import BotState
 from postpilot.store.repo import ItemRepo
-from postpilot.store.weekly import WeeklyStore
+from postpilot.store.weekly import WeeklyDraft, WeeklyStore
 from postpilot.tokens import service
 from postpilot.tokens.base import TokenManager, days_left
 from postpilot.tokens.crypto import TokenCipher
@@ -238,10 +244,45 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
             token = read_threads_token()
             return ThreadsReplyClient(client, token) if token else None
 
+        weekly = WeeklyStore(conn)
+        notifier = Notifier(api, settings.telegram_chat_id)
+        recovered = set()
+        for interrupted in weekly.list_interrupted():
+            assert interrupted.item_id is not None
+            try:
+                item = repo.transition(
+                    interrupted.item_id,
+                    ItemState.AWAITING_APPROVAL,
+                    expected_state=ItemState.DRAFT,
+                )
+                recovered.add(item.id)
+                try:
+                    notifier.send_alert("Regeneration interrupted, previous draft kept")
+                finally:
+                    _weekly_preview(notifier, repo, item, interrupted)
+            except Exception as error:  # noqa: BLE001 - continue processing updates
+                logger.warning(
+                    "Regeneration recovery failed (%s)", type(error).__name__
+                )
+
         handler = ApprovalHandler(
             repo,
             api,
             settings.telegram_chat_id,
+            on_regenerate=partial(
+                _regenerate_weekly, settings, repo, weekly, notifier, model
+            )
+            if model is not None
+            else None,
+            recovered_regenerations=recovered,
+            series=SeriesStore(conn),
+            github_factory=partial(
+                GitHubClient,
+                settings.github_owner,
+                settings.github_token,
+                client=client,
+            ),
+            github_owner=settings.github_owner,
             renewal=renewal,
             inbox=TelegramInbox(repo, api, model),
             video_store=VideoStore(conn),
@@ -443,6 +484,188 @@ _DRAFT_SCHEMA: dict[str, object] = {
 }
 
 
+class _WeeklyGenerationError(RuntimeError):
+    """A fixed, safe label for the generation step that failed."""
+
+
+def _generate_weekly(
+    model: TextModel,
+    system: str,
+    payload: dict[str, object],
+    name: str,
+    url: str,
+    allowed: bool,
+) -> tuple[str, str] | str:
+    try:
+        response = model.complete(system, generation_message(payload), _DRAFT_SCHEMA)
+    except Exception:  # noqa: BLE001 - keep model errors out of job alerts
+        raise _WeeklyGenerationError("generation (AI request)") from None
+    try:
+        draft = json.loads(response)
+    except (TypeError, ValueError, RecursionError):
+        raise _WeeklyGenerationError("generation (invalid JSON)") from None
+    if (
+        not isinstance(draft, dict)
+        or draft.keys() != set(_DRAFT_FIELDS)
+        or not all(isinstance(value, str) for value in draft.values())
+        or draft["decision"] not in ("post", "skip")
+    ):
+        raise _WeeklyGenerationError("generation (invalid response)")
+    if draft["repo"] != name:
+        raise _WeeklyGenerationError("generation (wrong repo)")
+    if draft["decision"] == "skip":
+        if reason := str(draft["reason"]).strip():
+            return reason
+        raise _WeeklyGenerationError("generation (missing skip reason)")
+
+    texts = []
+    for lang, field in (("de", "post_de"), ("ua", "post_uk")):
+        try:
+            texts.append(finalize_links(draft[field], url, allowed).strip())
+        except ValueError:
+            raise _WeeklyGenerationError(f"link validation ({lang})") from None
+    _check_weekly_lengths(texts)
+    for index, (lang, model_lang) in enumerate((("de", "de"), ("ua", "uk"))):
+        try:
+            texts[index] = humanize_post(model, texts[index], model_lang, payload)
+        except Exception:  # noqa: BLE001 - keep model errors out of job alerts
+            raise _WeeklyGenerationError(f"humanizer ({lang})") from None
+    _check_weekly_lengths(texts)
+    return texts[0], texts[1]
+
+
+def _check_weekly_lengths(texts: list[str]) -> None:
+    for lang, text in zip(("de", "ua"), texts, strict=True):
+        if not text or len(text) > LINKEDIN_TEXT_LIMIT:
+            raise _WeeklyGenerationError(f"length ({lang})")
+
+
+def _weekly_links(
+    settings: Settings,
+    conn: Connection[TupleRow],
+    repo: ItemRepo,
+    item: Item,
+    name: str,
+    url: str,
+    allowed: bool,
+) -> None:
+    if not allowed or settings.shortio is None:
+        return
+    exact_url = re.compile(r"(?<![\w/])" + re.escape(url) + r"(?![\w./?#%&=~-])")
+    shortio = ShortioClient(settings.shortio)
+    try:
+        for variant in repo.get_variants(item.id):
+            if exact_url.search(variant.text):
+                short = tracked_link(
+                    shortio,
+                    LinkStore(conn),
+                    url,
+                    name,
+                    variant.lang,
+                    item_id=item.id,
+                    strict_storage=item.state == ItemState.DRAFT,
+                )
+                repo.update_variant_text(
+                    item.id,
+                    variant.lang,
+                    exact_url.sub(short.replace("\\", "\\\\"), variant.text),
+                    expected_state=item.state,
+                )
+    finally:
+        shortio.close()
+
+
+def _weekly_preview(
+    notifier: Notifier, repo: ItemRepo, item: Item, row: WeeklyDraft
+) -> None:
+    source = row.facts.get("source_details")
+    notifier.send_preview(
+        item,
+        repo.get_variants(item.id),
+        source_details=source if isinstance(source, str) else "",
+    )
+
+
+def _regenerate_weekly(
+    settings: Settings,
+    repo: ItemRepo,
+    weekly: WeeklyStore,
+    notifier: Notifier,
+    model: TextModel,
+    item_id: UUID,
+) -> None:
+    row = None
+    awaiting, draft = ItemState.AWAITING_APPROVAL, ItemState.DRAFT
+    step = "stored facts"
+    alert = None
+    try:
+        try:
+            row = weekly.get_by_item(item_id)
+            if row is None:
+                repo.transition(item_id, awaiting, expected_state=draft)
+                notifier.send_alert("Regeneration is unavailable for this item")
+                return
+            assert row.repo is not None
+            facts = row.facts
+            payload = facts.get("payload")
+            if not isinstance(payload, dict):
+                metadata = {
+                    "prompt",
+                    "repo_url",
+                    "link_allowed",
+                    "link_reasons",
+                    "source_details",
+                }
+                payload = {
+                    key: value for key, value in facts.items() if key not in metadata
+                }
+            inferred = (
+                "series" if {"part", "previous_parts"} & payload.keys() else "post"
+            )
+            prompt = facts.get("prompt", inferred)
+            system = {"series": SERIES_SYSTEM_PROMPT, "post": POST_SYSTEM_PROMPT}[
+                str(prompt)
+            ]
+            url = facts.get("repo_url")
+            if not isinstance(url, str):
+                url = f"https://github.com/{settings.github_owner}/{row.repo}"
+            allowed = facts["link_allowed"] is True
+            step = "generation"
+            result = _generate_weekly(model, system, payload, row.repo, url, allowed)
+            if isinstance(result, str):
+                raise _WeeklyGenerationError("model skip")
+            step = "storage"
+            with weekly.conn.transaction():
+                repo.update_variant_text(item_id, "de", result[0], expected_state=draft)
+                repo.update_variant_text(item_id, "ua", result[1], expected_state=draft)
+                current = repo.get_item(item_id)
+                assert current is not None
+                step = "short links"
+                _weekly_links(
+                    settings, weekly.conn, repo, current, row.repo, url, allowed
+                )
+                step = "storage"
+                item = repo.transition(item_id, awaiting, expected_state=draft)
+        except Exception as error:  # noqa: BLE001 - restore the previous draft
+            logger.warning("Regeneration failed (%s)", type(error).__name__)
+            item = repo.transition(item_id, awaiting, expected_state=draft)
+            if isinstance(error, _WeeklyGenerationError):
+                step = str(error)
+            alert = f"Regeneration failed, previous draft kept ({step})"
+
+        if alert:
+            try:
+                notifier.send_alert(alert)
+            except TelegramError:
+                logger.warning("Regeneration alert failed (TelegramError)")
+        if row is not None:
+            _weekly_preview(notifier, repo, item, row)
+        else:
+            notifier.send_preview(item, repo.get_variants(item.id))
+    except Exception as error:  # noqa: BLE001 - allow the poll to handle other updates
+        logger.warning("Regeneration follow-up failed (%s)", type(error).__name__)
+
+
 def draft_weekly(settings: Settings, conn: Connection[TupleRow]) -> None:
     now = _now().astimezone(ZoneInfo("Europe/Berlin"))
     week = now.date() - timedelta(days=now.weekday())
@@ -452,19 +675,12 @@ def draft_weekly(settings: Settings, conn: Connection[TupleRow]) -> None:
             repo = ItemRepo(conn)
             item = repo.get_item(existing.item_id)
             if item is not None and item.state == ItemState.AWAITING_APPROVAL:
-                source_details = existing.facts.get("source_details")
                 with httpx.Client(timeout=30) as client:
                     notifier = Notifier(
                         TelegramApi(settings.telegram_bot_token, client=client),
                         settings.telegram_chat_id,
                     )
-                    notifier.send_preview(
-                        item,
-                        repo.get_variants(item.id),
-                        source_details=source_details
-                        if isinstance(source_details, str)
-                        else "",
-                    )
+                    _weekly_preview(notifier, repo, item, existing)
                 print(f"draft-weekly: week {week} preview resent")
                 return
         print(f"draft-weekly: week {week} already handled ({existing.outcome})")
@@ -528,7 +744,8 @@ def draft_weekly(settings: Settings, conn: Connection[TupleRow]) -> None:
                 "repo": repo_facts,
                 "part": series.part,
                 "total_parts": series.total_parts,
-                "recent_commits": commits,
+                "recent_commits": commits[:PROMPT_COMMIT_LIMIT],
+                "commit_count": len(commits),
                 "previous_parts": [
                     {
                         "part": part.part,
@@ -544,50 +761,31 @@ def draft_weekly(settings: Settings, conn: Connection[TupleRow]) -> None:
         else:
             system = POST_SYSTEM_PROMPT
             payload = {
-                "projects": [{**repo_facts, "commits": commits}],
+                "projects": [
+                    {
+                        **repo_facts,
+                        "commits": commits[:PROMPT_COMMIT_LIMIT],
+                        "commit_count": len(commits),
+                    }
+                ],
                 "week": week.isoformat(),
                 "recently_posted": posted,
             }
 
         model = ClaudeClient(settings.anthropic_api_key)
         try:
-            draft = json.loads(
-                model.complete(system, generation_message(payload), _DRAFT_SCHEMA)
-            )
-            if (
-                not isinstance(draft, dict)
-                or draft.keys() != set(_DRAFT_FIELDS)
-                or not all(isinstance(value, str) for value in draft.values())
-                or draft["decision"] not in ("post", "skip")
-                or draft["repo"] != name
-            ):
-                raise ValueError
-            decision = draft["decision"]
-            if decision == "post":
-                de, ua = (
-                    finalize_links(draft[field], url, safety.allowed).strip()
-                    for field in ("post_de", "post_uk")
-                )
-                if not de or not ua or max(len(de), len(ua)) > LINKEDIN_TEXT_LIMIT:
-                    raise ValueError
-                de, ua = humanize_pair(model, de, ua, payload)
-                if max(len(de), len(ua)) > LINKEDIN_TEXT_LIMIT:
-                    raise ValueError
-            else:
-                reason = draft["reason"].strip()
-                if not reason:
-                    raise ValueError
-        except (AIError, HumanizerError, ValueError):
-            raise RuntimeError(
-                "Weekly draft generation or quality gate failed"
-            ) from None
-
-        facts = {
-            **payload,
+            result = _generate_weekly(model, system, payload, name, url, safety.allowed)
+        except _WeeklyGenerationError as error:
+            raise RuntimeError(f"Weekly draft failed: {error}") from None
+        facts: dict[str, object] = {
+            "payload": payload,
+            "prompt": "series" if series else "post",
+            "repo_url": url,
             "link_allowed": safety.allowed,
             "link_reasons": safety.reasons,
         }
-        if decision == "skip":
+        if isinstance(result, str):
+            reason = result
             message = f"No weekly post this week ({name}): {reason}"
             with conn.transaction():
                 weekly.record_outcome(
@@ -613,36 +811,10 @@ def draft_weekly(settings: Settings, conn: Connection[TupleRow]) -> None:
                 series.id if series else None,
                 series.part if series else None,
                 facts,
-                de,
-                ua,
+                *result,
             )
             weekly.expire_older(item.id)
-            if safety.allowed and settings.shortio is not None:
-                exact_url = re.compile(
-                    r"(?<![\w/])" + re.escape(url) + r"(?![\w./?#%&=~-])"
-                )
-                shortio = ShortioClient(settings.shortio)
-                try:
-                    for variant in repo.get_variants(item.id):
-                        if exact_url.search(variant.text):
-                            short = tracked_link(
-                                shortio,
-                                LinkStore(conn),
-                                url,
-                                name,
-                                variant.lang,
-                                item_id=item.id,
-                            )
-                            repo.update_variant_text(
-                                item.id,
-                                variant.lang,
-                                exact_url.sub(
-                                    short.replace("\\", "\\\\"),
-                                    variant.text,
-                                ),
-                            )
-                finally:
-                    shortio.close()
+            _weekly_links(settings, conn, repo, item, name, url, safety.allowed)
         notifier.send_preview(
             item,
             repo.get_variants(item.id),

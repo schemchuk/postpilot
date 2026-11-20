@@ -11,7 +11,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,6 +27,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_OWNER: schemchuk
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SHORTIO_API_KEY: ${{ secrets.SHORTIO_API_KEY }}
+          SHORTIO_DOMAIN: ${{ secrets.SHORTIO_DOMAIN }}
           LINKEDIN_CLIENT_ID: ${{ secrets.LINKEDIN_CLIENT_ID }}
           LINKEDIN_CLIENT_SECRET: ${{ secrets.LINKEDIN_CLIENT_SECRET }}
           LINKEDIN_REDIRECT_URI: ${{ secrets.LINKEDIN_REDIRECT_URI }}

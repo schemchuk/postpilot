@@ -38,6 +38,24 @@ class WeeklyStore:
             ).fetchone()
         return WeeklyDraft(*row) if row else None
 
+    def get_by_item(self, item_id: UUID) -> WeeklyDraft | None:
+        with self.conn.transaction():
+            row = self.conn.execute(
+                f"SELECT {_COLUMNS} FROM weekly_drafts WHERE item_id = %s", (item_id,)
+            ).fetchone()
+        return WeeklyDraft(*row) if row else None
+
+    def list_interrupted(self) -> list[WeeklyDraft]:
+        with self.conn.transaction():
+            rows = self.conn.execute(
+                f"""
+                SELECT {_COLUMNS} FROM weekly_drafts
+                WHERE item_id IS NOT NULL
+                  AND item_id IN (SELECT id FROM items WHERE state = 'DRAFT')
+                """
+            ).fetchall()
+        return [WeeklyDraft(*row) for row in rows]
+
     def create_drafted(
         self,
         week: date,

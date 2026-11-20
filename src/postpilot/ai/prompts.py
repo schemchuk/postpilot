@@ -56,6 +56,8 @@ README/LICENSE або зі слідами секретів в історії). �
 - жодних інших зовнішніх посилань у пості
 
 4. Форматування:
+Use plain paragraphs with no bullet or numbered lists, no lines starting with -, *, • or digits followed by a dot,
+and no em or en dashes.
 ДОЗВОЛЕНО: прості емодзі (1-3), великі літери для акценту ЗАБОРОНЕНО: HTML, markdown (зірочки, підкреслення,
 дужки-посилання)
 
@@ -116,6 +118,8 @@ Integration & IT Automation".
 - посилання можна додати останнім рядком ТІЛЬКИ якщо в repo Є поле "url"
 - якщо поля "url" нема — пиши без посилань і не вигадуй адресу з назви
 
+Use plain paragraphs with no bullet or numbered lists, no lines starting with -, *, • or digits followed by a dot,
+and no em or en dashes.
 6. Форматування: прості емодзі (1-3), великі літери для акценту. ЗАБОРОНЕНО: HTML, markdown.
 
 7. Хештеги: 4-6, одне слово; у post_de німецькою/англійською, у post_uk українською/англійською.
