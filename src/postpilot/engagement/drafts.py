@@ -67,6 +67,13 @@ class ReplyDrafter:
             email=email_text[:12000],
         )
 
+    def draft(self, comment_text: str) -> str | None:
+        return self._analyze(
+            "Return kind comment with a reply draft. "
+            "Use null for actor, comment_text and post_url.",
+            comment=comment_text,
+        ).reply_draft
+
     def redraft(self, comment_text: str, previous: str) -> str | None:
         return self._analyze(
             "Return kind comment with a fresh reply from a different angle. "

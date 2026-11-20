@@ -1,6 +1,6 @@
 import logging
 import os
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from functools import partial
 from math import ceil
@@ -19,8 +19,13 @@ from postpilot.config import ConfigError, HeyGenSettings, Settings
 from postpilot.core.publisher import Publisher
 from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.engagement.drafts import ReplyDrafter
-from postpilot.engagement.job import poll_linkedin
+from postpilot.engagement.job import (
+    collect_linkedin,
+    collect_threads,
+    poll_engagement_sources,
+)
 from postpilot.engagement.store import EngagementStore
+from postpilot.engagement.threads import ThreadsEngagementClient
 from postpilot.links.shortio import ShortioClient
 from postpilot.links.store import LinkStore
 from postpilot.notify.approval import ApprovalHandler
@@ -79,15 +84,19 @@ def _managers(
     return managers
 
 
+def _read_token(
+    settings: Settings, conn: Connection[TupleRow], provider: str
+) -> str | None:
+    token = TokenStore(conn, TokenCipher(settings.token_encryption_key)).get(provider)
+    if token is None or days_left(token.expires_at, _now()) <= 0:
+        return None
+    return token.access_token
+
+
 def _publisher(
     settings: Settings, repo: ItemRepo, client: httpx.Client
 ) -> Publisher | None:
-    def read_token(provider: str) -> str | None:
-        store = TokenStore(repo.conn, TokenCipher(settings.token_encryption_key))
-        token = store.get(provider)
-        if token is None or days_left(token.expires_at, _now()) <= 0:
-            return None
-        return token.access_token
+    read_token = partial(_read_token, settings, repo.conn)
 
     channels = build_channels(settings, read_token, client)
     if not channels:
@@ -116,19 +125,47 @@ def _publish_items(publisher: Publisher, item_ids: Iterable[UUID]) -> None:
 
 
 def poll_engagement(settings: Settings, conn: Connection[TupleRow]) -> None:
-    if settings.imap is None:
-        logger.warning("IMAP credentials are not configured")
+    token_lookup_failed = False
+    try:
+        token = _read_token(settings, conn, "threads")
+    except Exception:  # noqa: BLE001 - isolate token lookup from LinkedIn and Telegram
+        token = None
+        token_lookup_failed = True
+
+    if settings.imap is None and not token and not token_lookup_failed:
+        logger.warning("No engagement sources configured")
         return
-    if not settings.anthropic_api_key:
-        raise ConfigError("ANTHROPIC_API_KEY is required for engagement")
-    poll_linkedin(
-        settings.imap,
-        BotState(conn),
-        EngagementStore(conn),
-        ReplyDrafter(ClaudeClient(settings.anthropic_api_key)),
-        TelegramApi(settings.telegram_bot_token),
-        settings.telegram_chat_id,
-    )
+    store = EngagementStore(conn)
+    with httpx.Client(timeout=30, follow_redirects=False) as client:
+        sources: list[Callable[[], None]] = []
+        if settings.imap is not None or token:
+            if not settings.anthropic_api_key:
+                raise ConfigError("ANTHROPIC_API_KEY is required for engagement")
+            drafter = ReplyDrafter(ClaudeClient(settings.anthropic_api_key))
+            if settings.imap is not None:
+                sources.append(
+                    partial(
+                        collect_linkedin, settings.imap, BotState(conn), store, drafter
+                    )
+                )
+            if token:
+                sources.append(
+                    partial(
+                        collect_threads,
+                        ThreadsEngagementClient(client, token),
+                        store,
+                        drafter,
+                    )
+                )
+
+        api = TelegramApi(settings.telegram_bot_token, client=client)
+        poll_engagement_sources(
+            sources,
+            store,
+            api,
+            settings.telegram_chat_id,
+            source_failed=token_lookup_failed,
+        )
 
 
 def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:

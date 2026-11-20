@@ -94,3 +94,27 @@ class EngagementStore:
                 "UPDATE engagement_events SET reply_draft = %s WHERE id = %s",
                 (text, id),
             )
+
+    def recent_threads_posts(self, since: datetime) -> list[str]:
+        with self.conn.transaction():
+            rows = self.conn.execute(
+                """
+                SELECT remote_id FROM publications
+                WHERE channel = 'threads' AND status = 'PUBLISHED'
+                    AND remote_id IS NOT NULL AND updated_at >= %s
+                ORDER BY updated_at DESC, item_id
+                """,
+                (since,),
+            ).fetchall()
+        return [remote_id for (remote_id,) in rows]
+
+    def known_refs(self, channel: str, refs: list[str]) -> set[str]:
+        if not refs:
+            return set()
+        with self.conn.transaction():
+            rows = self.conn.execute(
+                "SELECT source_ref FROM engagement_events"
+                " WHERE channel = %s AND source_ref = ANY(%s)",
+                (channel, refs),
+            ).fetchall()
+        return {ref for (ref,) in rows}
