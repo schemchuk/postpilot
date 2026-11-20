@@ -40,8 +40,9 @@ managed Postgres (ADR 001, 003). No always-on server.
 
 ## 3. Flows
 
-**S1 weekly.** Wed cron: `draft-weekly` collects activity, generates DE+UA, runs humanizer and repo
-safety, stores item AWAITING_APPROVAL, sends preview. Fri cron: `publish-due` publishes APPROVED
+**S1 weekly.** Wed cron: `draft-weekly` collects activity, checks repository link
+safety, generates DE+UA and runs the humanizer before storing the item in AWAITING_APPROVAL
+and sending a preview. Fri cron: `publish-due` publishes APPROVED
 items. Unapproved items are never published; they wait or expire to SKIPPED.
 
 **S2 Telegram.** `poll-telegram` (every ~5 min, Actions cron) reads updates with a stored offset

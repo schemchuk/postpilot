@@ -21,6 +21,7 @@ from postpilot.store.db import connect
 _utc_now = partial(datetime.now, UTC)
 
 _DATABASE_COMMANDS = {
+    "draft-weekly": tasks.draft_weekly,
     "poll-engagement": tasks.poll_engagement,
     "poll-telegram": tasks.poll_telegram,
     "publish-due": tasks.publish_due,
@@ -102,11 +103,8 @@ def main(
         database_job = partial(tasks.render_video, retry=args.retry)
     elif args.command == "publish-reels":
         database_job = partial(tasks.publish_reels, retry=args.retry)
-    operation = (
-        partial(_with_database, database_job, settings)
-        if database_job is not None
-        else tasks.not_implemented
-    )
+    assert database_job is not None
+    operation = partial(_with_database, database_job, settings)
     if args.command == "poll-telegram":
         operation = partial(_poll_telegram, operation, settings, now)
     elif args.command == "poll-engagement":

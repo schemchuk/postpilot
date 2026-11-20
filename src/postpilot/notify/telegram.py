@@ -158,11 +158,19 @@ def _truncate(text: str, limit: int = _MESSAGE_LIMIT) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def render_preview(item: Item, variants: Iterable[Variant]) -> str:
+def render_preview(
+    item: Item, variants: Iterable[Variant], *, source_details: str = ""
+) -> str:
     preview = f"Item {item.id.hex[:8]} · {item.source}"
     entries = [(f"\n\n{variant.lang.upper()}\n", variant.text) for variant in variants]
+    footer = (
+        f"\n\n{source_details}" if source_details and item.source == "github" else ""
+    )
     remaining = (
-        _MESSAGE_LIMIT - len(preview) - sum(len(header) for header, _ in entries)
+        _MESSAGE_LIMIT
+        - len(preview)
+        - len(footer)
+        - sum(len(header) for header, _ in entries)
     )
     for index, (header, text) in enumerate(entries):
         # Reserve room for later variants, even if the first text is very long.
@@ -173,7 +181,7 @@ def render_preview(item: Item, variants: Iterable[Variant]) -> str:
         excerpt = _truncate(text, budget)
         preview += header + excerpt
         remaining -= len(excerpt)
-    return preview
+    return preview + footer
 
 
 def approval_keyboard(
@@ -200,7 +208,9 @@ class Notifier:
         self.api = api
         self.chat_id = chat_id
 
-    def send_preview(self, item: Item, variants: Iterable[Variant]) -> int:
+    def send_preview(
+        self, item: Item, variants: Iterable[Variant], *, source_details: str = ""
+    ) -> int:
         markup = approval_keyboard(item.id, regenerate=item.source != "telegram")
         if item.source == "telegram":
             heading = f"Item {item.id.hex[:8]} · {item.source}"
@@ -214,7 +224,7 @@ class Notifier:
                     self.api.send_message(self.chat_id, f"{heading}\n\n{section}")
                 preview = f"{heading}\n\n{sections[-1]}"
         else:
-            preview = render_preview(item, variants)
+            preview = render_preview(item, variants, source_details=source_details)
         return self.api.send_message(self.chat_id, preview, markup)
 
     def send_video_preview(self, render: VideoRender, video: bytes) -> None:

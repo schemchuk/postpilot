@@ -1,23 +1,34 @@
+import json
 import logging
 import os
+import re
 from collections.abc import Callable, Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from math import ceil
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import httpx
 from psycopg import Connection, Error
 from psycopg.rows import TupleRow
 
 from postpilot.ai.advisor import AdvisorModel, generate_advice
-from postpilot.ai.client import ClaudeClient
+from postpilot.ai.client import AIError, ClaudeClient
+from postpilot.ai.humanizer import HumanizerError, humanize_pair
+from postpilot.ai.prompts import (
+    POST_SYSTEM_PROMPT,
+    SERIES_SYSTEM_PROMPT,
+    generation_message,
+)
 from postpilot.channels.base import TransientChannelError
 from postpilot.channels.facebook_reels import FacebookReelsChannel
 from postpilot.channels.instagram_reels import InstagramReelsChannel
 from postpilot.channels.registry import build_channels
 from postpilot.config import ConfigError, HeyGenSettings, Settings
+from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
 from postpilot.core.publisher import Publisher
+from postpilot.core.repo_safety import check_repo, finalize_links
 from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.engagement.drafts import ReplyDrafter
 from postpilot.engagement.job import (
@@ -28,18 +39,19 @@ from postpilot.engagement.job import (
 )
 from postpilot.engagement.store import EngagementStore
 from postpilot.engagement.threads import ThreadsEngagementClient, ThreadsReplyClient
-from postpilot.links.shortio import ShortioClient
+from postpilot.links.shortio import ShortioClient, tracked_link
 from postpilot.links.store import LinkStore
 from postpilot.notify.approval import ApprovalHandler
 from postpilot.notify.poller import poll_once
 from postpilot.notify.renewal import RenewalHandler
 from postpilot.notify.telegram import Notifier, TelegramApi
-from postpilot.sources.github import GitHubClient, GitHubError
+from postpilot.sources.github import GitHubClient, GitHubError, pick_project
 from postpilot.sources.series import SeriesStore
 from postpilot.sources.telegram import TelegramInbox
 from postpilot.stats import StatsStore
 from postpilot.store.bot_state import BotState
 from postpilot.store.repo import ItemRepo
+from postpilot.store.weekly import WeeklyStore
 from postpilot.tokens import service
 from postpilot.tokens.base import TokenManager, days_left
 from postpilot.tokens.crypto import TokenCipher
@@ -419,15 +431,269 @@ def check_tokens(settings: Settings, conn: Connection[TupleRow]) -> None:
                 )
 
 
+_DRAFT_FIELDS = ("decision", "repo", "post_de", "post_uk", "reason")
+_DRAFT_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        **{field: {"type": "string"} for field in _DRAFT_FIELDS},
+        "decision": {"type": "string", "enum": ["post", "skip"]},
+    },
+    "required": list(_DRAFT_FIELDS),
+    "additionalProperties": False,
+}
+
+
+def draft_weekly(settings: Settings, conn: Connection[TupleRow]) -> None:
+    now = _now().astimezone(ZoneInfo("Europe/Berlin"))
+    week = now.date() - timedelta(days=now.weekday())
+    weekly = WeeklyStore(conn)
+    if (existing := weekly.get(week)) is not None:
+        if existing.outcome == "drafted" and existing.item_id is not None:
+            repo = ItemRepo(conn)
+            item = repo.get_item(existing.item_id)
+            if item is not None and item.state == ItemState.AWAITING_APPROVAL:
+                source_details = existing.facts.get("source_details")
+                with httpx.Client(timeout=30) as client:
+                    notifier = Notifier(
+                        TelegramApi(settings.telegram_bot_token, client=client),
+                        settings.telegram_chat_id,
+                    )
+                    notifier.send_preview(
+                        item,
+                        repo.get_variants(item.id),
+                        source_details=source_details
+                        if isinstance(source_details, str)
+                        else "",
+                    )
+                print(f"draft-weekly: week {week} preview resent")
+                return
+        print(f"draft-weekly: week {week} already handled ({existing.outcome})")
+        return
+    if not settings.anthropic_api_key:
+        raise ConfigError("ANTHROPIC_API_KEY is required for draft-weekly")
+
+    series_store = SeriesStore(conn)
+    series = series_store.get_active()
+    since = now.astimezone(UTC) - timedelta(days=7)
+    with httpx.Client(timeout=30) as client:
+        github = GitHubClient(
+            settings.github_owner, settings.github_token, client=client
+        )
+        notifier = Notifier(
+            TelegramApi(settings.telegram_bot_token, client=client),
+            settings.telegram_chat_id,
+        )
+        if series is not None:
+            name = series.repo
+            meta = github.get_repo(name)
+            if meta is None:
+                raise GitHubError("Active series repository was not found.")
+            commits = github.recent_commits(name, since, allow_empty_repo=True)
+        else:
+            active = github.list_active_repos(since, public_only=True)
+            posted = sorted(series_store.posted_repos())
+            chosen = pick_project(active, posted, None)
+            if chosen is None:
+                excluded = sorted(project.meta.name for project in active)
+                weekly.record_outcome(
+                    week, "no_activity", None, {"excluded_repos": excluded}
+                )
+                message = (
+                    "No weekly post this week: no new public project with commits."
+                )
+                if excluded:
+                    message += f"\nActive, already posted: {', '.join(excluded)}. Use /series to continue one."
+                notifier.send_alert(message)
+                return
+            name = chosen
+            project = next(project for project in active if project.meta.name == name)
+            meta, commits = project.meta, project.commits
+
+        safety = check_repo(github, name)
+        url = f"https://github.com/{settings.github_owner}/{name}"
+        repo_facts: dict[str, object] = {
+            "name": name,
+            "description": meta.description,
+            "language": meta.language,
+            "visibility": meta.visibility,
+            "readme_excerpt": github.get_readme_excerpt(name, 1500),
+        }
+        if safety.allowed:
+            repo_facts["url"] = url
+        payload: dict[str, object]
+        source = f"Source: {name}"
+        if series is not None:
+            system = SERIES_SYSTEM_PROMPT
+            payload = {
+                "repo": repo_facts,
+                "part": series.part,
+                "total_parts": series.total_parts,
+                "recent_commits": commits,
+                "previous_parts": [
+                    {
+                        "part": part.part,
+                        "post_de": part.text_de,
+                        "post_uk": part.text_ua,
+                    }
+                    for part in series_store.history(series)
+                ],
+            }
+            source += f" · part {series.part}"
+            if series.total_parts is not None:
+                source += f"/{series.total_parts}"
+        else:
+            system = POST_SYSTEM_PROMPT
+            payload = {
+                "projects": [{**repo_facts, "commits": commits}],
+                "week": week.isoformat(),
+                "recently_posted": posted,
+            }
+
+        model = ClaudeClient(settings.anthropic_api_key)
+        try:
+            draft = json.loads(
+                model.complete(system, generation_message(payload), _DRAFT_SCHEMA)
+            )
+            if (
+                not isinstance(draft, dict)
+                or draft.keys() != set(_DRAFT_FIELDS)
+                or not all(isinstance(value, str) for value in draft.values())
+                or draft["decision"] not in ("post", "skip")
+                or draft["repo"] != name
+            ):
+                raise ValueError
+            decision = draft["decision"]
+            if decision == "post":
+                de, ua = (
+                    finalize_links(draft[field], url, safety.allowed).strip()
+                    for field in ("post_de", "post_uk")
+                )
+                if not de or not ua or max(len(de), len(ua)) > LINKEDIN_TEXT_LIMIT:
+                    raise ValueError
+                de, ua = humanize_pair(model, de, ua, payload)
+                if max(len(de), len(ua)) > LINKEDIN_TEXT_LIMIT:
+                    raise ValueError
+            else:
+                reason = draft["reason"].strip()
+                if not reason:
+                    raise ValueError
+        except (AIError, HumanizerError, ValueError):
+            raise RuntimeError(
+                "Weekly draft generation or quality gate failed"
+            ) from None
+
+        facts = {
+            **payload,
+            "link_allowed": safety.allowed,
+            "link_reasons": safety.reasons,
+        }
+        if decision == "skip":
+            message = f"No weekly post this week ({name}): {reason}"
+            with conn.transaction():
+                weekly.record_outcome(
+                    week, "skipped", name, {**facts, "reason": reason}
+                )
+                if series is not None and series_store.complete(series_id=series.id):
+                    message += f"\nThe series about {name} ended."
+            notifier.send_alert(message)
+            return
+
+        link_status = (
+            "link allowed"
+            if safety.allowed
+            else f"link blocked: {', '.join(safety.reasons)}"
+        )
+        source_details = f"{source} · {len(commits)} commits · {link_status}"
+        facts["source_details"] = source_details
+        repo = ItemRepo(conn)
+        with conn.transaction():
+            item = weekly.create_drafted(
+                week,
+                name,
+                series.id if series else None,
+                series.part if series else None,
+                facts,
+                de,
+                ua,
+            )
+            weekly.expire_older(item.id)
+            if safety.allowed and settings.shortio is not None:
+                exact_url = re.compile(
+                    r"(?<![\w/])" + re.escape(url) + r"(?![\w./?#%&=~-])"
+                )
+                shortio = ShortioClient(settings.shortio)
+                try:
+                    for variant in repo.get_variants(item.id):
+                        if exact_url.search(variant.text):
+                            short = tracked_link(
+                                shortio,
+                                LinkStore(conn),
+                                url,
+                                name,
+                                variant.lang,
+                                item_id=item.id,
+                            )
+                            repo.update_variant_text(
+                                item.id,
+                                variant.lang,
+                                exact_url.sub(
+                                    short.replace("\\", "\\\\"),
+                                    variant.text,
+                                ),
+                            )
+                finally:
+                    shortio.close()
+        notifier.send_preview(
+            item,
+            repo.get_variants(item.id),
+            source_details=source_details,
+        )
+        print(f"draft-weekly: drafted {name} for week {week}")
+
+
+def _record_weekly_publications(conn: Connection[TupleRow], repo: ItemRepo) -> None:
+    weekly = WeeklyStore(conn)
+    series = SeriesStore(conn)
+    for pending in weekly.list_unrecorded_published():
+        with conn.transaction():
+            row = weekly.get(pending.week, lock=True)
+            if (
+                row is None
+                or row.recorded_at is not None
+                or row.item_id != pending.item_id
+            ):
+                continue
+            assert row.item_id is not None and row.repo is not None
+            if row.series_id is not None:
+                assert row.part is not None
+                texts = {
+                    variant.lang: variant.text
+                    for variant in repo.get_variants(row.item_id)
+                }
+                series.record_part(
+                    row.repo,
+                    row.part,
+                    texts["de"],
+                    texts["ua"],
+                    series_id=row.series_id,
+                )
+            else:
+                series.mark_posted(row.repo)
+            weekly.mark_recorded(row.week)
+
+
 def publish_due(settings: Settings, conn: Connection[TupleRow]) -> None:
     repo = ItemRepo(conn)
-    with httpx.Client() as client:
-        publisher = _publisher(settings, repo, client)
-        if publisher is not None:
-            _publish_items(
-                publisher,
-                repo.list_unfinished_item_ids() + repo.list_approved_item_ids(),
-            )
+    try:
+        with httpx.Client() as client:
+            publisher = _publisher(settings, repo, client)
+            if publisher is not None:
+                _publish_items(
+                    publisher,
+                    repo.list_unfinished_item_ids() + repo.list_approved_item_ids(),
+                )
+    finally:
+        _record_weekly_publications(conn, repo)
 
 
 def threads_import_token(settings: Settings, conn: Connection[TupleRow]) -> None:
@@ -505,8 +771,3 @@ def snapshot_traffic(settings: Settings, conn: Connection[TupleRow]) -> None:
 
     if not succeeded:
         raise RuntimeError("All traffic and click snapshots failed")
-
-
-def not_implemented() -> int:
-    print("not implemented yet")
-    return 0

@@ -6,6 +6,7 @@ import yaml
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 SCHEDULES = {
+    "draft-weekly": "0 17 * * 3",
     "poll-engagement": "*/10 * * * *",
     "poll-telegram": "*/5 * * * *",
     "check-tokens": "0 7 * * *",
@@ -95,6 +96,17 @@ def test_scheduled_workflow(name, cron):
         }
         if name == "snapshot-traffic":
             expected.update({"SHORTIO_API_KEY", "SHORTIO_DOMAIN", "GITHUB_TOKEN"})
+        elif name == "draft-weekly":
+            assert job["timeout-minutes"] == 15
+            expected.update(
+                {
+                    "ANTHROPIC_API_KEY",
+                    "SHORTIO_API_KEY",
+                    "SHORTIO_DOMAIN",
+                    "GITHUB_TOKEN",
+                    "GITHUB_OWNER",
+                }
+            )
         elif name == "publish-reels":
             assert job["timeout-minutes"] == 15
             expected.update({"FACEBOOK_PAGE_ID", "INSTAGRAM_BUSINESS_ACCOUNT_ID"})
@@ -131,7 +143,11 @@ def test_scheduled_workflow(name, cron):
             expected.update({"ANTHROPIC_API_KEY", "GITHUB_TOKEN", "GITHUB_OWNER"})
         assert set(command["env"]) == expected
         for variable, value in command["env"].items():
-            if name in {"poll-engagement", "poll-telegram"} and variable in {
+            if name in {
+                "draft-weekly",
+                "poll-engagement",
+                "poll-telegram",
+            } and variable in {
                 "GITHUB_TOKEN",
                 "GITHUB_OWNER",
             }:

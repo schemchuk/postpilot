@@ -159,6 +159,7 @@ class GitHubClient:
         params: dict[str, str | int] | None = None,
         allow_forbidden: bool = False,
         accept: str | None = None,
+        allow_empty_repo: bool = False,
     ) -> httpx.Response | None:
         try:
             response = self._client.get(
@@ -175,6 +176,12 @@ class GitHubClient:
             allow_forbidden and response.status_code == 403
         ):
             return None
+        if (
+            allow_empty_repo
+            and response.status_code == 409
+            and response.json().get("message") == "Git Repository is empty."
+        ):
+            return response
         if not response.is_success:
             raise GitHubError(f"GitHub returned HTTP {response.status_code}.")
         return response
@@ -241,11 +248,13 @@ class GitHubClient:
             max_pages=10,
         )
 
-    def list_active_repos(self, since: datetime) -> list[ActiveRepo]:
+    def list_active_repos(
+        self, since: datetime, *, public_only: bool = False
+    ) -> list[ActiveRepo]:
         if since.utcoffset() is None:
             raise ValueError("since must include a timezone.")
         since = since.astimezone(UTC)
-        if self._authenticated:
+        if self._authenticated and not public_only:
             path = "/user/repos"
             params: dict[str, str | int] = {"affiliation": "owner"}
         else:
@@ -265,20 +274,37 @@ class GitHubClient:
                 if repo["owner"]["login"].casefold() != self._owner.casefold():
                     continue
                 meta = _repo_meta(repo)
-                commits = self._get(
-                    self._repo_path(meta.name) + "/commits",
-                    params={"since": since.isoformat(), "per_page": _COMMIT_LIMIT},
+                if public_only and (
+                    meta.visibility != "public"
+                    or repo.get("private")
+                    or repo.get("archived")
+                    or repo.get("fork")
+                ):
+                    continue
+                messages = self.recent_commits(
+                    meta.name, since, allow_empty_repo=public_only
                 )
-                if commits is None:
-                    raise GitHubError("GitHub commit listing was not found.")
-                messages = tuple(
-                    entry["commit"]["message"]
-                    for entry in commits.json()[:_COMMIT_LIMIT]
-                )
-                active.append(ActiveRepo(meta, messages))
+                if messages or not public_only:
+                    active.append(ActiveRepo(meta, messages))
             if "next" not in response.links:
                 break
         return active
+
+    def recent_commits(
+        self, name: str, since: datetime, *, allow_empty_repo: bool = False
+    ) -> tuple[str, ...]:
+        response = self._get(
+            self._repo_path(name) + "/commits",
+            params={"since": since.isoformat(), "per_page": _COMMIT_LIMIT},
+            allow_empty_repo=allow_empty_repo,
+        )
+        if response is None:
+            raise GitHubError("GitHub commit listing was not found.")
+        if response.status_code == 409:
+            return ()
+        return tuple(
+            entry["commit"]["message"] for entry in response.json()[:_COMMIT_LIMIT]
+        )
 
     def traffic(self, name: str, *, day: date | None = None) -> RepoTraffic | None:
         """Fetch daily traffic using a token with push access to the repository."""

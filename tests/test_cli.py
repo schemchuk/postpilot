@@ -24,20 +24,20 @@ def test_unknown_command_exits_nonzero():
 
 
 @pytest.mark.parametrize(
-    "command, database",
+    "command",
     [
-        ("draft-weekly", False),
-        ("snapshot-traffic", True),
-        ("poll-engagement", True),
-        ("publish-due", True),
-        ("check-tokens", True),
-        ("threads-import-token", True),
-        ("facebook-import-token", True),
-        ("instagram-import-token", True),
+        "draft-weekly",
+        "snapshot-traffic",
+        "poll-engagement",
+        "publish-due",
+        "check-tokens",
+        "threads-import-token",
+        "facebook-import-token",
+        "instagram-import-token",
     ],
 )
-def test_dispatch(monkeypatch, command, database):
-    assert (command in cli._DATABASE_COMMANDS) == database
+def test_dispatch(monkeypatch, command):
+    assert command in cli._DATABASE_COMMANDS
     settings = Settings("fake-db", "fake-token", 123, "fake-key")
     monkeypatch.setattr(cli.Settings, "from_env", Mock(return_value=settings))
     runner = Mock(return_value=7)
@@ -47,23 +47,16 @@ def test_dispatch(monkeypatch, command, database):
     steps = Mock()
     operation = steps.job
     monkeypatch.setattr(cli.migrate, "up", steps.up)
-    monkeypatch.setattr(cli.tasks, "not_implemented", operation)
-    monkeypatch.setattr(
-        cli, "_DATABASE_COMMANDS", {command: operation} if database else {}
-    )
+    monkeypatch.setitem(cli._DATABASE_COMMANDS, command, operation)
     assert cli.main([command]) == 7
     name, job, received_settings = runner.call_args.args
     assert name == command and received_settings is settings
     job()
-    if database:
-        connect.assert_called_once_with(settings.database_url)
-        assert steps.mock_calls == [
-            call.up("connection"),
-            call.job(settings, "connection"),
-        ]
-    else:
-        connect.assert_not_called()
-        assert steps.mock_calls == [call.job()]
+    connect.assert_called_once_with(settings.database_url)
+    assert steps.mock_calls == [
+        call.up("connection"),
+        call.job(settings, "connection"),
+    ]
 
 
 @pytest.mark.parametrize(
