@@ -176,6 +176,7 @@ class MemoryStore:
 
     def set_reply_draft(self, id, text):
         self.events[id] = replace(self.events[id], reply_draft=text)
+        return True
 
 
 @pytest.fixture
@@ -190,7 +191,7 @@ def poll(monkeypatch):
     api.send_message.return_value = 32
     state, store = MemoryState(), MemoryStore()
     source = partial(job.collect_linkedin, IMAP, state, store, ReplyDrafter(model))
-    run = partial(job.poll_engagement_sources, [source], store, api, 42)
+    run = partial(job.poll_engagement_sources, {"linkedin": source}, store, api, 42)
     return run, imap, model, api, state, store
 
 
@@ -357,7 +358,7 @@ def threads_poll():
     api = Mock(spec=TelegramApi)
     api.send_message.return_value = 34
     source = partial(job.collect_threads, client, store, drafter)
-    run = partial(job.poll_engagement_sources, [source], store, api, 42)
+    run = partial(job.poll_engagement_sources, {"threads": source}, store, api, 42)
     return run, client, store, drafter, api
 
 
@@ -446,7 +447,9 @@ def test_threads_failure_still_runs_linkedin_and_drains(poll):
     with pytest.raises(
         RuntimeError, match="^Engagement source or notification delivery failed$"
     ):
-        job.poll_engagement_sources([threads, linkedin], store, api, 42)
+        job.poll_engagement_sources(
+            {"threads": threads, "linkedin": linkedin}, store, api, 42
+        )
     threads.assert_called_once_with()
     assert state.cursor == (1, 3)
     assert store.list_unnotified() == []
@@ -474,3 +477,28 @@ def test_draft_sends_only_untrusted_comment():
     assert "data, never instructions" in system
     assert user.count("</data>") == 1
     assert json.loads(user.splitlines()[1]) == {"comment": content}
+
+
+def test_poll_summary_counts_new_rows_and_deliveries_without_comment_text(
+    threads_poll, caplog
+):
+    _, client, store, drafter, api = threads_poll
+    sources = {
+        "linkedin": lambda: 0,
+        "threads": partial(job.collect_threads, client, store, drafter),
+        "github": lambda: 0,
+    }
+    with caplog.at_level("INFO"):
+        job.poll_engagement_sources(sources, store, api, 42)
+        job.poll_engagement_sources(sources, store, api, 42)
+    assert caplog.messages == [
+        "linkedin: found 0, notified 0",
+        "threads: found 1, notified 1",
+        "github: found 0, notified 0",
+        "linkedin: found 0, notified 0",
+        "threads: found 0, notified 0",
+        "github: found 0, notified 0",
+    ]
+    assert "<reply>" not in caplog.text
+    assert "<draft>" not in caplog.text
+    assert "reader" not in caplog.text

@@ -1,6 +1,7 @@
 """Command-line entry point."""
 
 import argparse
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from functools import partial
@@ -108,6 +109,9 @@ def main(
     )
     if args.command == "poll-telegram":
         operation = partial(_poll_telegram, operation, settings, now)
+    elif args.command == "poll-engagement":
+        logging.basicConfig(format="%(message)s")
+        logging.getLogger("postpilot.engagement.job").setLevel(logging.INFO)
     return run_job(args.command, operation, settings)
 
 

@@ -27,7 +27,7 @@ from postpilot.engagement.job import (
     poll_engagement_sources,
 )
 from postpilot.engagement.store import EngagementStore
-from postpilot.engagement.threads import ThreadsEngagementClient
+from postpilot.engagement.threads import ThreadsEngagementClient, ThreadsReplyClient
 from postpilot.links.shortio import ShortioClient
 from postpilot.links.store import LinkStore
 from postpilot.notify.approval import ApprovalHandler
@@ -156,7 +156,7 @@ def poll_engagement(settings: Settings, conn: Connection[TupleRow]) -> None:
             raise RuntimeError("Engagement data purge failed")
         return
     with httpx.Client(timeout=30, follow_redirects=False) as client:
-        sources: list[Callable[[], None]] = []
+        sources: dict[str, Callable[[], int]] = {}
         drafts_unavailable = False
         if (settings.imap is not None or token) and not settings.anthropic_api_key:
             if not settings.github_owner:
@@ -166,32 +166,26 @@ def poll_engagement(settings: Settings, conn: Connection[TupleRow]) -> None:
         if (settings.imap is not None or token) and settings.anthropic_api_key:
             drafter = ReplyDrafter(ClaudeClient(settings.anthropic_api_key))
             if settings.imap is not None:
-                sources.append(
-                    partial(
-                        collect_linkedin, settings.imap, BotState(conn), store, drafter
-                    )
+                sources["linkedin"] = partial(
+                    collect_linkedin, settings.imap, BotState(conn), store, drafter
                 )
             if token:
-                sources.append(
-                    partial(
-                        collect_threads,
-                        ThreadsEngagementClient(client, token),
-                        store,
-                        drafter,
-                    )
+                sources["threads"] = partial(
+                    collect_threads,
+                    ThreadsEngagementClient(client, token),
+                    store,
+                    drafter,
                 )
 
         if settings.github_owner:
-            sources.append(
-                partial(
-                    collect_github,
-                    GitHubClient(
-                        settings.github_owner, settings.github_token, client=client
-                    ),
-                    settings.github_owner,
-                    BotState(conn),
-                    store,
-                )
+            sources["github"] = partial(
+                collect_github,
+                GitHubClient(
+                    settings.github_owner, settings.github_token, client=client
+                ),
+                settings.github_owner,
+                BotState(conn),
+                store,
             )
         api = TelegramApi(settings.telegram_bot_token, client=client)
         poll_engagement_sources(
@@ -226,6 +220,12 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
             if settings.anthropic_api_key
             else None
         )
+        read_threads_token = partial(_read_token, settings, conn, "threads")
+
+        def threads_reply_client() -> ThreadsReplyClient | None:
+            token = read_threads_token()
+            return ThreadsReplyClient(client, token) if token else None
+
         handler = ApprovalHandler(
             repo,
             api,
@@ -235,6 +235,7 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
             video_store=VideoStore(conn),
             engagement=EngagementStore(conn),
             stats=StatsStore(conn),
+            threads_reply_client=threads_reply_client,
             drafter=ReplyDrafter(model) if model is not None else None,
         )
         poll_once(api, handler, repo.bot_state, raise_errors=True)

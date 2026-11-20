@@ -162,3 +162,40 @@ def test_github_watch_and_engagement_round_trip(conn, database_schema):
             "123": {"stars": 1, "forks": 1},
             "456": {"stars": 0, "forks": 0},
         }
+
+
+def test_threads_reply_claim_recovery_and_draft_guards(conn, database_schema):
+    now = datetime.now(UTC)
+    store = EngagementStore(conn)
+    args = ("reply-claim", "Reader", "Comment", None, "Draft", now)
+    threads = store.insert_if_new("threads", "comment", *args)
+    linkedin = store.insert_if_new("linkedin", "comment", *args)
+    reaction = store.insert_if_new("threads", "reaction", "reaction-claim", *args[1:])
+    store.mark_notified(threads.id, 123456)
+    store.mark_notified(reaction.id, 654321)
+    assert store.find_by_message_id(123456).id == threads.id
+    assert store.find_by_message_id(654321) is None
+    assert store.find_by_message_id(123457) is None
+    assert store.claim_reply(threads.id, now).reply_status == "SENDING"
+    store.save_reply_container(threads.id, "container")
+    with test_store.connect(test_store.DATABASE_URL, schema=database_schema) as fresh:
+        other = EngagementStore(fresh)
+        assert other.claim_reply(threads.id, now + timedelta(minutes=5)) is None
+        assert other.claim_reply(linkedin.id, now) is None
+        assert other.claim_reply(reaction.id, now) is None
+        assert not other.set_reply_draft(threads.id, "Too late")
+        later = now + timedelta(minutes=5, seconds=1)
+        reclaimed = other.claim_reply(threads.id, later)
+        assert reclaimed.reply_claimed_at == later
+        assert reclaimed.reply_container_id == "container"
+        other.mark_reply_failed(threads.id)
+        assert other.claim_reply(threads.id, later).reply_status == "SENDING"
+        other.mark_reply_sent(threads.id, "remote", later)
+
+    assert not store.set_reply_draft(threads.id, "Too late")
+    sent = store.get(threads.id)
+    assert sent.reply_status == "SENT"
+    assert sent.reply_remote_id == "remote"
+    assert sent.reply_sent_at == later
+    assert sent.reply_draft == "Draft"
+    assert store.claim_reply(threads.id, later) is None

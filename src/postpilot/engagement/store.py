@@ -22,6 +22,11 @@ class EngagementEvent:
     notified_at: datetime | None
     telegram_message_id: int | None
     created_at: datetime
+    reply_status: str | None = None
+    reply_container_id: str | None = None
+    reply_remote_id: str | None = None
+    reply_sent_at: datetime | None = None
+    reply_claimed_at: datetime | None = None
 
 
 class EngagementStore:
@@ -108,11 +113,72 @@ class EngagementStore:
                 "SELECT * FROM engagement_events WHERE id = %s", (id,)
             ).fetchone()
 
-    def set_reply_draft(self, id: UUID, text: str) -> None:
+    def find_by_message_id(self, message_id: int) -> EngagementEvent | None:
+        with (
+            self.conn.transaction(),
+            self.conn.cursor(row_factory=class_row(EngagementEvent)) as cur,
+        ):
+            return cur.execute(
+                "SELECT * FROM engagement_events WHERE kind = 'comment'"
+                " AND telegram_message_id = %s",
+                (message_id,),
+            ).fetchone()
+
+    def set_reply_draft(self, id: UUID, text: str) -> bool:
+        with self.conn.transaction():
+            return (
+                self.conn.execute(
+                    """
+                UPDATE engagement_events SET reply_draft = %s,
+                    reply_container_id = CASE WHEN reply_draft = %s THEN reply_container_id END
+                WHERE id = %s AND (reply_status IS NULL OR reply_status = 'FAILED')
+                """,
+                    (text, text, id),
+                ).rowcount
+                == 1
+            )
+
+    def claim_reply(
+        self, id: UUID, now: datetime, stale_after: timedelta = timedelta(minutes=5)
+    ) -> EngagementEvent | None:
+        with (
+            self.conn.transaction(),
+            self.conn.cursor(row_factory=class_row(EngagementEvent)) as cur,
+        ):
+            return cur.execute(
+                """
+                UPDATE engagement_events SET reply_status = 'SENDING', reply_claimed_at = %s
+                WHERE id = %s AND channel = 'threads' AND kind = 'comment'
+                    AND (reply_status IS NULL OR reply_status = 'FAILED'
+                        OR (reply_status = 'SENDING' AND reply_claimed_at < %s))
+                RETURNING *
+                """,
+                (now, id, now - stale_after),
+            ).fetchone()
+
+    def save_reply_container(self, id: UUID, container_id: str) -> None:
         with self.conn.transaction():
             self.conn.execute(
-                "UPDATE engagement_events SET reply_draft = %s WHERE id = %s",
-                (text, id),
+                "UPDATE engagement_events SET reply_container_id = %s"
+                " WHERE id = %s AND reply_status = 'SENDING'",
+                (container_id, id),
+            )
+
+    def mark_reply_sent(self, id: UUID, remote_id: str | None, now: datetime) -> None:
+        with self.conn.transaction():
+            self.conn.execute(
+                "UPDATE engagement_events SET reply_status = 'SENT',"
+                " reply_remote_id = %s, reply_sent_at = %s"
+                " WHERE id = %s AND reply_status = 'SENDING'",
+                (remote_id, now, id),
+            )
+
+    def mark_reply_failed(self, id: UUID) -> None:
+        with self.conn.transaction():
+            self.conn.execute(
+                "UPDATE engagement_events SET reply_status = 'FAILED'"
+                " WHERE id = %s AND reply_status = 'SENDING'",
+                (id,),
             )
 
     def recent_threads_posts(self, since: datetime) -> list[str]:

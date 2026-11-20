@@ -1,0 +1,11 @@
+anthropic>=0.40
+cryptography>=43
+httpx>=0.27
+psycopg[binary]>=3.2
+
+[dev]
+ruff
+mypy
+pytest
+pre-commit
+pyyaml

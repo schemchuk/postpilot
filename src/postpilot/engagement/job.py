@@ -1,8 +1,8 @@
+import logging
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
-from functools import partial
 from html import escape
 from urllib.parse import unquote, urlsplit
 
@@ -18,6 +18,8 @@ from postpilot.notify.telegram import TelegramApi, TelegramError
 from postpilot.sources.github import GitHubClient, GitHubError, RepoEngagement
 from postpilot.store.bot_state import BotState, GitHubWatchCounts
 
+_LOG = logging.getLogger(__name__)
+
 _POST_DOMAINS = ("linkedin.com", "threads.com", "threads.net")
 _THREADS_DRAFT_CAP = 20
 
@@ -29,7 +31,17 @@ def comment_message(
     channel = escape(event.channel)
     comment = escape((event.text or "")[:1600])
     draft = escape((event.reply_draft or "Draft unavailable")[:1600])
-    buttons = [{"text": "Another variant", "callback_data": f"eng:redraft:{event.id}"}]
+    buttons = []
+    if event.reply_status != "SENT":
+        buttons.append(
+            {"text": "Another variant", "callback_data": f"eng:redraft:{event.id}"}
+        )
+        if (
+            event.channel == "threads"
+            and event.kind == "comment"
+            and (event.reply_draft or "").strip()
+        ):
+            buttons.append({"text": "Send", "callback_data": f"eng:send:{event.id}"})
     if event.post_url and not any(
         char.isspace() or char == "\\" or ord(char) < 32 for char in event.post_url
     ):
@@ -49,7 +61,7 @@ def comment_message(
             ):
                 buttons.insert(0, {"text": "Open post", "url": event.post_url})
     return f"{actor} · {channel}\n\n<i>{comment}</i>\n\n<code>{draft}</code>", {
-        "inline_keyboard": [buttons]
+        "inline_keyboard": [buttons] if buttons else []
     }
 
 
@@ -58,7 +70,8 @@ def collect_linkedin(
     state: BotState,
     store: EngagementStore,
     drafter: ReplyDrafter,
-) -> None:
+) -> int:
+    found = 0
     for validity, uid, message in read_inbox(settings, state.get_imap_cursor()):
         if message is not None:
             body = message_text(message)
@@ -71,7 +84,7 @@ def collect_linkedin(
                 occurred = parsedate_to_datetime(str(message["Date"]))
             except (ValueError, OverflowError):
                 occurred = now
-            store.insert_if_new(
+            inserted = store.insert_if_new(
                 "linkedin",
                 result.kind,
                 f"imap:{validity}:{uid}",
@@ -81,12 +94,16 @@ def collect_linkedin(
                 result.reply_draft,
                 occurred.replace(tzinfo=UTC) if occurred.tzinfo is None else occurred,
             )
+            if inserted is not None:
+                found += 1
         state.set_imap_cursor(validity, uid)
+    return found
 
 
 def collect_threads(
     client: ThreadsEngagementClient, store: EngagementStore, drafter: ReplyDrafter
-) -> None:
+) -> int:
+    found = 0
     remaining = _THREADS_DRAFT_CAP
     failed = False
     for media_id in store.recent_threads_posts(datetime.now(UTC) - timedelta(days=14)):
@@ -103,7 +120,7 @@ def collect_threads(
                 draft = drafter.draft(reply.text)
             except AIError:
                 draft = None
-            store.insert_if_new(
+            inserted = store.insert_if_new(
                 "threads",
                 "comment",
                 reply.id,
@@ -113,6 +130,8 @@ def collect_threads(
                 draft,
                 reply.timestamp,
             )
+            if inserted is not None:
+                found += 1
             known.add(reply.id)
             remaining -= 1
             if remaining == 0:
@@ -121,11 +140,13 @@ def collect_threads(
             break
     if failed:
         raise ThreadsEngagementError("Could not read all Threads conversations")
+    return found
 
 
 def collect_github(
     client: GitHubClient, owner: str, state: BotState, store: EngagementStore
-) -> None:
+) -> int:
+    found = 0
     watch = state.get_github_watch()
     failed = False
     for repo in client.list_public_repos(owner):
@@ -146,7 +167,7 @@ def collect_github(
                 known = store.known_refs("github", refs)
                 for ref, entry in zip(refs, entries, strict=True):
                     if ref not in known:
-                        store.insert_if_new(
+                        inserted = store.insert_if_new(
                             "github",
                             kind,
                             ref,
@@ -157,11 +178,14 @@ def collect_github(
                             entry.occurred_at,
                             notified=baseline,
                         )
+                        if inserted is not None:
+                            found += 1
             state.set_github_watch(repo_id, counts)
         except (GitHubError, Error):
             failed = True
     if failed:
         raise GitHubError("Could not process all GitHub repositories")
+    return found
 
 
 def _github_message(event: EngagementEvent) -> str:
@@ -178,7 +202,10 @@ def _github_message(event: EngagementEvent) -> str:
     return f"{action} {actor} {verb} <b>{escape(unquote(repo) or 'Unknown repository')}</b>"
 
 
-def notify_pending(store: EngagementStore, api: TelegramApi, chat_id: int) -> None:
+def notify_pending(
+    store: EngagementStore, api: TelegramApi, chat_id: int
+) -> tuple[dict[str, int], bool]:
+    notified: dict[str, int] = {}
     failed = False
     events = store.list_unnotified()
     for event in events:
@@ -192,6 +219,7 @@ def notify_pending(store: EngagementStore, api: TelegramApi, chat_id: int) -> No
                 message_id = api.send_message(
                     chat_id, text, keyboard, parse_mode="HTML"
                 )
+                notified[event.channel] = notified.get(event.channel, 0) + 1
             except TelegramError:
                 failed = True
                 continue
@@ -199,12 +227,11 @@ def notify_pending(store: EngagementStore, api: TelegramApi, chat_id: int) -> No
             store.mark_notified(event.id, message_id)
         except Error:
             failed = True
-    if failed:
-        raise RuntimeError("Engagement notification delivery failed")
+    return notified, failed
 
 
 def poll_engagement_sources(
-    sources: Iterable[Callable[[], None]],
+    sources: Mapping[str, Callable[[], int]],
     store: EngagementStore,
     api: TelegramApi,
     chat_id: int,
@@ -212,14 +239,21 @@ def poll_engagement_sources(
     source_failed: bool = False,
 ) -> None:
     failed = source_failed
-    actions: list[Callable[[], None]] = [
-        *sources,
-        partial(notify_pending, store, api, chat_id),
-    ]
-    for action in actions:
+    found = {}
+    for source, collect in sources.items():
         try:
-            action()
+            found[source] = collect()
         except Exception:  # noqa: BLE001 - isolate failures and keep source data private
             failed = True
+    try:
+        notified, delivery_failed = notify_pending(store, api, chat_id)
+    except Exception:  # noqa: BLE001 - keep source data private
+        failed = True
+    else:
+        failed |= delivery_failed
+        for source, count in found.items():
+            _LOG.info(
+                "%s: found %d, notified %d", source, count, notified.get(source, 0)
+            )
     if failed:
         raise RuntimeError("Engagement source or notification delivery failed")

@@ -157,6 +157,22 @@ Send `/stats` in Telegram to see 30-day engagement and publication counts, short
 click totals and recent clicks, and the latest GitHub traffic snapshot. The
 `poll-telegram` job answers this command.
 
+### Reply to comments from Telegram
+
+Tap **Send** on a Threads comment to approve and publish the displayed reply.
+After sending, the message shows the reply link (or the original post link) and
+keeps the **Open post** button. Use Telegram **Reply** on the engagement message
+to replace its draft with your own text. Threads replies fit up to 500 characters.
+**Another variant** generates a fresh draft. Both edits are blocked while a reply
+is sending or after it has been sent. LinkedIn replies are still copied manually.
+
+**Send uncertain** means the bot could not confirm publication. Press **Send**
+again after five minutes so the bot can check the saved container before retrying.
+If Telegram reports that the token lacks `threads_manage_replies`, follow
+[Import and renew a Threads access token](#import-and-renew-a-threads-access-token)
+to re-authorize with `/renew threads`, grant `threads_manage_replies`, and send
+the callback command in Telegram before retrying.
+
 ## External schedule trigger (cron-job.org)
 
 GitHub `schedule` is unreliable for this repository (ADR 017), so cron-job.org dispatches the

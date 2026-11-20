@@ -93,6 +93,7 @@ def test_migration_up_noop_and_down(conn):
         "0009_video_publications",
         "0010_engagement_events",
         "0011_github_engagement",
+        "0012_engagement_replies",
     ]
     migrate.up(conn)
     assert applied_migrations(conn) == initial
@@ -104,6 +105,19 @@ def test_migration_up_noop_and_down(conn):
     comment = events.insert_if_new(
         "threads", "comment", "reply-id", None, None, None, None, now
     )
+    with pytest.raises(CheckViolation), conn.transaction():
+        conn.execute("UPDATE engagement_events SET reply_status = 'INVALID'")
+    assert events.claim_reply(comment.id, now).reply_status == "SENDING"
+    migrate.down(conn)
+    assert applied_migrations(conn) == initial[:11]
+    with conn.transaction():
+        columns = conn.execute(
+            "SELECT column_name FROM information_schema.columns"
+            " WHERE table_schema = current_schema() AND table_name = 'engagement_events'"
+            " AND column_name LIKE 'reply_%'"
+        ).fetchall()
+    assert columns == [("reply_draft",)]
+
     migrate.down(conn)
     assert applied_migrations(conn) == initial[:10]
     assert table_names(conn) == full_schema

@@ -3,6 +3,7 @@ import re
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
+from html import escape
 from typing import Any
 from uuid import UUID
 
@@ -14,7 +15,14 @@ from postpilot.core.models import Language
 from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.engagement.drafts import ReplyDrafter
 from postpilot.engagement.job import comment_message
-from postpilot.engagement.store import EngagementStore
+from postpilot.engagement.store import EngagementEvent, EngagementStore
+from postpilot.engagement.threads import (
+    THREADS_REPLY_LIMIT,
+    ThreadsReplyClient,
+    ThreadsReplyError,
+    ThreadsReplyPermissionError,
+    UncertainThreadsReply,
+)
 from postpilot.notify.renewal import RenewalHandler
 from postpilot.notify.telegram import Notifier, TelegramApi, TelegramError
 from postpilot.sources.telegram import TelegramInbox
@@ -61,9 +69,11 @@ class ApprovalHandler:
         engagement: EngagementStore | None = None,
         drafter: ReplyDrafter | None = None,
         stats: StatsStore | None = None,
+        threads_reply_client: Callable[[], ThreadsReplyClient | None] | None = None,
     ) -> None:
         self.advice_chat_id: int | None = None
         self.stats = stats
+        self.threads_reply_client = threads_reply_client
         self.engagement = engagement
         self.drafter = drafter
         self.renewal = renewal
@@ -110,6 +120,14 @@ class ApprovalHandler:
                     self.renewal.handle_message(chat_id, message_id, event["text"])
                 return
             if type(chat_id) is int:
+                reply_id = _object(event.get("reply_to_message")).get("message_id")
+                if (
+                    chat_id == sender
+                    and type(reply_id) is int
+                    and not event["text"].lstrip().startswith("/")
+                    and self._edit_engagement_reply(chat_id, reply_id, event["text"])
+                ):
+                    return
                 self._handle_text(
                     sender, chat_id, event["text"], update.get("update_id")
                 )
@@ -174,6 +192,7 @@ class ApprovalHandler:
             "vapprove",
             "vreject",
             "eng:redraft",
+            "eng:send",
         }:
             return
         try:
@@ -184,9 +203,14 @@ class ApprovalHandler:
         message = _object(event.get("message"))
         chat_id = _object(message.get("chat")).get("id")
         message_id = message.get("message_id")
-        if action == "eng:redraft":
+        if action in {"eng:redraft", "eng:send"}:
             if type(chat_id) is int and chat_id == sender and type(message_id) is int:
-                self._redraft(item_id, chat_id, message_id, callback_id)
+                handler = (
+                    self._send_engagement_reply
+                    if action == "eng:send"
+                    else self._redraft
+                )
+                handler(item_id, chat_id, message_id, callback_id)
             return
         if action in {"vapprove", "vreject"}:
             store = self.video_store
@@ -261,17 +285,25 @@ class ApprovalHandler:
         self, id: UUID, chat_id: int, message_id: int, callback_id: str
     ) -> None:
         store, drafter = self.engagement, self.drafter
-        if store is None or drafter is None:
+        if store is None:
             _reply(self.api.answer_callback_query, callback_id, "Redraft unavailable")
             return
-        comment = store.get(id)
+        try:
+            comment = store.get(id)
+        except Error:
+            raise RuntimeError("Could not load engagement comment") from None
         if (
             comment is None
             or comment.kind != "comment"
-            or not comment.text
             or comment.telegram_message_id != message_id
         ):
             _reply(self.api.answer_callback_query, callback_id, "Comment unavailable")
+            return
+        if comment.reply_status in ("SENT", "SENDING"):
+            _reply(self.api.answer_callback_query, callback_id, "Reply already sent")
+            return
+        if drafter is None or not comment.text:
+            _reply(self.api.answer_callback_query, callback_id, "Redraft unavailable")
             return
         try:
             draft = drafter.redraft(comment.text, comment.reply_draft or "")
@@ -280,11 +312,52 @@ class ApprovalHandler:
         if not draft:
             _reply(self.api.answer_callback_query, callback_id, "Redraft unavailable")
             return
+        if not self._save_engagement_draft(store, comment, draft, chat_id):
+            _reply(self.api.answer_callback_query, callback_id, "Reply already sent")
+            return
+        _reply(self.api.answer_callback_query, callback_id)
+
+    def _edit_engagement_reply(self, chat_id: int, message_id: int, text: str) -> bool:
+        store = self.engagement
+        if store is None:
+            return False
         try:
-            store.set_reply_draft(id, draft)
+            comment = store.find_by_message_id(message_id)
+        except Error:
+            raise RuntimeError("Could not load engagement comment") from None
+        if comment is None:
+            return False
+        draft = text.strip()
+        if comment.reply_status in ("SENT", "SENDING"):
+            _reply(self.api.send_message, chat_id, "Reply already sent")
+        elif not draft:
+            _reply(self.api.send_message, chat_id, "Reply is empty")
+        elif comment.channel == "threads" and len(draft) > THREADS_REPLY_LIMIT:
+            _reply(self.api.send_message, chat_id, "Reply exceeds 500 characters")
+        elif not self._save_engagement_draft(store, comment, draft, chat_id):
+            _reply(self.api.send_message, chat_id, "Reply already sent")
+        return True
+
+    def _save_engagement_draft(
+        self, store: EngagementStore, comment: EngagementEvent, draft: str, chat_id: int
+    ) -> bool:
+        try:
+            changed = store.set_reply_draft(comment.id, draft)
         except Error:
             raise RuntimeError("Could not save engagement draft") from None
-        text, keyboard = comment_message(replace(comment, reply_draft=draft))
+        if changed:
+            self._edit_engagement_message(chat_id, replace(comment, reply_draft=draft))
+        return changed
+
+    def _edit_engagement_message(
+        self, chat_id: int, comment: EngagementEvent, sent_link: str | None = None
+    ) -> None:
+        message_id = comment.telegram_message_id
+        if message_id is None:
+            return
+        text, keyboard = comment_message(comment)
+        if comment.reply_status == "SENT":
+            text += f"\n\nSent: {escape(sent_link)}" if sent_link else "\n\nSent"
         _reply(
             self.api.edit_message_text,
             chat_id,
@@ -293,4 +366,67 @@ class ApprovalHandler:
             parse_mode="HTML",
             reply_markup=keyboard,
         )
-        _reply(self.api.answer_callback_query, callback_id)
+
+    def _send_engagement_reply(
+        self, id: UUID, chat_id: int, message_id: int, callback_id: str
+    ) -> None:
+        store = self.engagement
+        if store is None:
+            return
+        try:
+            comment = store.get(id)
+            if (
+                comment is None
+                or comment.kind != "comment"
+                or comment.channel != "threads"
+                or comment.telegram_message_id != message_id
+            ):
+                return
+            claimed = store.claim_reply(id, datetime.now(UTC))
+            if claimed is None:
+                current = store.get(id)
+                answer = (
+                    "Already sent"
+                    if current and current.reply_status == "SENT"
+                    else "Sending in progress"
+                )
+            else:
+                answer = self._publish_engagement_reply(store, claimed, chat_id)
+        except Error:
+            raise RuntimeError("Could not store engagement reply") from None
+        _reply(self.api.answer_callback_query, callback_id, answer)
+
+    def _publish_engagement_reply(
+        self, store: EngagementStore, comment: EngagementEvent, chat_id: int
+    ) -> str:
+        client = self.threads_reply_client() if self.threads_reply_client else None
+        if client is None:
+            store.mark_reply_failed(comment.id)
+            return "Threads token unavailable"
+        container = comment.reply_container_id
+        try:
+            status = client.container_status(container) if container else None
+            remote_id = None
+            if status == "IN_PROGRESS":
+                return "Send uncertain, press again in 5 minutes"
+            if status != "PUBLISHED":
+                if status != "FINISHED" or container is None:
+                    container = client.create_reply_container(
+                        comment.source_ref, comment.reply_draft or ""
+                    )
+                    store.save_reply_container(comment.id, container)
+                remote_id = client.publish(container)
+        except UncertainThreadsReply:
+            return "Send uncertain, press again in 5 minutes"
+        except ThreadsReplyError as exc:
+            store.mark_reply_failed(comment.id)
+            if isinstance(exc, ThreadsReplyPermissionError):
+                return "Token lacks threads_manage_replies, re-issue it (runbook)"
+            return "Send failed"
+
+        store.mark_reply_sent(comment.id, remote_id, datetime.now(UTC))
+        link = client.permalink(remote_id) if remote_id else None
+        self._edit_engagement_message(
+            chat_id, replace(comment, reply_status="SENT"), link or comment.post_url
+        )
+        return "Sent"
