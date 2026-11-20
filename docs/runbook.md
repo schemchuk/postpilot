@@ -176,6 +176,14 @@ POST, body `{"ref":"main"}`, headers `Authorization: Bearer <PAT>`,
 | publish-due.yml | Friday 09:00 |
 | render-video.yml | Friday 10:00 |
 
+The jobs were created on 2026-11-20 through the cron-job.org REST API (https://docs.cron-job.org/rest-api.html):
+API key `CRONJOB_API_KEY` in `.env` only (created in cron-job.org Settings -> API keys, no IP limit;
+100 API requests a day). `GET /jobs` lists them; `GET /jobs/<id>` returns the headers including the
+PAT, so never print that response. To change all jobs (e.g. a new PAT), read one job, edit its
+`extendedData.headers` in memory and `PATCH /jobs/<id>` each job. Job IDs: poll-telegram 8905864,
+poll-engagement 8905882, publish-reels 8906005, check-tokens 8906007, snapshot-traffic 8906009,
+publish-due 8906013, render-video 8906015.
+
 Keep the intervals: the Neon free plan has 100 CU-hours a month and every database run keeps the
 compute awake ~6 minutes (ADR 017 decision 5). `poll-telegram` skips the database when Telegram has no
 pending update (log line `poll-telegram: no pending updates, database not opened`), except in the first
