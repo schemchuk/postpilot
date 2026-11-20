@@ -38,17 +38,28 @@ class VideoStore:
 
     @contextmanager
     def render_lock(self) -> Iterator[bool]:
-        # Keep the budget check and claim serialized without an open transaction.
+        # The 30-minute lease outlives the 25-minute workflow timeout.
+        # Commit before rendering so checkpoints remain durable through the pooler.
         with self.conn.transaction():
-            row = self.conn.execute("SELECT pg_try_advisory_lock(730013)").fetchone()
-        assert row is not None
-        acquired = bool(row[0])
+            row = self.conn.execute(
+                """
+                INSERT INTO bot_state (key, value)
+                VALUES ('video_render_lease', (clock_timestamp() + interval '30 minutes')::text)
+                ON CONFLICT (key) DO UPDATE SET
+                    value = (clock_timestamp() + interval '30 minutes')::text
+                WHERE bot_state.value::timestamptz <= clock_timestamp()
+                RETURNING value
+                """
+            ).fetchone()
         try:
-            yield acquired
+            yield row is not None
         finally:
-            if acquired:
+            if row is not None:
                 with self.conn.transaction():
-                    self.conn.execute("SELECT pg_advisory_unlock(730013)")
+                    self.conn.execute(
+                        "DELETE FROM bot_state WHERE key = 'video_render_lease' AND value = %s",
+                        row,
+                    )
 
     def rendering_ids(self) -> list[UUID]:
         with self.conn.transaction():

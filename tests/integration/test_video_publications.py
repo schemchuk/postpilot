@@ -40,6 +40,7 @@ def test_approval_claim_stale_and_recovery(conn):
     recovered = publications.claim(render_id, "fb", STALE_AFTER)
     assert recovered and recovered.stale and recovered.recovered
     assert recovered.remote_ref == "remote"
+    assert recovered.remote_ref_claimed_at == claim.updated_at
     publications.save_ref(recovered, "remote")
     with conn.transaction():
         timestamp = conn.execute(

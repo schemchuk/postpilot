@@ -1,3 +1,4 @@
+from contextlib import ExitStack
 from datetime import UTC, datetime, timedelta, timezone
 
 import test_store
@@ -74,3 +75,29 @@ def test_video_render_lifecycle_and_utc_month(conn, database_schema):
         assert not persisted.approve(ready_id, 456, november)
         assert persisted.get(rendering_id).status is VideoStatus.REJECTED
         assert persisted.get(failed_id) is None
+
+
+def test_render_lease_excludes_other_connections_and_reclaims_expired_owner(
+    conn, database_schema
+):
+    store = VideoStore(conn)
+    with test_store.connect(test_store.DATABASE_URL, schema=database_schema) as fresh:
+        other = VideoStore(fresh)
+        with store.render_lock() as acquired:
+            assert acquired
+            with other.render_lock() as concurrent:
+                assert not concurrent
+        with ExitStack() as replacement:
+            with store.render_lock() as acquired:
+                assert acquired
+                with fresh.transaction():
+                    fresh.execute(
+                        "UPDATE bot_state SET value = '2000-01-01T00:00:00Z' "
+                        "WHERE key = 'video_render_lease'"
+                    )
+                assert replacement.enter_context(other.render_lock())
+            # The expired owner's cleanup must leave the replacement in place.
+            with store.render_lock() as concurrent:
+                assert not concurrent
+        with other.render_lock() as acquired:
+            assert acquired

@@ -3,6 +3,7 @@ import os
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from functools import partial
+from math import ceil
 from uuid import UUID
 
 import httpx
@@ -12,6 +13,7 @@ from psycopg.rows import TupleRow
 from postpilot.ai.client import ClaudeClient
 from postpilot.channels.base import TransientChannelError
 from postpilot.channels.facebook_reels import FacebookReelsChannel
+from postpilot.channels.instagram_reels import InstagramReelsChannel
 from postpilot.channels.registry import build_channels
 from postpilot.config import ConfigError, HeyGenSettings, Settings
 from postpilot.core.publisher import Publisher
@@ -30,13 +32,14 @@ from postpilot.tokens import service
 from postpilot.tokens.base import TokenManager, days_left
 from postpilot.tokens.crypto import TokenCipher
 from postpilot.tokens.facebook import PAGE_TOKEN_STORAGE_LIFETIME, token_is_valid
+from postpilot.tokens.instagram import token_expiry
 from postpilot.tokens.linkedin import LinkedInTokenManager
 from postpilot.tokens.store import TokenStore
 from postpilot.tokens.threads import TOKEN_LIFETIME, ThreadsTokenManager
 from postpilot.video.heygen import HeyGenClient
 from postpilot.video.pipeline import render_one
 from postpilot.video.publications import VideoPublicationStore
-from postpilot.video.publisher import publish_one
+from postpilot.video.publisher import VideoChannel, publish_one
 from postpilot.video.store import VideoStore
 
 logger = logging.getLogger(__name__)
@@ -182,7 +185,7 @@ def render_video(
 def publish_reels(
     settings: Settings, conn: Connection[TupleRow], *, retry: bool = False
 ) -> None:
-    if settings.facebook is None:
+    if settings.facebook is None and settings.instagram is None:
         return
     store = TokenStore(conn, TokenCipher(settings.token_encryption_key))
 
@@ -191,10 +194,15 @@ def publish_reels(
         return token.access_token if token and token.expires_at > _now() else None
 
     with httpx.Client() as client:
+        channels: list[VideoChannel] = []
+        if settings.facebook is not None:
+            channels.append(FacebookReelsChannel(settings.facebook, client))
+        if settings.instagram is not None:
+            channels.append(InstagramReelsChannel(settings.instagram, client))
         publish_one(
             VideoPublicationStore(conn),
             VideoStore(conn),
-            [FacebookReelsChannel(settings.facebook, client)],
+            channels,
             read_token,
             Notifier(
                 TelegramApi(settings.telegram_bot_token), settings.telegram_chat_id
@@ -208,6 +216,7 @@ def check_tokens(settings: Settings, conn: Connection[TupleRow]) -> None:
         settings.linkedin is None
         and settings.threads is None
         and settings.facebook is None
+        and settings.instagram is None
     ):
         return
     state = ItemRepo(conn).bot_state
@@ -217,24 +226,39 @@ def check_tokens(settings: Settings, conn: Connection[TupleRow]) -> None:
     )
     now = _now()
     with httpx.Client() as client:
-        if settings.facebook is not None:
-            token = store.get("facebook")
-            try:
-                valid = token is not None and token_is_valid(
-                    settings.facebook, client, token.access_token
-                )
-            except TransientChannelError:
-                logger.warning("Facebook token validation unavailable")
-            else:
-                if not valid:
-                    state.send_token_alert_once(
-                        "facebook",
-                        now.date(),
-                        partial(
-                            notifier.send_alert,
-                            "facebook: Page token missing or invalid",
-                        ),
+        for provider, config in (
+            ("facebook", settings.facebook),
+            ("instagram", settings.instagram),
+        ):
+            if config is None:
+                continue
+            token = store.get(provider)
+            message = None
+            if token is not None and provider == "instagram":
+                remaining = days_left(token.expires_at, now)
+                if remaining <= 0:
+                    message = "token missing or invalid"
+                elif remaining <= 14:
+                    message = (
+                        f"token expires in {ceil(remaining)} day(s); re-import manually"
                     )
+            try:
+                if token is None or not token_is_valid(
+                    config, client, token.access_token
+                ):
+                    message = (
+                        "Page token missing or invalid"
+                        if provider == "facebook"
+                        else "token missing or invalid"
+                    )
+            except TransientChannelError:
+                logger.warning("%s token validation unavailable", provider)
+            if message is not None:
+                state.send_token_alert_once(
+                    provider,
+                    now.date(),
+                    partial(notifier.send_alert, f"{provider}: {message}"),
+                )
         managers = _managers(settings, store, client)
         report = service.check_tokens(
             managers.values(), notifier.send_alert, state, now
@@ -280,6 +304,22 @@ def facebook_import_token(settings: Settings, conn: Connection[TupleRow]) -> Non
         raise ValueError("FACEBOOK_PAGE_ACCESS_TOKEN is required")
     TokenStore(conn, TokenCipher(settings.token_encryption_key)).save(
         "facebook", token, _now() + PAGE_TOKEN_STORAGE_LIFETIME
+    )
+
+
+def instagram_import_token(settings: Settings, conn: Connection[TupleRow]) -> None:
+    token = os.getenv("INSTAGRAM_ACCESS_TOKEN")
+    if not token or not token.strip():
+        raise ValueError("INSTAGRAM_ACCESS_TOKEN is required")
+    if settings.instagram is None:
+        raise ConfigError("INSTAGRAM_BUSINESS_ACCOUNT_ID is required")
+    now = _now()
+    with httpx.Client() as client:
+        expires_at = token_expiry(settings.instagram, client, token, now)
+    if expires_at <= now:
+        raise ValueError("Instagram token has expired")
+    TokenStore(conn, TokenCipher(settings.token_encryption_key)).save(
+        "instagram", token, expires_at
     )
 
 

@@ -1,6 +1,7 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import ANY, Mock
 from uuid import uuid4
 
 import httpx
@@ -12,7 +13,7 @@ from postpilot.channels.base import (
     TransientChannelError,
     UncertainPublication,
 )
-from postpilot.config import FacebookSettings, Settings
+from postpilot.config import FacebookSettings, InstagramSettings, Settings
 from postpilot.jobs import tasks
 from postpilot.video.publisher import publish_one
 from postpilot.video.store import VideoStatus
@@ -89,7 +90,9 @@ def test_check_tokens_validates_facebook_without_refresh(monkeypatch, settings, 
 
 def setup_publish(status):
     render = SimpleNamespace(id=uuid4(), status=status)
-    claim = Mock(remote_ref=None)
+    claim = Mock(
+        remote_ref=None, remote_ref_claimed_at=None, updated_at=datetime.now(UTC)
+    )
     store = Mock()
     store.oldest_eligible.return_value = render.id
     store.claim.return_value = claim
@@ -167,6 +170,7 @@ def test_retry_applies_to_selection_and_claim():
     store, renders, claim = setup_publish(VideoStatus.APPROVED)
     facebook = channel("facebook-reels")
     claim.remote_ref = "saved-id"
+    claim.remote_ref_claimed_at = claim.updated_at - timedelta(hours=2)
     publish_one(store, renders, [facebook], lambda _: "token", Mock(), retry=True)
     stale_after = timedelta(minutes=15)
     store.oldest_eligible.assert_called_once_with(
@@ -176,3 +180,166 @@ def test_retry_applies_to_selection_and_claim():
         renders.get.return_value.id, "facebook-reels", stale_after, retry=True
     )
     assert facebook.publish_with_ref.call_args.args[2] == "saved-id"
+    assert facebook.publish_with_ref.call_args.kwargs == {
+        "claimed_at": claim.remote_ref_claimed_at
+    }
+
+
+@pytest.mark.parametrize("facebook", [True, False])
+@pytest.mark.parametrize("fail_facebook", [True, False])
+def test_configured_reels_channels_use_independent_claims_and_tokens(
+    monkeypatch, settings, facebook, fail_facebook
+):
+    settings = replace(
+        settings,
+        instagram=InstagramSettings("ig"),
+        facebook=settings.facebook if facebook else None,
+    )
+    store, renders, _ = setup_publish(VideoStatus.APPROVED)
+    adapters = {
+        name: channel(f"{name}-reels", name) for name in ("facebook", "instagram")
+    }
+    claims = {
+        adapter.name: Mock(
+            remote_ref=None, remote_ref_claimed_at=None, updated_at=datetime.now(UTC)
+        )
+        for adapter in adapters.values()
+    }
+    store.claim.side_effect = lambda _, name, stale, **options: claims[name]
+    monkeypatch.setattr(tasks, "VideoPublicationStore", Mock(return_value=store))
+    monkeypatch.setattr(tasks, "VideoStore", Mock(return_value=renders))
+    monkeypatch.setattr(
+        tasks, "FacebookReelsChannel", Mock(return_value=adapters["facebook"])
+    )
+    monkeypatch.setattr(
+        tasks, "InstagramReelsChannel", Mock(return_value=adapters["instagram"])
+    )
+    monkeypatch.setattr(tasks, "Notifier", Mock())
+    monkeypatch.setattr(tasks, "TokenCipher", Mock())
+    tokens = Mock()
+    tokens.get.side_effect = lambda provider: SimpleNamespace(
+        access_token=f"{provider}-token",
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+    )
+    monkeypatch.setattr(tasks, "TokenStore", Mock(return_value=tokens))
+    if fail_facebook:
+        adapters["facebook"].publish_with_ref.side_effect = ChannelError
+
+    tasks.publish_reels(settings, Mock())
+
+    for provider, adapter in adapters.items():
+        if provider == "facebook" and not facebook:
+            adapter.publish_with_ref.assert_not_called()
+            continue
+        assert adapter.publish_with_ref.call_args.args[1] == f"{provider}-token"
+        claim = claims[adapter.name]
+        assert adapter.publish_with_ref.call_args.kwargs == {
+            "claimed_at": claim.updated_at
+        }
+        if provider == "facebook" and fail_facebook:
+            store.mark_failed.assert_called_once_with(
+                claim, "Channel operation failed (ChannelError)"
+            )
+        else:
+            assert (claim, "remote") in [
+                call.args for call in store.mark_published.call_args_list
+            ]
+
+
+@pytest.mark.parametrize(
+    "days, data_days, expected",
+    [
+        (0, 90, 90),
+        (90, 45, 45),
+        (45, 90, 45),
+        (0, 0, 60),
+        (90, 0, 90),
+        (None, None, 60),
+    ],
+)
+@pytest.mark.parametrize("valid", [True, False])
+def test_instagram_import_validates_and_stores_earliest_expiry(
+    monkeypatch, settings, days, data_days, expected, valid
+):
+    settings = replace(settings, instagram=InstagramSettings("ig"))
+    now = datetime.now(UTC)
+    store = Mock()
+    monkeypatch.setattr(tasks, "_now", lambda: now)
+    monkeypatch.setattr(tasks, "TokenStore", Mock(return_value=store))
+    monkeypatch.setattr(tasks, "TokenCipher", Mock())
+    monkeypatch.setenv("INSTAGRAM_ACCESS_TOKEN", "test-token&value")
+    debug = {"is_valid": valid}
+    for key, value in (("expires_at", days), ("data_access_expires_at", data_days)):
+        if value is not None:
+            debug[key] = int((now + timedelta(days=value)).timestamp()) if value else 0
+
+    def route(request):
+        assert request.url.path == "/v27.0/debug_token"
+        assert request.url.params["input_token"] == "test-token&value"
+        return httpx.Response(200, json={"data": debug})
+
+    client = httpx.Client(transport=httpx.MockTransport(route))
+    monkeypatch.setattr(tasks.httpx, "Client", lambda: client)
+    if not valid:
+        with pytest.raises(ValueError, match="Instagram token is invalid"):
+            tasks.instagram_import_token(settings, Mock())
+        store.save.assert_not_called()
+    else:
+        tasks.instagram_import_token(settings, Mock())
+        expiry = now if not days and not data_days else now.replace(microsecond=0)
+        store.save.assert_called_once_with(
+            "instagram", "test-token&value", expiry + timedelta(days=expected)
+        )
+
+
+@pytest.mark.parametrize(
+    "days, valid, message",
+    [
+        (None, True, "instagram: token missing or invalid"),
+        (30, False, "instagram: token missing or invalid"),
+        (0, True, "instagram: token missing or invalid"),
+        (14, True, "instagram: token expires in 14 day(s); re-import manually"),
+        (15, True, None),
+    ],
+)
+def test_check_instagram_tokens_alerts_once_daily(
+    monkeypatch, settings, days, valid, message
+):
+    settings = replace(settings, facebook=None, instagram=InstagramSettings("ig"))
+    now = datetime.now(UTC)
+    monkeypatch.setattr(tasks, "_now", lambda: now)
+    state = Mock()
+    notifier = Mock()
+    store = Mock()
+    store.get.return_value = (
+        None
+        if days is None
+        else SimpleNamespace(
+            access_token="test-token", expires_at=now + timedelta(days=days)
+        )
+    )
+    monkeypatch.setattr(
+        tasks, "ItemRepo", Mock(return_value=SimpleNamespace(bot_state=state))
+    )
+    monkeypatch.setattr(tasks, "Notifier", Mock(return_value=notifier))
+    monkeypatch.setattr(tasks, "TokenStore", Mock(return_value=store))
+    monkeypatch.setattr(tasks, "TokenCipher", Mock())
+    checked = Mock(return_value=valid)
+    monkeypatch.setattr(tasks, "token_is_valid", checked)
+
+    tasks.check_tokens(settings, Mock())
+
+    if days is not None:
+        checked.assert_called_once_with(settings.instagram, ANY, "test-token")
+    else:
+        checked.assert_not_called()
+    if message:
+        state.send_token_alert_once.assert_called_once()
+        provider, day, send = state.send_token_alert_once.call_args.args
+        assert (provider, day) == ("instagram", now.date())
+        send()
+        notifier.send_alert.assert_called_once_with(message)
+    else:
+        state.send_token_alert_once.assert_not_called()
+    store.save.assert_not_called()
+    notifier.send_renewal_prompt.assert_not_called()

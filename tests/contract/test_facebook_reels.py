@@ -48,7 +48,7 @@ def run(render, route, *, ref=None, save=lambda ref: None):
 
     with httpx.Client(transport=httpx.MockTransport(handle)) as client:
         return FacebookReelsChannel(SETTINGS, client).publish_with_ref(
-            render, TOKEN, ref, save
+            render, TOKEN, ref, save, claimed_at=datetime.now(UTC)
         )
 
 
@@ -89,6 +89,12 @@ def test_start_checkpoints_before_upload_and_publishes_labelled_caption(render):
     "status,offset,steps,result",
     [
         ({"publishing_phase": {"status": "complete"}}, None, [], "old"),
+        (
+            {"uploading_phase": {"status": "in_progress", "bytes_transferred": 2}},
+            2,
+            ["upload", "finish"],
+            "old",
+        ),
         (
             {"uploading_phase": {"status": "in_progress", "bytes_transfered": 2}},
             2,

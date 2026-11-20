@@ -96,7 +96,7 @@ def test_scheduled_workflow(name, cron):
             expected.update({"SHORTIO_API_KEY", "SHORTIO_DOMAIN", "GITHUB_TOKEN"})
         elif name == "publish-reels":
             assert job["timeout-minutes"] == 15
-            expected.add("FACEBOOK_PAGE_ID")
+            expected.update({"FACEBOOK_PAGE_ID", "INSTAGRAM_BUSINESS_ACCOUNT_ID"})
         elif name == "render-video":
             assert job["timeout-minutes"] == 25
             assert any(
@@ -115,7 +115,7 @@ def test_scheduled_workflow(name, cron):
         else:
             expected.update(channel_credentials)
         if name == "check-tokens":
-            expected.add("FACEBOOK_PAGE_ID")
+            expected.update({"FACEBOOK_PAGE_ID", "INSTAGRAM_BUSINESS_ACCOUNT_ID"})
         if name == "poll-telegram":
             expected.add("ANTHROPIC_API_KEY")
         assert set(command["env"]) == expected

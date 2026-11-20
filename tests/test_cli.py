@@ -31,6 +31,7 @@ def test_unknown_command_exits_nonzero():
         ("check-tokens", True),
         ("threads-import-token", True),
         ("facebook-import-token", True),
+        ("instagram-import-token", True),
     ],
 )
 def test_dispatch(monkeypatch, command, database):

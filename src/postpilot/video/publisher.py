@@ -1,6 +1,6 @@
 import logging
 from collections.abc import Callable, Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta
 from functools import partial
 from typing import Protocol
 
@@ -23,6 +23,8 @@ class VideoChannel(Protocol):
         token: str,
         ref: str | None,
         save_ref: Callable[[str], None],
+        *,
+        claimed_at: datetime,
     ) -> str | None: ...
 
     def permalink(self, remote_id: str) -> str: ...
@@ -60,7 +62,11 @@ def publish_one(
             if not token:
                 raise ChannelHeld
             remote_id = channel.publish_with_ref(
-                render, token, claim.remote_ref, partial(store.save_ref, claim)
+                render,
+                token,
+                claim.remote_ref,
+                partial(store.save_ref, claim),
+                claimed_at=claim.remote_ref_claimed_at or claim.updated_at,
             )
         except ChannelHeld:
             store.release(claim)
