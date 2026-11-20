@@ -20,6 +20,7 @@ from postpilot.core.publisher import Publisher
 from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.engagement.drafts import ReplyDrafter
 from postpilot.engagement.job import (
+    collect_github,
     collect_linkedin,
     collect_threads,
     poll_engagement_sources,
@@ -143,16 +144,25 @@ def poll_engagement(settings: Settings, conn: Connection[TupleRow]) -> None:
         token = None
         token_lookup_failed = True
 
-    if settings.imap is None and not token and not token_lookup_failed:
+    if (
+        not settings.github_owner
+        and settings.imap is None
+        and not token
+        and not token_lookup_failed
+    ):
         logger.warning("No engagement sources configured")
         if purge_failed:
             raise RuntimeError("Engagement data purge failed")
         return
     with httpx.Client(timeout=30, follow_redirects=False) as client:
         sources: list[Callable[[], None]] = []
-        if settings.imap is not None or token:
-            if not settings.anthropic_api_key:
+        drafts_unavailable = False
+        if (settings.imap is not None or token) and not settings.anthropic_api_key:
+            if not settings.github_owner:
                 raise ConfigError("ANTHROPIC_API_KEY is required for engagement")
+            drafts_unavailable = True
+            logger.warning("ANTHROPIC_API_KEY is required for comment monitoring")
+        if (settings.imap is not None or token) and settings.anthropic_api_key:
             drafter = ReplyDrafter(ClaudeClient(settings.anthropic_api_key))
             if settings.imap is not None:
                 sources.append(
@@ -170,13 +180,25 @@ def poll_engagement(settings: Settings, conn: Connection[TupleRow]) -> None:
                     )
                 )
 
+        if settings.github_owner:
+            sources.append(
+                partial(
+                    collect_github,
+                    GitHubClient(
+                        settings.github_owner, settings.github_token, client=client
+                    ),
+                    settings.github_owner,
+                    BotState(conn),
+                    store,
+                )
+            )
         api = TelegramApi(settings.telegram_bot_token, client=client)
         poll_engagement_sources(
             sources,
             store,
             api,
             settings.telegram_chat_id,
-            source_failed=token_lookup_failed or purge_failed,
+            source_failed=token_lookup_failed or purge_failed or drafts_unavailable,
         )
 
 

@@ -38,6 +38,8 @@ class EngagementStore:
         post_url: str | None,
         reply_draft: str | None,
         occurred_at: datetime,
+        *,
+        notified: bool = False,
     ) -> EngagementEvent | None:
         with (
             self.conn.transaction(),
@@ -47,8 +49,9 @@ class EngagementStore:
                 """
                 INSERT INTO engagement_events
                     (id, channel, kind, source_ref, actor, text, post_url,
-                     reply_draft, occurred_at, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                     reply_draft, occurred_at, created_at, notified_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now(),
+                        CASE WHEN %s THEN now() END)
                 ON CONFLICT (channel, source_ref) DO NOTHING RETURNING *
                 """,
                 (
@@ -61,6 +64,7 @@ class EngagementStore:
                     post_url,
                     reply_draft,
                     occurred_at,
+                    notified,
                 ),
             ).fetchone()
 

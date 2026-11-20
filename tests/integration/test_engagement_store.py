@@ -132,3 +132,33 @@ def test_purge_clears_personal_data_and_filters_old_unnotified(conn, monkeypatch
         )
         assert retained.post_url == event.post_url
         assert retained.kind == event.kind
+
+
+def test_github_watch_and_engagement_round_trip(conn, database_schema):
+    state = BotState(conn)
+    store = EngagementStore(conn)
+    now = datetime.now(UTC)
+    assert state.get_github_watch() == {}
+    state.set_github_watch("123", {"stars": 1, "forks": 0})
+    state.set_github_watch("456", {"stars": 0, "forks": 0})
+    state.set_github_watch("123", {"stars": 1, "forks": 1})
+
+    star_args = ("github", "star", "star:123:10", "star-user", None, None, None, now)
+    fork_args = ("github", "fork", "fork:123:20", "fork-user", None, None, None, now)
+    star = store.insert_if_new(*star_args, notified=True)
+    fork = store.insert_if_new(*fork_args)
+    assert star is not None and star.notified_at is not None
+    assert fork is not None and fork.notified_at is None
+    assert store.insert_if_new(*star_args) is None
+    assert store.insert_if_new(*fork_args, notified=True) is None
+
+    with test_store.connect(test_store.DATABASE_URL, schema=database_schema) as fresh:
+        assert [
+            event
+            for event in EngagementStore(fresh).list_unnotified()
+            if event.id in {star.id, fork.id}
+        ] == [fork]
+        assert BotState(fresh).get_github_watch() == {
+            "123": {"stars": 1, "forks": 1},
+            "456": {"stars": 0, "forks": 0},
+        }

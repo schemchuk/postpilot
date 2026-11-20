@@ -1,5 +1,5 @@
 from base64 import b64decode
-from collections.abc import Collection, Iterable
+from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from itertools import count
@@ -45,6 +45,50 @@ class RepoTraffic:
     clones: int
     unique_clones: int
     referrers: dict[str, int]
+
+
+@dataclass(frozen=True)
+class PublicRepo:
+    id: int
+    name: str
+    html_url: str
+    stargazers_count: int
+    forks_count: int
+
+
+@dataclass(frozen=True)
+class RepoEngagement:
+    id: int
+    login: str
+    occurred_at: datetime
+
+
+def _string(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError
+    return value
+
+
+def _engagement(actor_id: object, login: object, timestamp: object) -> RepoEngagement:
+    try:
+        occurred_at = datetime.fromisoformat(_string(timestamp))
+    except ValueError:
+        occurred_at = datetime.now(UTC)
+    if occurred_at.tzinfo is None:
+        occurred_at = occurred_at.replace(tzinfo=UTC)
+    return RepoEngagement(_count(actor_id), _string(login), occurred_at.astimezone(UTC))
+
+
+def _public_repo(row: dict[str, Any]) -> PublicRepo | None:
+    if row.get("private") or row.get("visibility") in ("private", "internal"):
+        return None
+    return PublicRepo(
+        _count(row["id"]),
+        _string(row["name"]),
+        _string(row["html_url"]),
+        _count(row["stargazers_count"]),
+        _count(row["forks_count"]),
+    )
 
 
 def _daily_counts(rows: list[dict[str, Any]], day: str) -> tuple[int, int]:
@@ -104,11 +148,14 @@ class GitHubClient:
         *,
         params: dict[str, str | int] | None = None,
         allow_forbidden: bool = False,
+        accept: str | None = None,
     ) -> httpx.Response | None:
         try:
             response = self._client.get(
                 _API + path,
-                headers=self._headers,
+                headers={**self._headers, "Accept": accept}
+                if accept
+                else self._headers,
                 params=params,
                 follow_redirects=False,
             )
@@ -122,8 +169,67 @@ class GitHubClient:
             raise GitHubError(f"GitHub returned HTTP {response.status_code}.")
         return response
 
-    def _repo_path(self, name: str) -> str:
-        return f"/repos/{quote(self._owner, safe='')}/{quote(name, safe='')}"
+    def _repo_path(self, name: str, *, owner: str | None = None) -> str:
+        return f"/repos/{quote(owner or self._owner, safe='')}/{quote(name, safe='')}"
+
+    def _watch_pages[T](
+        self,
+        path: str,
+        parse: Callable[[dict[str, Any]], T | None],
+        *,
+        params: dict[str, str | int] | None = None,
+        accept: str | None = None,
+        max_pages: int | None = None,
+    ) -> list[T]:
+        results: list[T] = []
+        try:
+            for page in count(1):
+                response = self._get(
+                    path,
+                    params={**(params or {}), "per_page": _PAGE_SIZE, "page": page},
+                    accept=accept,
+                )
+                if response is None:
+                    raise GitHubError("GitHub watch endpoint was not found.")
+                rows = response.json()
+                if not isinstance(rows, list):
+                    raise TypeError
+                for row in rows:
+                    if not isinstance(row, dict):
+                        raise TypeError
+                    if (result := parse(row)) is not None:
+                        results.append(result)
+                if "next" not in response.links or page == max_pages:
+                    break
+        except (KeyError, TypeError, ValueError, OverflowError):
+            raise GitHubError("GitHub returned invalid watch data.") from None
+        return results
+
+    def list_public_repos(self, owner: str) -> list[PublicRepo]:
+        return self._watch_pages(
+            f"/users/{quote(owner, safe='')}/repos",
+            _public_repo,
+            params={"type": "owner"},
+        )
+
+    def stargazers(self, owner: str, repo: str) -> list[RepoEngagement]:
+        return self._watch_pages(
+            f"{self._repo_path(repo, owner=owner)}/stargazers",
+            lambda row: _engagement(
+                row["user"]["id"], row["user"]["login"], row.get("starred_at")
+            ),
+            accept="application/vnd.github.star+json",
+            max_pages=10,
+        )
+
+    def forks(self, owner: str, repo: str) -> list[RepoEngagement]:
+        return self._watch_pages(
+            f"{self._repo_path(repo, owner=owner)}/forks",
+            lambda row: _engagement(
+                row["id"], row["owner"]["login"], row.get("created_at")
+            ),
+            max_pages=10,
+        )
 
     def list_active_repos(self, since: datetime) -> list[ActiveRepo]:
         if since.utcoffset() is None:
