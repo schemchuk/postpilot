@@ -110,6 +110,8 @@ is reused and why.
 T18 is not before 2026-12-11 (end of the old agent's handmake series, ADR 018 amendment): copy the old
 agent's posted repos into `posted_repos`, `/series_start postpilot 5`, enable `draft-weekly.yml` and
 cron-job.org job 8906614 (first draft Wed 2026-12-16).
+T18 owner: Claude Code alone (Volodymyr, 2026-11-20: Codex is not available by then). Claude Code
+implements and checks; Volodymyr reviews and gives the OK before any merge (author never merges own work).
 
 ## Order
 T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18.
