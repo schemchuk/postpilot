@@ -79,9 +79,19 @@ def api(monkeypatch):
     return api
 
 
-def test_publish_due_with_no_channels_leaves_repo_untouched(settings, repo, caplog):
+@pytest.fixture
+def record_weekly(monkeypatch):
+    record = Mock()
+    monkeypatch.setattr(tasks, "_record_weekly_publications", record)
+    return record
+
+
+def test_publish_due_with_no_channels_leaves_repo_untouched(
+    settings, repo, caplog, record_weekly
+):
     with caplog.at_level("INFO"):
         tasks.publish_due(replace(settings, linkedin=None), None)
+    record_weekly.assert_called_once_with(None, repo)
     assert "no channels configured" in caplog.text
     assert repo.mock_calls == []
 
@@ -198,7 +208,7 @@ def test_renewal_releases_held_items_with_current_token(
 
 
 def test_publish_due_processes_unfinished_and_approved_items(
-    settings, repo, monkeypatch
+    settings, repo, monkeypatch, record_weekly
 ):
     unfinished_id, approved_id = uuid4(), uuid4()
     repo.list_unfinished_item_ids.return_value = [unfinished_id]

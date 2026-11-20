@@ -203,3 +203,30 @@ def test_traffic_errors_redact_response_and_credentials(status, caplog):
         assert token not in caplog.text
     finally:
         client.close()
+
+
+def test_list_active_public_repos_with_actions_token():
+    def respond(request):
+        assert request.headers["Authorization"] == "Bearer fixture"
+        if request.url.path == "/users/owner/repos":
+            assert request.url.params["type"] == "owner"
+            return httpx.Response(
+                200,
+                json=[
+                    repo_data("eligible"),
+                    {**repo_data("archived"), "archived": True},
+                    {**repo_data("fork"), "fork": True},
+                    {**repo_data("private"), "visibility": "private"},
+                    repo_data("no-commits"),
+                ],
+            )
+        if request.url.path == "/repos/owner/no-commits/commits":
+            return httpx.Response(200, json=[])
+        assert request.url.path == "/repos/owner/eligible/commits"
+        return httpx.Response(200, json=[{"commit": {"message": "Change"}}])
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        result = GitHubClient("owner", "fixture", client=client).list_active_repos(
+            SINCE, public_only=True
+        )
+    assert [project.meta.name for project in result] == ["eligible"]

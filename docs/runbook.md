@@ -173,6 +173,23 @@ If Telegram reports that the token lacks `threads_manage_replies`, follow
 to re-authorize with `/renew threads`, grant `threads_manage_replies`, and send
 the callback command in Telegram before retrying.
 
+## Weekly GitHub draft
+
+`draft-weekly` runs Wednesday at 18:00 Europe/Berlin via cron-job.org, with a Wednesday
+17:00 UTC GitHub fallback. The job previews the German and Ukrainian variants in Telegram
+for approval before Friday's publication.
+
+- No eligible public project: Telegram reports “No weekly post this week: no new public
+  project with commits.” If active projects were already posted, the message lists them
+  and points to `/series`.
+- Model skip: Telegram reports “No weekly post this week (<repo>): <reason>” and confirms
+  the series ended when applicable.
+
+Manual workflow dispatch generates a draft only when the current Berlin week has no
+`weekly_drafts` row. If the saved draft is awaiting approval, dispatch resends its Telegram
+preview from the stored variants. To force a new draft, manually delete that Monday's row by
+its `week` date before dispatching. Deleting the row leaves its item and publication history in place.
+
 ## External schedule trigger (cron-job.org)
 
 GitHub `schedule` is unreliable for this repository (ADR 017), so cron-job.org dispatches the
@@ -180,15 +197,16 @@ workflows. Each cron-job.org job: URL
 `https://api.github.com/repos/schemchuk/postpilot/actions/workflows/<file>/dispatches`, method
 POST, body `{"ref":"main"}`, headers `Authorization: Bearer <PAT>`,
 `Accept: application/vnd.github+json`, `X-GitHub-Api-Version: 2022-11-28`,
-`Content-Type: application/json`, `User-Agent: postpilot-cron` (without it GitHub answers 403), timezone UTC, failure notifications on.
+`Content-Type: application/json`, `User-Agent: postpilot-cron` (without it GitHub answers 403), timezone UTC unless specified below, failure notifications on.
 
-| Workflow file | Schedule (UTC) |
+| Workflow file | Schedule (UTC unless specified) |
 |---|---|
 | poll-telegram.yml | every 5 minutes (needs the DB-free fast path, T19a) |
 | poll-engagement.yml | every 30 minutes |
 | publish-reels.yml | hourly at :00 (`0 * * * *`) |
 | check-tokens.yml | daily 07:00 |
 | snapshot-traffic.yml | daily 07:30 |
+| draft-weekly.yml | Wednesday 18:00 Europe/Berlin (job timezone Europe/Berlin) |
 | publish-due.yml | Friday 09:00 |
 | render-video.yml | Friday 10:00 |
 

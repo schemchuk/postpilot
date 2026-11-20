@@ -69,6 +69,18 @@ class SeriesStore:
             ).fetchone()
         return Series(*row) if row else None
 
+    def complete(self, *, series_id: UUID | None = None) -> Series | None:
+        with self.conn.transaction():
+            row = self.conn.execute(
+                f"""
+                UPDATE series SET status = 'completed' WHERE status = 'active'
+                    AND (%s::uuid IS NULL OR id = %s)
+                RETURNING {_COLUMNS}
+                """,
+                (series_id, series_id),
+            ).fetchone()
+        return Series(*row) if row else None
+
     def record_part(
         self,
         repo: str,
