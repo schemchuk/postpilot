@@ -69,3 +69,66 @@ def test_known_refs_filters_channel_and_requested_refs(conn):
         "threads", ["known", "unknown", "other-channel", "known"]
     ) == {"known"}
     assert store.known_refs("threads", []) == set()
+
+
+def test_purge_clears_personal_data_and_filters_old_unnotified(conn, monkeypatch):
+    from postpilot.engagement import store as engagement_store
+
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(days=90)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    monkeypatch.setattr(engagement_store, "datetime", Clock)
+    store = EngagementStore(conn)
+    old = store.insert_if_new(
+        "linkedin",
+        "comment",
+        "old",
+        "Actor",
+        "Text",
+        "https://example.test",
+        "Draft",
+        cutoff - timedelta(microseconds=1),
+    )
+    partial = store.insert_if_new(
+        "linkedin",
+        "comment",
+        "partial",
+        None,
+        None,
+        None,
+        "Draft",
+        cutoff - timedelta(days=2),
+    )
+    edge = store.insert_if_new(
+        "linkedin",
+        "comment",
+        "edge",
+        "Actor",
+        "Text",
+        None,
+        "Draft",
+        cutoff,
+    )
+    assert [
+        e for e in store.list_unnotified() if e.id in {old.id, partial.id, edge.id}
+    ] == [edge]
+    assert store.purge_personal_data(now) == 2
+    assert store.purge_personal_data(now) == 0
+    assert [
+        e for e in store.list_unnotified() if e.id in {old.id, partial.id, edge.id}
+    ] == [edge]
+    assert store.get(edge.id) == edge
+    for event in (old, partial):
+        retained = store.get(event.id)
+        assert (retained.actor, retained.text, retained.reply_draft) == (
+            None,
+            None,
+            None,
+        )
+        assert retained.post_url == event.post_url
+        assert retained.kind == event.kind

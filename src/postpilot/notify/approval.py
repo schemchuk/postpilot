@@ -1,4 +1,5 @@
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -17,6 +18,7 @@ from postpilot.engagement.store import EngagementStore
 from postpilot.notify.renewal import RenewalHandler
 from postpilot.notify.telegram import Notifier, TelegramApi, TelegramError
 from postpilot.sources.telegram import TelegramInbox
+from postpilot.stats import StatsStore, format_stats
 from postpilot.store.repo import EditTooLong, ItemRepo
 from postpilot.video.store import VideoStore
 
@@ -54,7 +56,9 @@ class ApprovalHandler:
         video_store: VideoStore | None = None,
         engagement: EngagementStore | None = None,
         drafter: ReplyDrafter | None = None,
+        stats: StatsStore | None = None,
     ) -> None:
+        self.stats = stats
         self.engagement = engagement
         self.drafter = drafter
         self.renewal = renewal
@@ -76,6 +80,15 @@ class ApprovalHandler:
             self._handle_callback(event, sender)
         elif isinstance(event.get("text"), str):
             chat_id = _object(event.get("chat")).get("id")
+            if re.match(r"^/stats(?:@[a-zA-Z0-9_]+)?(?:\s|$)", event["text"]):
+                if self.stats is not None and type(chat_id) is int:
+                    _reply(
+                        self.api.send_message,
+                        chat_id,
+                        format_stats(self.stats.read(datetime.now(UTC))),
+                        parse_mode="HTML",
+                    )
+                return
             if event["text"].startswith("/renew"):
                 message_id = event.get("message_id")
                 if (

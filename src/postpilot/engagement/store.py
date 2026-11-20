@@ -1,9 +1,11 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from psycopg import Connection
 from psycopg.rows import TupleRow, class_row
+
+PERSONAL_DATA_RETENTION = timedelta(days=90)
 
 
 @dataclass(frozen=True)
@@ -68,8 +70,22 @@ class EngagementStore:
             self.conn.cursor(row_factory=class_row(EngagementEvent)) as cur,
         ):
             return cur.execute(
-                "SELECT * FROM engagement_events WHERE notified_at IS NULL ORDER BY created_at, id"
+                "SELECT * FROM engagement_events WHERE notified_at IS NULL"
+                " AND occurred_at >= %s ORDER BY created_at, id",
+                (datetime.now(UTC) - PERSONAL_DATA_RETENTION,),
             ).fetchall()
+
+    def purge_personal_data(self, now: datetime) -> int:
+        with self.conn.transaction():
+            return self.conn.execute(
+                """
+                UPDATE engagement_events
+                SET text = NULL, actor = NULL, reply_draft = NULL
+                WHERE occurred_at < %s
+                    AND (text IS NOT NULL OR actor IS NOT NULL OR reply_draft IS NOT NULL)
+                """,
+                (now - PERSONAL_DATA_RETENTION,),
+            ).rowcount
 
     def mark_notified(self, id: UUID, message_id: int | None) -> None:
         with self.conn.transaction():

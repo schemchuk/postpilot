@@ -1,5 +1,6 @@
 from dataclasses import replace
 from datetime import UTC, datetime
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
@@ -8,6 +9,7 @@ from postpilot.core.models import Item
 from postpilot.core.states import ItemState
 from postpilot.notify.approval import ApprovalHandler
 from postpilot.notify.telegram import TelegramError
+from postpilot.stats import Stats, format_stats
 
 USER = 321
 CHAT = 123
@@ -133,3 +135,45 @@ def test_malformed_callback_is_ignored(data):
     api = RecordingApi()
     ApprovalHandler(repo, api, USER).handle_update(callback(data))
     assert repo.calls == api.calls == []
+
+
+@pytest.mark.parametrize(
+    ("text", "sender", "enabled", "inbox_enabled", "fails", "replies"),
+    [
+        ("/stats", USER, True, True, False, True),
+        ("/stats@my_bot ignored args", USER, True, False, False, True),
+        ("/stats ignored", USER, True, True, True, True),
+        ("/stats", 999, True, True, False, False),
+        ("/stats", USER, False, False, False, False),
+        ("/stats_extra", USER, True, True, False, False),
+        ("/unknown", USER, True, True, False, False),
+    ],
+)
+def test_stats_command_routing(text, sender, enabled, inbox_enabled, fails, replies):
+    repo, inbox, api, stats = Mock(), Mock(), Mock(), Mock()
+    result = Stats()
+    stats.read.return_value = result
+    if fails:
+        api.send_message.side_effect = TelegramError("sensitive reply details")
+    handler = ApprovalHandler(
+        repo,
+        api,
+        USER,
+        inbox=inbox if inbox_enabled else None,
+        stats=stats if enabled else None,
+    )
+    handler.handle_update(
+        {
+            "update_id": 17,
+            "message": {"from": {"id": sender}, "chat": {"id": CHAT}, "text": text},
+        }
+    )
+    assert repo.mock_calls == inbox.mock_calls == []
+    if replies:
+        stats.read.assert_called_once()
+        assert stats.read.call_args.args[0].tzinfo is UTC
+        api.send_message.assert_called_once_with(
+            CHAT, format_stats(result), parse_mode="HTML"
+        )
+    else:
+        assert stats.mock_calls == api.mock_calls == []

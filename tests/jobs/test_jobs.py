@@ -363,7 +363,7 @@ def test_snapshot_traffic(settings, monkeypatch, caplog, mode):
 
 
 @pytest.mark.parametrize("expired", [False, True])
-def test_poll_engagement_no_sources_is_noop(settings, monkeypatch, expired):
+def test_poll_engagement_purges_with_no_sources(settings, monkeypatch, expired):
     store = Mock()
     store.get.return_value = (
         SimpleNamespace(
@@ -375,7 +375,10 @@ def test_poll_engagement_no_sources_is_noop(settings, monkeypatch, expired):
     monkeypatch.setattr(tasks, "TokenStore", Mock(return_value=store))
     poll = Mock()
     monkeypatch.setattr(tasks, "poll_engagement_sources", poll)
+    engagement = Mock()
+    monkeypatch.setattr(tasks, "EngagementStore", Mock(return_value=engagement))
     tasks.poll_engagement(settings, Mock())
+    engagement.purge_personal_data.assert_called_once()
     store.get.assert_called_once_with("threads")
     poll.assert_not_called()
 
@@ -426,3 +429,37 @@ def test_poll_engagement_isolates_threads_token_lookup_failure(settings, monkeyp
 
     linkedin.assert_called_once()
     engagement.list_unnotified.assert_called_once_with()
+
+
+@pytest.mark.parametrize("purge_fails", [False, True])
+def test_poll_engagement_purges_before_sources_and_isolates_failure(
+    settings, monkeypatch, caplog, purge_fails
+):
+    actions = Mock()
+    actions.list_unnotified.return_value = []
+    actions.purge_personal_data.return_value = 2
+    if purge_fails:
+        actions.purge_personal_data.side_effect = RuntimeError("private event data")
+    monkeypatch.setattr(tasks, "EngagementStore", Mock(return_value=actions))
+    monkeypatch.setattr(tasks, "_read_token", Mock(return_value="stored"))
+    monkeypatch.setattr(tasks, "ClaudeClient", Mock())
+    monkeypatch.setattr(tasks, "collect_linkedin", actions.linkedin)
+    monkeypatch.setattr(tasks, "collect_threads", actions.threads)
+    configured = replace(
+        settings,
+        imap=ImapSettings("mailbox@example.test", "fixture"),
+        anthropic_api_key="fixture",
+    )
+    if purge_fails:
+        with pytest.raises(RuntimeError, match="Engagement source or notification"):
+            tasks.poll_engagement(configured, Mock())
+    else:
+        tasks.poll_engagement(configured, Mock())
+
+    assert [call[0] for call in actions.mock_calls] == [
+        "purge_personal_data",
+        "linkedin",
+        "threads",
+        "list_unnotified",
+    ]
+    assert "private event data" not in caplog.text

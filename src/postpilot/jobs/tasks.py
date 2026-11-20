@@ -35,6 +35,7 @@ from postpilot.notify.telegram import Notifier, TelegramApi
 from postpilot.sources.github import GitHubClient, GitHubError
 from postpilot.sources.series import SeriesStore
 from postpilot.sources.telegram import TelegramInbox
+from postpilot.stats import StatsStore
 from postpilot.store.bot_state import BotState
 from postpilot.store.repo import ItemRepo
 from postpilot.tokens import service
@@ -125,6 +126,16 @@ def _publish_items(publisher: Publisher, item_ids: Iterable[UUID]) -> None:
 
 
 def poll_engagement(settings: Settings, conn: Connection[TupleRow]) -> None:
+    store = EngagementStore(conn)
+    purge_failed = False
+    try:
+        purged = store.purge_personal_data(_now())
+    except Exception:  # noqa: BLE001 - isolate purge failures and keep event data private
+        purge_failed = True
+        logger.warning("Engagement data purge failed")
+    else:
+        logger.info("Engagement rows purged: %s", purged)
+
     token_lookup_failed = False
     try:
         token = _read_token(settings, conn, "threads")
@@ -134,8 +145,9 @@ def poll_engagement(settings: Settings, conn: Connection[TupleRow]) -> None:
 
     if settings.imap is None and not token and not token_lookup_failed:
         logger.warning("No engagement sources configured")
+        if purge_failed:
+            raise RuntimeError("Engagement data purge failed")
         return
-    store = EngagementStore(conn)
     with httpx.Client(timeout=30, follow_redirects=False) as client:
         sources: list[Callable[[], None]] = []
         if settings.imap is not None or token:
@@ -164,7 +176,7 @@ def poll_engagement(settings: Settings, conn: Connection[TupleRow]) -> None:
             store,
             api,
             settings.telegram_chat_id,
-            source_failed=token_lookup_failed,
+            source_failed=token_lookup_failed or purge_failed,
         )
 
 
@@ -199,6 +211,7 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
             inbox=TelegramInbox(repo, api, model),
             video_store=VideoStore(conn),
             engagement=EngagementStore(conn),
+            stats=StatsStore(conn),
             drafter=ReplyDrafter(model) if model is not None else None,
         )
         poll_once(api, handler, repo.bot_state, raise_errors=True)

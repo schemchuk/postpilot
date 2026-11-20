@@ -142,3 +142,10 @@ password. The local command also supports an optional `IMAP_HOST` (default `imap
 The first run and any mailbox UIDVALIDITY change skip existing notifications.
 Threads replies are read for posts published in the last 14 days using the existing stored
 Threads token with `threads_read_replies` and require no extra secret.
+
+Each run clears comment text, actor names and reply drafts older than 90 days before
+polling sources, even when no source is configured. Event rows remain for counts.
+
+Send `/stats` in Telegram to see 30-day engagement and publication counts, short-link
+click totals and recent clicks, and the latest GitHub traffic snapshot. The
+`poll-telegram` job answers this command.
