@@ -31,6 +31,7 @@ from postpilot.sources.telegram import TelegramInbox
 from postpilot.stats import StatsStore, format_stats
 from postpilot.store.bot_state import PROFILE_LIMIT
 from postpilot.store.repo import EditTooLong, ItemRepo
+from postpilot.trace import trace
 from postpilot.video.store import VideoStore
 
 _LOG = logging.getLogger(__name__)
@@ -375,8 +376,10 @@ class ApprovalHandler:
                 approved_by=sender if action == "approve" else None,
             )
         except IllegalTransition:
+            trace("approval", "already-handled", item=item_id, action=action)
             _reply(self.api.answer_callback_query, callback_id, "Already handled")
             return
+        trace("approval", "transition", item=item_id, action=action, state=state)
 
         _reply(self.api.answer_callback_query, callback_id)
         if type(chat_id) is int and type(message_id) is int:
