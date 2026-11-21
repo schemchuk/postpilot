@@ -66,6 +66,7 @@ from postpilot.tokens.instagram import token_expiry
 from postpilot.tokens.linkedin import LinkedInTokenManager
 from postpilot.tokens.store import TokenStore
 from postpilot.tokens.threads import TOKEN_LIFETIME, ThreadsTokenManager
+from postpilot.trace import trace
 from postpilot.video.heygen import HeyGenClient
 from postpilot.video.pipeline import render_one
 from postpilot.video.publications import VideoPublicationStore
@@ -517,11 +518,13 @@ def _generate_weekly(
         raise _WeeklyGenerationError("generation (missing skip reason)")
 
     texts = _finalize_weekly_texts((draft["post_de"], draft["post_uk"]), url, allowed)
+    trace("draft-weekly", "generated", de_chars=len(texts[0]), ua_chars=len(texts[1]))
     for index, (lang, model_lang) in enumerate((("de", "de"), ("ua", "uk"))):
         try:
             texts[index] = humanize_post(model, texts[index], model_lang, payload)
         except Exception:  # noqa: BLE001 - keep model errors out of job alerts
             raise _WeeklyGenerationError(f"humanizer ({lang})") from None
+        trace("draft-weekly", "humanized", lang=lang, chars=len(texts[index]))
     _check_weekly_lengths(texts)
     return texts[0], texts[1]
 
@@ -576,6 +579,15 @@ def _weekly_links(
                     exact_url.sub(short.replace("\\", "\\\\"), variant.text),
                     expected_state=item.state,
                 )
+                trace(
+                    "draft-weekly",
+                    "short-link",
+                    item=item.id,
+                    lang=variant.lang,
+                    link=short,
+                )
+            else:
+                trace("draft-weekly", "no-repo-url", item=item.id, lang=variant.lang)
     finally:
         shortio.close()
 
@@ -691,7 +703,16 @@ def draft_weekly(settings: Settings, conn: Connection[TupleRow]) -> None:
     now = _now().astimezone(ZoneInfo("Europe/Berlin"))
     week = now.date() - timedelta(days=now.weekday())
     weekly = WeeklyStore(conn)
-    if (existing := weekly.get(week)) is not None:
+    existing = weekly.get(week)
+    trace(
+        "draft-weekly",
+        "week",
+        week=week,
+        berlin_now=now.isoformat(timespec="minutes"),
+        existing=existing.outcome if existing else None,
+        item=existing.item_id if existing else None,
+    )
+    if existing is not None:
         if existing.outcome == "drafted" and existing.item_id is not None:
             repo = ItemRepo(conn)
             item = repo.get_item(existing.item_id)
@@ -709,6 +730,17 @@ def draft_weekly(settings: Settings, conn: Connection[TupleRow]) -> None:
     series_store = SeriesStore(conn)
     series = series_store.get_active()
     planned = series_store.planned_part(series) if series is not None else None
+    trace(
+        "draft-weekly",
+        "series",
+        active=series.repo if series else None,
+        series_id=series.id if series else None,
+        part=series.part if series else None,
+        total=series.total_parts if series else None,
+        planned=planned is not None,
+        planned_de_chars=len(planned[0]) if planned else None,
+        planned_ua_chars=len(planned[1]) if planned else None,
+    )
     api_key = settings.anthropic_api_key
     if planned is None and not api_key:
         raise ConfigError("ANTHROPIC_API_KEY is required for draft-weekly")
@@ -728,10 +760,20 @@ def draft_weekly(settings: Settings, conn: Connection[TupleRow]) -> None:
             if meta is None:
                 raise GitHubError("Active series repository was not found.")
             commits = github.recent_commits(name, since, allow_empty_repo=True)
+            trace(
+                "draft-weekly", "source", mode="series", repo=name, commits=len(commits)
+            )
         else:
             active = github.list_active_repos(since, public_only=True)
             posted = sorted(series_store.posted_repos())
             chosen = pick_project(active, posted, None)
+            trace(
+                "draft-weekly",
+                "pick",
+                active=[project.meta.name for project in active],
+                posted=len(posted),
+                chosen=chosen,
+            )
             if chosen is None:
                 excluded = sorted(project.meta.name for project in active)
                 weekly.record_outcome(
@@ -749,6 +791,13 @@ def draft_weekly(settings: Settings, conn: Connection[TupleRow]) -> None:
             meta, commits = project.meta, project.commits
 
         safety = check_repo(github, name)
+        trace(
+            "draft-weekly",
+            "link-check",
+            repo=name,
+            allowed=safety.allowed,
+            reasons=list(safety.reasons),
+        )
         url = f"https://github.com/{settings.github_owner}/{name}"
         source = f"Source: {name}"
         if series is not None:
@@ -816,6 +865,7 @@ def draft_weekly(settings: Settings, conn: Connection[TupleRow]) -> None:
                     model, system, payload, name, url, safety.allowed
                 )
         except _WeeklyGenerationError as error:
+            trace("draft-weekly", "generation-failed", step=str(error))
             raise RuntimeError(f"Weekly draft failed: {error}") from None
         facts: dict[str, object] = {
             "payload": payload,
@@ -826,6 +876,7 @@ def draft_weekly(settings: Settings, conn: Connection[TupleRow]) -> None:
         }
         if isinstance(result, str):
             reason = result
+            trace("draft-weekly", "model-skip", repo=name, reason_chars=len(reason))
             message = f"No weekly post this week ({name}): {reason}"
             with conn.transaction():
                 weekly.record_outcome(
@@ -857,18 +908,31 @@ def draft_weekly(settings: Settings, conn: Connection[TupleRow]) -> None:
             )
             weekly.expire_older(item.id)
             _weekly_links(settings, conn, repo, item, name, url, safety.allowed)
+        trace(
+            "draft-weekly",
+            "drafted",
+            item=item.id,
+            prompt=prompt,
+            **{
+                f"{variant.lang}_chars": len(variant.text)
+                for variant in repo.get_variants(item.id)
+            },
+        )
         notifier.send_preview(
             item,
             repo.get_variants(item.id),
             source_details=source_details,
         )
+        trace("draft-weekly", "preview-sent", item=item.id)
         print(f"draft-weekly: drafted {name} for week {week}")
 
 
 def _record_weekly_publications(conn: Connection[TupleRow], repo: ItemRepo) -> None:
     weekly = WeeklyStore(conn)
     series = SeriesStore(conn)
-    for pending in weekly.list_unrecorded_published():
+    unrecorded = weekly.list_unrecorded_published()
+    trace("record-weekly", "pending", count=len(unrecorded))
+    for pending in unrecorded:
         with conn.transaction():
             row = weekly.get(pending.week, lock=True)
             if (
@@ -884,15 +948,30 @@ def _record_weekly_publications(conn: Connection[TupleRow], repo: ItemRepo) -> N
                     variant.lang: variant.text
                     for variant in repo.get_variants(row.item_id)
                 }
-                series.record_part(
+                updated = series.record_part(
                     row.repo,
                     row.part,
                     texts["de"],
                     texts["ua"],
                     series_id=row.series_id,
                 )
+                following = series.get_active()
+                trace(
+                    "record-weekly",
+                    "series-part",
+                    week=row.week,
+                    item=row.item_id,
+                    repo=row.repo,
+                    part=row.part,
+                    recorded=updated is not None,
+                    status=updated.status if updated else None,
+                    next_part=updated.part if updated else None,
+                    active=following.repo if following else None,
+                    active_part=following.part if following else None,
+                )
             else:
                 series.mark_posted(row.repo)
+                trace("record-weekly", "posted-repo", week=row.week, repo=row.repo)
             weekly.mark_recorded(row.week)
 
 

@@ -218,6 +218,11 @@ def script(job, draft=None, *responses):
     return model
 
 
+def untraced(capsys):
+    lines = capsys.readouterr().out.splitlines()
+    return "\n".join(line for line in lines if not line.startswith("trace ")).strip()
+
+
 def start_series(job):
     series = Series(uuid4(), "alpha", 2, 3, WEEK, "active")
     job.series.get_active.return_value = series
@@ -228,14 +233,13 @@ def start_series(job):
 
 
 def test_rerun_uses_berlin_week_and_returns_before_io(job, capsys):
-    job.weekly.get.return_value = SimpleNamespace(outcome="no_activity")
+    job.weekly.get.return_value = SimpleNamespace(outcome="no_activity", item_id=None)
     run(job)
     job.weekly.get.assert_called_once_with(WEEK)
     job.model_factory.assert_not_called()
     assert job.paths == job.messages == []
     assert (
-        capsys.readouterr().out.strip()
-        == f"draft-weekly: week {WEEK} already handled (no_activity)"
+        untraced(capsys) == f"draft-weekly: week {WEEK} already handled (no_activity)"
     )
 
 
@@ -280,9 +284,7 @@ def test_preview_failure_leaves_saved_draft_and_retries_telegram_only(
     assert job.messages == [first_preview, first_preview]
     job.weekly.create_drafted.assert_called_once()
     shortio.assert_not_called()
-    assert (
-        capsys.readouterr().out.strip() == f"draft-weekly: week {WEEK} preview resent"
-    )
+    assert untraced(capsys) == f"draft-weekly: week {WEEK} preview resent"
 
 
 def test_approved_draft_rerun_does_not_resend(job, capsys):
@@ -295,10 +297,7 @@ def test_approved_draft_rerun_does_not_resend(job, capsys):
 
     job.model_factory.assert_not_called()
     assert job.paths == job.messages == []
-    assert (
-        capsys.readouterr().out.strip()
-        == f"draft-weekly: week {WEEK} already handled (drafted)"
-    )
+    assert untraced(capsys) == f"draft-weekly: week {WEEK} already handled (drafted)"
 
 
 def test_missing_ai_key_fails_before_github(job):
@@ -892,3 +891,25 @@ def test_regenerate_planned_part_resends_stored_preview(regeneration, has_key):
     assert preview.endswith(job.source)
     assert all(text in preview for text in job.variants.values())
     job.repo.update_variant_text.assert_not_called()
+
+
+@pytest.mark.parametrize("in_series", [False, True])
+def test_draft_traces_steps_without_post_text(job, capsys, in_series):
+    if in_series:
+        start_series(job)
+    script(job, None, DE, VERDICT, UA, VERDICT)
+    run(job)
+    out = capsys.readouterr().out
+    events = [line.split()[2] for line in out.splitlines() if line.startswith("trace ")]
+    assert events[:4] == [
+        "week",
+        "series",
+        "source" if in_series else "pick",
+        "link-check",
+    ]
+    assert events[-2:] == ["drafted", "preview-sent"]
+    assert f"item={job.item.id}" in out
+    for text in (DE, UA):
+        for line in text.splitlines():
+            assert line not in out
+    assert "fixture" not in out

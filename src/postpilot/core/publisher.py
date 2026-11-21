@@ -16,6 +16,7 @@ from postpilot.channels.base import (
 from postpilot.core.models import Item, PublicationStatus, Variant
 from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.store.repo import Claim, ItemRepo, LostPublicationClaim
+from postpilot.trace import error_fields, trace
 
 type Outcome = Literal["published", "skipped", "failed", "pending", "held"]
 
@@ -67,6 +68,14 @@ class Publisher:
             ItemState.PUBLISHING,
         }:
             raise IllegalTransition(f"Cannot publish an item in {item.state}")
+        trace(
+            "publish",
+            "item",
+            item=item.id,
+            source=item.source,
+            state=item.state,
+            channels=[channel.name for channel in self.channels],
+        )
         if item.state != ItemState.PUBLISHING:
             try:
                 item = self.repo.transition(item_id, ItemState.PUBLISHING)
@@ -90,7 +99,18 @@ class Publisher:
             )
             for channel in self.channels
         }
+        for name, result in results.items():
+            trace(
+                "publish",
+                "channel",
+                item=item_id,
+                channel=name,
+                outcome=result.outcome,
+                error=result.error,
+            )
         self.repo.finish_publishing(item_id, set(results))
+        finished = self.repo.get_item(item_id)
+        trace("publish", "finished", item=item_id, state=finished and finished.state)
         return PublishReport(results)
 
     def _publish_channel(
@@ -115,6 +135,16 @@ class Publisher:
             return ChannelResult("pending")
         if claim is None:
             return ChannelResult("skipped")
+        trace(
+            "publish",
+            "claim",
+            item=item.id,
+            channel=channel.name,
+            stale=claim.stale,
+            recovered=claim.recovered,
+            has_ref=claim.remote_ref is not None,
+            validation_failed=validation_error is not None,
+        )
 
         recover_only = getattr(channel, "recover_only", False)
         preserve_claim = (
@@ -146,6 +176,13 @@ class Publisher:
                     )
                 except LostPublicationClaim:
                     return ChannelResult("pending")
+                trace(
+                    "publish",
+                    "remote",
+                    item=item.id,
+                    channel=channel.name,
+                    remote_id=remote_id,
+                )
                 return ChannelResult("published")
 
         try:
@@ -183,7 +220,15 @@ class Publisher:
                 return channel.publish(item, variants)
             except UncertainPublication:
                 raise
-            except TransientChannelError:
+            except TransientChannelError as error:
+                trace(
+                    "publish",
+                    "transient",
+                    item=item.id,
+                    channel=channel.name,
+                    attempt=attempt + 1,
+                    **error_fields(error),
+                )
                 if attempt == 2:
                     raise
                 recover = not recover_only

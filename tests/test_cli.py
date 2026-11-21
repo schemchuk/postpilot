@@ -60,6 +60,15 @@ def test_dispatch(monkeypatch, command):
     ]
 
 
+def untraced(captured):
+    out = "".join(
+        line
+        for line in captured.out.splitlines(keepends=True)
+        if not line.startswith("trace ")
+    )
+    return out, captured.err
+
+
 @pytest.mark.parametrize(
     "minute, result, full_run",
     [
@@ -104,9 +113,9 @@ def test_poll_telegram_dispatch(monkeypatch, capsys, minute, result, full_run):
             call.up("connection"),
             call.job(settings, "connection"),
         ]
-        assert capsys.readouterr() == ("", "")
+        assert untraced(capsys.readouterr()) == ("", "")
     else:
-        assert capsys.readouterr() == (
+        assert untraced(capsys.readouterr()) == (
             "poll-telegram: no pending updates, database not opened\n",
             "",
         )

@@ -125,3 +125,30 @@ def test_lost_claim_during_ref_save_leaves_publication_pending() -> None:
     repo.mark_published.assert_not_called()
     repo.mark_failed.assert_not_called()
     repo.release_publication.assert_not_called()
+
+
+def test_publisher_traces_claim_retry_and_result_without_text(capsys) -> None:
+    now = datetime.now(UTC)
+    item = Item(uuid4(), "github", ItemState.APPROVED, now, now, 1, None)
+    publication = Publication(
+        item.id, "fake", PublicationStatus.PUBLISHING, None, None, now
+    )
+    repo = create_autospec(ItemRepo, instance=True)
+    repo.get_item.return_value = item
+    repo.transition.return_value = item
+    repo.get_variants.return_value = [Variant(item.id, "de", "Geheimer Beitragstext")]
+    repo.list_publications.return_value = []
+    repo.claim_publication.return_value = Claim(publication, recovered=False)
+    channel = FakeChannel("fake")
+    channel.fail_times = 1
+
+    report = Publisher(repo, [channel], sleep=lambda _: None).publish_item(item.id)
+
+    assert report.channels["fake"].outcome == "published"
+    out = capsys.readouterr().out
+    events = [line.split()[2] for line in out.splitlines()]
+    assert events == ["item", "claim", "transient", "remote", "channel", "finished"]
+    # Fake remote ids are UUID strings, which the token-shape redaction hides.
+    assert "channel=fake remote_id=***" in out
+    assert "attempt=1 error=TransientChannelError" in out
+    assert "Beitragstext" not in out
