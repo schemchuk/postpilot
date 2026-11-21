@@ -114,6 +114,17 @@ repos, one transaction, refuses an active series). Accept: tests for a planned p
 texts unchanged except links), a series part without a planned text (generation as before), link blocked,
 regenerate refused, import success, import with an active series, invalid import files; live: import on
 Neon, draft on 2026-11-25 shows part 3 in Telegram.
+**T18b Queued next series (ADR 018 amendment 2026-11-21, second).** Owner: Claude Code. Reviewer:
+Volodymyr. Migration 0015 (`queued` status, one queued row); `SeriesStore.queue`, `get_queued`,
+`cancel_queued`; promotion inside `record_part` (last part), `complete` and `stop`; Telegram
+`/series_next <repo> [parts]`, `/series_next_cancel`, `/series` shows the queue. Accept: unit tests for
+the commands, integration tests for promotion on each path and for the one-queued limit; live:
+`/series_next postpilot 5` while handmake is active, `/series` shows it.
+**T18c Run tracing (ADR 018 amendment 2026-11-21, second).** Owner: Claude Code. Reviewer: Volodymyr.
+Trace lines in draft-weekly, publish-due (publisher claims, channel results, recording, series
+transitions), poll-telegram (approval callbacks, state changes) and the job runner (start, end, duration,
+error type, HTTP status). No text, tokens or query strings. Accept: tests that trace lines appear and
+that no post text or secret is printed; live: logs of the 2026-11-25 draft and 2026-11-27 publication.
 **T18 Cutover.** Run both agents side by side for two weeks, then disable and delete work_in_Linkedin
 (Volodymyr confirms). Also delete social_bridge and "lumara" Projects if not yet done.
 T18 is not before 2026-12-11 (end of the old agent's handmake series, ADR 018 amendment): copy the old
@@ -123,5 +134,5 @@ T18 owner: Claude Code alone (Volodymyr, 2026-11-20: Codex is not available by t
 implements and checks; Volodymyr reviews and gives the OK before any merge (author never merges own work).
 
 ## Order
-T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18.
+T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T18.
 First useful vertical slice after T11: Telegram text to approval to LinkedIn.

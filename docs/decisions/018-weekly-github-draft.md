@@ -120,3 +120,24 @@ Supersedes the rollout order above. Volodymyr does not want to wait until 2026-1
   Friday timers would draft and publish part 3 a second time; Volodymyr decides about these timers
   before 2026-11-25.
 - Task **T18a** (Codex writes, Claude reviews, standard merge rule).
+
+## Amendment 2026-11-21 (Volodymyr): queued next series, old agent removed, run tracing
+
+- The old agent is removed now (Volodymyr, 2026-11-21): `linkedin-assistant-bot` stopped, disabled and
+  masked, the local `work_in_Linkedin` checkout and `~/.config/linkedin-agent` deleted after a full
+  backup (`~/backups/work_in_Linkedin-2026-11-21.tar.gz`, mode 600, holds secrets). The GitHub repository
+  stays private and archived. postpilot's `poll-engagement` and `check-tokens` replace the bot's
+  comments inbox and token alerts.
+- One series can be queued behind the active one. `series.status` gains `queued` (migration 0015, at
+  most one queued row). `/series_next <repo> [parts (2-10)]` queues a series with the same repo checks
+  as `/series_start`; it refuses when no series is active (use `/series_start`) or when one is already
+  queued. `/series_next_cancel` deletes the queued row. `/series` shows the queued series.
+- The queued series becomes active in the same transaction that ends the active one: `record_part`
+  completing the last part, `complete` (skipped series) and `stop`. Its `started_on` is that day.
+  This lets `postpilot` (5 parts) start right after handmake part 5 without a manual step.
+- Every job run prints trace lines for the first live analysis: one line per decision with ids,
+  states, counts, lengths, link check results, HTTP status codes and timings. Trace lines never contain
+  post text, comment text, tokens, secrets or full URLs with query strings (Actions logs of a public
+  repository are public).
+- Task **T18b** (series queue) and **T18c** (run tracing). Claude Code writes both (T18 rule); Volodymyr
+  reviews and gives the OK before merge.

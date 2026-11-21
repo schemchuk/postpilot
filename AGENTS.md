@@ -20,8 +20,8 @@ a HeyGen avatar video based on the LinkedIn version, published to Instagram Reel
 with separate credentials. Every post is previewed and approved in Telegram before publishing.
 
 Prior art (learn from it, do not copy blindly):
-- `../work_in_Linkedin` — the current production LinkedIn agent (Python, systemd). It keeps running
-  until this project replaces it. Do not modify it from this repo's sessions.
+- `work_in_Linkedin` — the former LinkedIn agent (Python, systemd). Removed 2026-11-21 (ADR 018
+  amendment): GitHub repo private + archived, local backup `~/backups/work_in_Linkedin-2026-11-21.tar.gz`.
 - `../handmake` — process only (spec-driven gates, ADRs, STATUS.md handoff). Take NO code, assets,
   accounts or secrets from it: they belong to someone else's accounts. Only Volodymyr's own GitHub
   access is shared.
