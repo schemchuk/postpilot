@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal
@@ -43,21 +44,72 @@ class SeriesStore:
             ).fetchone()
         return Series(*row) if row else None
 
-    def start(self, repo: str, total_parts: int | None) -> Series:
+    def start(
+        self,
+        repo: str,
+        total_parts: int | None,
+        *,
+        part: int = 1,
+        started_on: date | None = None,
+    ) -> Series:
         if total_parts is not None and total_parts < 1:
             raise ValueError("total_parts must be positive or None.")
         with self.conn.transaction():
             row = self.conn.execute(
                 f"""
-                INSERT INTO series (id, repo, total_parts) VALUES (%s, %s, %s)
+                INSERT INTO series (id, repo, total_parts, part, started_on)
+                VALUES (%s, %s, %s, %s, COALESCE(%s, CURRENT_DATE))
                 ON CONFLICT (status) WHERE status = 'active' DO NOTHING
                 RETURNING {_COLUMNS}
                 """,
-                (uuid4(), repo, total_parts),
+                (uuid4(), repo, total_parts, part, started_on),
             ).fetchone()
             if row is None:
                 raise ActiveSeriesExists("A series is already active.")
         return Series(*row)
+
+    def import_series(
+        self,
+        *,
+        repo: str,
+        total_parts: int,
+        part: int,
+        started_on: date,
+        published: Sequence[tuple[int, str, str, date]],
+        planned: Sequence[tuple[int, str, str]],
+        posted_repos: Sequence[str],
+    ) -> Series:
+        with self.conn.transaction():
+            series = self.start(repo, total_parts, part=part, started_on=started_on)
+            with self.conn.cursor() as cursor:
+                cursor.executemany(
+                    """
+                    INSERT INTO series_parts (series_id, part, text_de, text_ua, published_on)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    [(series.id, *entry) for entry in published],
+                )
+                cursor.executemany(
+                    """
+                    INSERT INTO series_planned_parts (series_id, part, text_de, text_ua)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    [(series.id, *entry) for entry in planned],
+                )
+            for posted in posted_repos:
+                self.mark_posted(posted)
+        return series
+
+    def planned_part(self, series: Series) -> tuple[str, str] | None:
+        with self.conn.transaction():
+            row = self.conn.execute(
+                """
+                SELECT text_de, text_ua FROM series_planned_parts
+                WHERE series_id = %s AND part = %s
+                """,
+                (series.id, series.part),
+            ).fetchone()
+        return (row[0], row[1]) if row else None
 
     def stop(self) -> Series | None:
         with self.conn.transaction():

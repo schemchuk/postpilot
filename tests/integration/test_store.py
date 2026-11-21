@@ -79,7 +79,7 @@ def test_migration_up_noop_and_down(conn):
     video_tables = {"video_renders"}
     full_schema |= link_tables | video_tables | {"video_publications"}
     full_schema.add("engagement_events")
-    assert table_names(conn) == full_schema | {"weekly_drafts"}
+    assert table_names(conn) == full_schema | {"weekly_drafts", "series_planned_parts"}
     initial = applied_migrations(conn)
     assert [version for version, _ in initial] == [
         "0001_init",
@@ -95,9 +95,13 @@ def test_migration_up_noop_and_down(conn):
         "0011_github_engagement",
         "0012_engagement_replies",
         "0013_weekly_drafts",
+        "0014_series_planned_parts",
     ]
     migrate.up(conn)
     assert applied_migrations(conn) == initial
+    migrate.down(conn)
+    assert applied_migrations(conn) == initial[:13]
+    assert table_names(conn) == full_schema | {"weekly_drafts"}
     migrate.down(conn)
     assert applied_migrations(conn) == initial[:12]
     assert table_names(conn) == full_schema
@@ -185,6 +189,7 @@ def test_migration_up_noop_and_down(conn):
         "engagement_events",
         "video_publications",
         "weekly_drafts",
+        "series_planned_parts",
     }
 
 
