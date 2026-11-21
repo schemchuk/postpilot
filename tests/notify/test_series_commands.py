@@ -8,11 +8,17 @@ from psycopg import Error
 
 from postpilot.notify.approval import ApprovalHandler
 from postpilot.sources.github import GitHubClient
-from postpilot.sources.series import ActiveSeriesExists, Series
+from postpilot.sources.series import (
+    ActiveSeriesExists,
+    NoActiveSeries,
+    QueuedSeriesExists,
+    Series,
+)
 
 USER = 321
 CHAT = 456
 USAGE = "Usage: /series_start <repo> [parts (2-10)]"
+NEXT_USAGE = "Usage: /series_next <repo> [parts (2-10)]"
 
 
 def series(total):
@@ -24,6 +30,7 @@ def bot():
     api = Mock()
     store = Mock()
     store.get_active.return_value = None
+    store.get_queued.return_value = None
     store.posted_repos.return_value = set()
     metadata = {
         "name": "alpha",
@@ -148,7 +155,9 @@ def test_conflicting_active_series(bot, concurrent_start):
     else:
         store.get_active.return_value = active
     send("/series_start alpha").assert_called_once_with(
-        CHAT, "A series about alpha is already active. Stop it with /series_stop."
+        CHAT,
+        "A series about alpha is already active. Stop it with /series_stop"
+        " or queue the next one with /series_next.",
     )
     assert factory.called is concurrent_start
 
@@ -176,3 +185,107 @@ def test_other_user_cannot_control_series(bot):
     send, store, _, factory = bot
     send("/series_start alpha", sender=999).assert_not_called()
     assert store.mock_calls == factory.mock_calls == []
+
+
+def queued(total):
+    return Series(uuid4(), "alpha", 1, total, date(2026, 11, 21), "queued")
+
+
+def test_active_series_shows_queue(bot):
+    send, store, _, _ = bot
+    store.get_active.return_value = series(5)
+    store.get_queued.return_value = queued(None)
+    send("/series").assert_called_once_with(
+        CHAT, "Active series: alpha, next part 3/5\nQueued next: alpha, open-ended"
+    )
+
+
+@pytest.mark.parametrize(
+    ("args", "parts", "label"),
+    [("alpha 5", 5, "5 parts"), ("alpha", None, "open-ended")],
+)
+def test_queue_series(bot, args, parts, label):
+    send, store, _, _ = bot
+    store.get_active.return_value = series(5)
+    store.queue.return_value = queued(parts)
+    send(f"/series_next@my_bot {args}").assert_called_once_with(
+        CHAT,
+        f"Series queued: alpha, {label}. It starts when the active series ends.",
+    )
+    store.queue.assert_called_once_with("alpha", parts)
+    store.start.assert_not_called()
+
+
+@pytest.mark.parametrize("args", ["", "alpha 1", "alpha 11", "x/y"])
+def test_invalid_series_next(bot, args):
+    send, store, _, factory = bot
+    store.get_active.return_value = series(5)
+    send(f"/series_next {args}").assert_called_once_with(CHAT, NEXT_USAGE)
+    factory.assert_not_called()
+    store.queue.assert_not_called()
+
+
+def test_ineligible_queued_repo(bot):
+    send, store, metadata, _ = bot
+    store.get_active.return_value = series(5)
+    metadata["fork"] = True
+    send("/series_next alpha").assert_called_once_with(CHAT, NEXT_USAGE)
+    store.queue.assert_not_called()
+
+
+@pytest.mark.parametrize("concurrent", [False, True])
+def test_series_next_without_active(bot, concurrent):
+    send, store, _, factory = bot
+    if concurrent:
+        store.get_active.return_value = series(5)
+        store.queue.side_effect = NoActiveSeries
+    send("/series_next alpha").assert_called_once_with(
+        CHAT, "No active series. Start one with /series_start <repo> [parts]."
+    )
+    assert factory.called is concurrent
+
+
+@pytest.mark.parametrize("concurrent", [False, True])
+def test_series_next_already_queued(bot, concurrent):
+    send, store, _, factory = bot
+    store.get_active.return_value = series(5)
+    if concurrent:
+        store.get_queued.side_effect = [None, queued(5)]
+        store.queue.side_effect = QueuedSeriesExists
+    else:
+        store.get_queued.return_value = queued(5)
+    send("/series_next alpha").assert_called_once_with(
+        CHAT,
+        "A series about alpha is already queued. Cancel it with /series_next_cancel.",
+    )
+    assert factory.called is concurrent
+
+
+@pytest.mark.parametrize("present", [True, False])
+def test_cancel_queued_series(bot, present):
+    send, store, _, factory = bot
+    store.cancel_queued.return_value = queued(5) if present else None
+    send("/series_next_cancel").assert_called_once_with(
+        CHAT,
+        "Queued series about alpha cancelled." if present else "No queued series.",
+    )
+    factory.assert_not_called()
+
+
+def test_cancel_queued_series_rejects_args(bot):
+    send, store, _, _ = bot
+    send("/series_next_cancel now").assert_called_once_with(
+        CHAT, "Usage: /series_next_cancel"
+    )
+    store.cancel_queued.assert_not_called()
+
+
+def test_stop_starts_queued_series(bot):
+    send, store, _, _ = bot
+    store.stop.return_value = series(3)
+    store.get_active.return_value = Series(
+        uuid4(), "beta", 1, 5, date(2026, 11, 21), "active"
+    )
+    send("/series_stop").assert_called_once_with(
+        CHAT, "Series about alpha stopped after part 2.\nNext series started: beta."
+    )

@@ -833,6 +833,8 @@ def draft_weekly(settings: Settings, conn: Connection[TupleRow]) -> None:
                 )
                 if series is not None and series_store.complete(series_id=series.id):
                     message += f"\nThe series about {name} ended."
+                    if (following := series_store.get_active()) is not None:
+                        message += f"\nNext series started: {following.repo}."
             notifier.send_alert(message)
             return
 

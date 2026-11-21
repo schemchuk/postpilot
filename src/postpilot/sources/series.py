@@ -17,7 +17,7 @@ class Series:
     part: int
     total_parts: int | None
     started_on: date
-    status: Literal["active", "stopped", "completed"]
+    status: Literal["active", "queued", "stopped", "completed"]
 
 
 @dataclass(frozen=True)
@@ -33,6 +33,14 @@ class ActiveSeriesExists(RuntimeError):
     """The current series must be stopped before starting a new one."""
 
 
+class QueuedSeriesExists(RuntimeError):
+    """Only one series can wait behind the active one."""
+
+
+class NoActiveSeries(RuntimeError):
+    """A series can be queued only behind an active one."""
+
+
 class SeriesStore:
     def __init__(self, conn: Connection[TupleRow]) -> None:
         self.conn = conn
@@ -43,6 +51,54 @@ class SeriesStore:
                 f"SELECT {_COLUMNS} FROM series WHERE status = 'active'"
             ).fetchone()
         return Series(*row) if row else None
+
+    def get_queued(self) -> Series | None:
+        with self.conn.transaction():
+            row = self.conn.execute(
+                f"SELECT {_COLUMNS} FROM series WHERE status = 'queued'"
+            ).fetchone()
+        return Series(*row) if row else None
+
+    def queue(self, repo: str, total_parts: int | None) -> Series:
+        if total_parts is not None and total_parts < 1:
+            raise ValueError("total_parts must be positive or None.")
+        with self.conn.transaction():
+            # Locking the active row orders this insert against a concurrent
+            # completion, so the queued row is never left behind without one.
+            if (
+                self.conn.execute(
+                    "SELECT 1 FROM series WHERE status = 'active' FOR UPDATE"
+                ).fetchone()
+                is None
+            ):
+                raise NoActiveSeries("No series is active.")
+            row = self.conn.execute(
+                f"""
+                INSERT INTO series (id, repo, total_parts, status)
+                VALUES (%s, %s, %s, 'queued')
+                ON CONFLICT (status) WHERE status = 'queued' DO NOTHING
+                RETURNING {_COLUMNS}
+                """,
+                (uuid4(), repo, total_parts),
+            ).fetchone()
+            if row is None:
+                raise QueuedSeriesExists("A series is already queued.")
+        return Series(*row)
+
+    def cancel_queued(self) -> Series | None:
+        with self.conn.transaction():
+            row = self.conn.execute(
+                f"DELETE FROM series WHERE status = 'queued' RETURNING {_COLUMNS}"
+            ).fetchone()
+        return Series(*row) if row else None
+
+    def _promote_queued(self) -> None:
+        self.conn.execute(
+            """
+            UPDATE series SET status = 'active', part = 1, started_on = CURRENT_DATE
+            WHERE status = 'queued'
+            """
+        )
 
     def start(
         self,
@@ -119,6 +175,8 @@ class SeriesStore:
                 RETURNING {_COLUMNS}
                 """
             ).fetchone()
+            if row is not None:
+                self._promote_queued()
         return Series(*row) if row else None
 
     def complete(self, *, series_id: UUID | None = None) -> Series | None:
@@ -131,6 +189,8 @@ class SeriesStore:
                 """,
                 (series_id, series_id),
             ).fetchone()
+            if row is not None:
+                self._promote_queued()
         return Series(*row) if row else None
 
     def record_part(
@@ -165,6 +225,8 @@ class SeriesStore:
                 (series.id, part, text_de, text_ua),
             )
             self.mark_posted(series.repo)
+            if series.status == "completed":
+                self._promote_queued()
         return series
 
     def history(self, series: Series) -> list[SeriesPart]:

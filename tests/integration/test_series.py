@@ -4,7 +4,12 @@ import pytest
 import test_store
 from psycopg.errors import UniqueViolation
 
-from postpilot.sources.series import ActiveSeriesExists, SeriesStore
+from postpilot.sources.series import (
+    ActiveSeriesExists,
+    NoActiveSeries,
+    QueuedSeriesExists,
+    SeriesStore,
+)
 
 pytestmark = test_store.pytestmark
 database_schema = test_store.database_schema
@@ -124,3 +129,50 @@ def test_failed_series_import_leaves_tables_unchanged(conn, already_active):
         assert store.get_active() == active
     if already_active:
         store.stop()
+
+
+def test_queue_requires_active_and_allows_one(conn):
+    store = SeriesStore(conn)
+    with pytest.raises(NoActiveSeries):
+        store.queue("next", 5)
+    store.start("current", 2)
+    queued = store.queue("next", 5)
+    assert (queued.status, queued.part, queued.total_parts) == ("queued", 1, 5)
+    assert store.get_queued() == queued
+    with pytest.raises(QueuedSeriesExists):
+        store.queue("other", None)
+    assert store.cancel_queued() == queued
+    assert store.cancel_queued() is None
+    assert store.get_queued() is None
+    store.stop()
+
+
+def test_last_part_promotes_queued_series(conn):
+    store = SeriesStore(conn)
+    current = store.start("current", 2)
+    store.queue("next", 5)
+    store.record_part("current", 1, "Eins", "Один", series_id=current.id)
+    assert store.get_queued() is not None
+    store.record_part("current", 2, "Zwei", "Два", series_id=current.id)
+    active = store.get_active()
+    assert active is not None
+    assert (active.repo, active.part, active.status) == ("next", 1, "active")
+    assert active.started_on == conn.execute("SELECT CURRENT_DATE").fetchone()[0]
+    assert store.get_queued() is None
+    store.stop()
+
+
+@pytest.mark.parametrize("end", ["complete", "stop"])
+def test_complete_and_stop_promote_queued_series(conn, end):
+    store = SeriesStore(conn)
+    current = store.start("current", None)
+    store.queue("next", 3)
+    if end == "complete":
+        assert store.complete(series_id=current.id) is not None
+    else:
+        assert store.stop() is not None
+    active = store.get_active()
+    assert active is not None and active.repo == "next"
+    assert store.get_queued() is None
+    assert store.stop() is not None
+    assert store.get_active() is None

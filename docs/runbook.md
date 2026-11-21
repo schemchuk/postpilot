@@ -195,10 +195,13 @@ database restores the draft to approval and resends its preview.
 Repository selection counts up to 100 commits per repository from the last seven days.
 Generation sees up to 20 commit messages and the count, which also appears in the preview.
 
-- `/series` shows the active series and its next part, or lists previously posted repositories.
+- `/series` shows the active series, its next part and the queued series, or lists previously posted repositories.
 - `/series_start <repo> [parts]` starts a series about a public, unarchived, non-fork repository
   owned by `GITHUB_OWNER`. Use 2–10 parts or omit the number for an open-ended series.
 - `/series_stop` stops the active series.
+- `/series_next <repo> [parts]` queues one series behind the active one (same repo checks). It starts
+  in the same transaction that ends the active series (last part published, skipped by the model, or
+  `/series_stop`). `/series` shows it; `/series_next_cancel` removes it.
 
 ## External schedule trigger (cron-job.org)
 
