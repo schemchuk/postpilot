@@ -271,9 +271,7 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
             settings.telegram_chat_id,
             on_regenerate=partial(
                 _regenerate_weekly, settings, repo, weekly, notifier, model
-            )
-            if model is not None
-            else None,
+            ),
             recovered_regenerations=recovered,
             series=SeriesStore(conn),
             github_factory=partial(
@@ -518,13 +516,7 @@ def _generate_weekly(
             return reason
         raise _WeeklyGenerationError("generation (missing skip reason)")
 
-    texts = []
-    for lang, field in (("de", "post_de"), ("ua", "post_uk")):
-        try:
-            texts.append(finalize_links(draft[field], url, allowed).strip())
-        except ValueError:
-            raise _WeeklyGenerationError(f"link validation ({lang})") from None
-    _check_weekly_lengths(texts)
+    texts = _finalize_weekly_texts((draft["post_de"], draft["post_uk"]), url, allowed)
     for index, (lang, model_lang) in enumerate((("de", "de"), ("ua", "uk"))):
         try:
             texts[index] = humanize_post(model, texts[index], model_lang, payload)
@@ -532,6 +524,19 @@ def _generate_weekly(
             raise _WeeklyGenerationError(f"humanizer ({lang})") from None
     _check_weekly_lengths(texts)
     return texts[0], texts[1]
+
+
+def _finalize_weekly_texts(
+    variants: tuple[str, str], url: str, allowed: bool
+) -> list[str]:
+    texts = []
+    for lang, text in zip(("de", "ua"), variants, strict=True):
+        try:
+            texts.append(finalize_links(text, url, allowed).strip())
+        except ValueError:
+            raise _WeeklyGenerationError(f"link validation ({lang})") from None
+    _check_weekly_lengths(texts)
+    return texts
 
 
 def _check_weekly_lengths(texts: list[str]) -> None:
@@ -591,7 +596,7 @@ def _regenerate_weekly(
     repo: ItemRepo,
     weekly: WeeklyStore,
     notifier: Notifier,
-    model: TextModel,
+    model: TextModel | None,
     item_id: UUID,
 ) -> None:
     row = None
@@ -607,45 +612,61 @@ def _regenerate_weekly(
                 return
             assert row.repo is not None
             facts = row.facts
-            payload = facts.get("payload")
-            if not isinstance(payload, dict):
-                metadata = {
-                    "prompt",
-                    "repo_url",
-                    "link_allowed",
-                    "link_reasons",
-                    "source_details",
-                }
-                payload = {
-                    key: value for key, value in facts.items() if key not in metadata
-                }
-            inferred = (
-                "series" if {"part", "previous_parts"} & payload.keys() else "post"
-            )
-            prompt = facts.get("prompt", inferred)
-            system = {"series": SERIES_SYSTEM_PROMPT, "post": POST_SYSTEM_PROMPT}[
-                str(prompt)
-            ]
-            url = facts.get("repo_url")
-            if not isinstance(url, str):
-                url = f"https://github.com/{settings.github_owner}/{row.repo}"
-            allowed = facts["link_allowed"] is True
-            step = "generation"
-            result = _generate_weekly(model, system, payload, row.repo, url, allowed)
-            if isinstance(result, str):
-                raise _WeeklyGenerationError("model skip")
-            step = "storage"
-            with weekly.conn.transaction():
-                repo.update_variant_text(item_id, "de", result[0], expected_state=draft)
-                repo.update_variant_text(item_id, "ua", result[1], expected_state=draft)
-                current = repo.get_item(item_id)
-                assert current is not None
-                step = "short links"
-                _weekly_links(
-                    settings, weekly.conn, repo, current, row.repo, url, allowed
+            if facts.get("prompt") == "planned" or model is None:
+                alert = (
+                    "Regeneration is unavailable for a planned part"
+                    if facts.get("prompt") == "planned"
+                    else "Regeneration is unavailable"
                 )
-                step = "storage"
                 item = repo.transition(item_id, awaiting, expected_state=draft)
+            else:
+                payload = facts.get("payload")
+                if not isinstance(payload, dict):
+                    metadata = {
+                        "prompt",
+                        "repo_url",
+                        "link_allowed",
+                        "link_reasons",
+                        "source_details",
+                    }
+                    payload = {
+                        key: value
+                        for key, value in facts.items()
+                        if key not in metadata
+                    }
+                inferred = (
+                    "series" if {"part", "previous_parts"} & payload.keys() else "post"
+                )
+                prompt = facts.get("prompt", inferred)
+                system = {"series": SERIES_SYSTEM_PROMPT, "post": POST_SYSTEM_PROMPT}[
+                    str(prompt)
+                ]
+                url = facts.get("repo_url")
+                if not isinstance(url, str):
+                    url = f"https://github.com/{settings.github_owner}/{row.repo}"
+                allowed = facts["link_allowed"] is True
+                step = "generation"
+                result = _generate_weekly(
+                    model, system, payload, row.repo, url, allowed
+                )
+                if isinstance(result, str):
+                    raise _WeeklyGenerationError("model skip")
+                step = "storage"
+                with weekly.conn.transaction():
+                    repo.update_variant_text(
+                        item_id, "de", result[0], expected_state=draft
+                    )
+                    repo.update_variant_text(
+                        item_id, "ua", result[1], expected_state=draft
+                    )
+                    current = repo.get_item(item_id)
+                    assert current is not None
+                    step = "short links"
+                    _weekly_links(
+                        settings, weekly.conn, repo, current, row.repo, url, allowed
+                    )
+                    step = "storage"
+                    item = repo.transition(item_id, awaiting, expected_state=draft)
         except Exception as error:  # noqa: BLE001 - restore the previous draft
             logger.warning("Regeneration failed (%s)", type(error).__name__)
             item = repo.transition(item_id, awaiting, expected_state=draft)
@@ -685,11 +706,13 @@ def draft_weekly(settings: Settings, conn: Connection[TupleRow]) -> None:
                 return
         print(f"draft-weekly: week {week} already handled ({existing.outcome})")
         return
-    if not settings.anthropic_api_key:
-        raise ConfigError("ANTHROPIC_API_KEY is required for draft-weekly")
-
     series_store = SeriesStore(conn)
     series = series_store.get_active()
+    planned = series_store.planned_part(series) if series is not None else None
+    api_key = settings.anthropic_api_key
+    if planned is None and not api_key:
+        raise ConfigError("ANTHROPIC_API_KEY is required for draft-weekly")
+
     since = now.astimezone(UTC) - timedelta(days=7)
     with httpx.Client(timeout=30) as client:
         github = GitHubClient(
@@ -727,59 +750,76 @@ def draft_weekly(settings: Settings, conn: Connection[TupleRow]) -> None:
 
         safety = check_repo(github, name)
         url = f"https://github.com/{settings.github_owner}/{name}"
-        repo_facts: dict[str, object] = {
-            "name": name,
-            "description": meta.description,
-            "language": meta.language,
-            "visibility": meta.visibility,
-            "readme_excerpt": github.get_readme_excerpt(name, 1500),
-        }
-        if safety.allowed:
-            repo_facts["url"] = url
-        payload: dict[str, object]
         source = f"Source: {name}"
         if series is not None:
-            system = SERIES_SYSTEM_PROMPT
-            payload = {
-                "repo": repo_facts,
-                "part": series.part,
-                "total_parts": series.total_parts,
-                "recent_commits": commits[:PROMPT_COMMIT_LIMIT],
-                "commit_count": len(commits),
-                "previous_parts": [
-                    {
-                        "part": part.part,
-                        "post_de": part.text_de,
-                        "post_uk": part.text_ua,
-                    }
-                    for part in series_store.history(series)
-                ],
-            }
             source += f" · part {series.part}"
             if series.total_parts is not None:
                 source += f"/{series.total_parts}"
-        else:
-            system = POST_SYSTEM_PROMPT
-            payload = {
-                "projects": [
-                    {
-                        **repo_facts,
-                        "commits": commits[:PROMPT_COMMIT_LIMIT],
-                        "commit_count": len(commits),
-                    }
-                ],
-                "week": week.isoformat(),
-                "recently_posted": posted,
-            }
-
-        model = ClaudeClient(settings.anthropic_api_key)
+        payload: dict[str, object]
         try:
-            result = _generate_weekly(model, system, payload, name, url, safety.allowed)
+            if planned is not None:
+                assert series is not None
+                prompt = "planned"
+                source += " · planned text"
+                payload = {
+                    "repo": name,
+                    "part": series.part,
+                    "total_parts": series.total_parts,
+                }
+                de, ua = _finalize_weekly_texts(planned, url, safety.allowed)
+                result: tuple[str, str] | str = (de, ua)
+            else:
+                prompt = "series" if series else "post"
+                repo_facts: dict[str, object] = {
+                    "name": name,
+                    "description": meta.description,
+                    "language": meta.language,
+                    "visibility": meta.visibility,
+                    "readme_excerpt": github.get_readme_excerpt(name, 1500),
+                }
+                if safety.allowed:
+                    repo_facts["url"] = url
+                if series is not None:
+                    system = SERIES_SYSTEM_PROMPT
+                    payload = {
+                        "repo": repo_facts,
+                        "part": series.part,
+                        "total_parts": series.total_parts,
+                        "recent_commits": commits[:PROMPT_COMMIT_LIMIT],
+                        "commit_count": len(commits),
+                        "previous_parts": [
+                            {
+                                "part": part.part,
+                                "post_de": part.text_de,
+                                "post_uk": part.text_ua,
+                            }
+                            for part in series_store.history(series)
+                        ],
+                    }
+                else:
+                    system = POST_SYSTEM_PROMPT
+                    payload = {
+                        "projects": [
+                            {
+                                **repo_facts,
+                                "commits": commits[:PROMPT_COMMIT_LIMIT],
+                                "commit_count": len(commits),
+                            }
+                        ],
+                        "week": week.isoformat(),
+                        "recently_posted": posted,
+                    }
+
+                assert api_key
+                model = ClaudeClient(api_key)
+                result = _generate_weekly(
+                    model, system, payload, name, url, safety.allowed
+                )
         except _WeeklyGenerationError as error:
             raise RuntimeError(f"Weekly draft failed: {error}") from None
         facts: dict[str, object] = {
             "payload": payload,
-            "prompt": "series" if series else "post",
+            "prompt": prompt,
             "repo_url": url,
             "link_allowed": safety.allowed,
             "link_reasons": safety.reasons,

@@ -53,6 +53,7 @@ def job(monkeypatch):
     weekly.get.return_value = None
     series = Mock()
     series.get_active.return_value = None
+    series.planned_part.return_value = None
     series.posted_repos.return_value = set()
     variants = {}
     item = Item(uuid4(), "github", ItemState.AWAITING_APPROVAL, NOW, NOW, None, None)
@@ -815,3 +816,68 @@ def test_length_is_checked_after_humanizer(regeneration, monkeypatch):
     poll(job)
     assert job.messages[0] == "Regeneration failed, previous draft kept (length (de))"
     assert job.variants == {"de": "Old German", "ua": "Old Ukrainian"}
+
+
+@pytest.mark.parametrize("allowed", [True, False])
+def test_planned_part_skips_ai_and_applies_link_policy(job, allowed, monkeypatch):
+    series = start_series(job)
+    job.settings = replace(job.settings, anthropic_api_key=None)
+    job.series.planned_part.return_value = (f"  {DE}\n{URL}  ", f"{UA}\n{URL}\n")
+    job.license = allowed
+    humanize = Mock(side_effect=AssertionError("Unexpected humanizer call"))
+    monkeypatch.setattr(tasks, "humanize_post", humanize)
+
+    run(job)
+
+    job.model_factory.assert_not_called()
+    humanize.assert_not_called()
+    job.series.planned_part.assert_called_once_with(series)
+    job.series.history.assert_not_called()
+    assert job.variants == {
+        lang: f"{text}\n{URL}" if allowed else text
+        for lang, text in (("de", DE), ("ua", UA))
+    }
+    status = "link allowed" if allowed else "link blocked: missing_license"
+    source = f"Source: alpha · part 2/3 · planned text · 0 commits · {status}"
+    assert job.weekly.create_drafted.call_args.args[4] == {
+        "prompt": "planned",
+        "repo_url": URL,
+        "link_allowed": allowed,
+        "link_reasons": () if allowed else ("missing_license",),
+        "payload": {"repo": "alpha", "part": 2, "total_parts": 3},
+        "source_details": source,
+    }
+    assert job.messages[0].endswith(source)
+
+
+@pytest.mark.parametrize("step", ["length", "link validation"])
+def test_invalid_planned_part_creates_no_row(job, monkeypatch, step):
+    start_series(job)
+    job.series.planned_part.return_value = ("x" * 3001, UA)
+    if step == "link validation":
+        monkeypatch.setattr(tasks, "finalize_links", Mock(side_effect=ValueError(DE)))
+    with pytest.raises(RuntimeError) as caught:
+        run(job)
+    assert str(caught.value) == f"Weekly draft failed: {step} (de)"
+    job.weekly.create_drafted.assert_not_called()
+    job.weekly.record_outcome.assert_not_called()
+    assert job.messages == []
+
+
+@pytest.mark.parametrize("has_key", [True, False])
+def test_regenerate_planned_part_resends_stored_preview(regeneration, has_key):
+    job = regeneration
+    if not has_key:
+        job.settings = replace(job.settings, anthropic_api_key=None)
+    job.row.facts["prompt"] = "planned"
+    model = Mock()
+    job.model_factory.return_value = model
+
+    poll(job)
+
+    model.complete.assert_not_called()
+    alert, preview = job.messages
+    assert alert == "Regeneration is unavailable for a planned part"
+    assert preview.endswith(job.source)
+    assert all(text in preview for text in job.variants.values())
+    job.repo.update_variant_text.assert_not_called()

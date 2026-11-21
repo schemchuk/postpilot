@@ -1,3 +1,5 @@
+from datetime import date
+
 import pytest
 import test_store
 from psycopg.errors import UniqueViolation
@@ -61,3 +63,64 @@ def test_mark_posted_is_idempotent(conn):
     store.mark_posted("Weekly")
     store.mark_posted("weekly")
     assert store.posted_repos() == before | {"weekly"}
+
+
+def test_import_series(conn):
+    store = SeriesStore(conn)
+    started = date(2026, 11, 15)
+    store.mark_posted("Project")
+    series = store.import_series(
+        repo="Project",
+        total_parts=5,
+        part=3,
+        started_on=started,
+        published=[(1, "Eins", "Один", started)],
+        planned=[(3, "Drei", "Три"), (5, "Fünf", "П'ять")],
+        posted_repos=["PROJECT", "Other"],
+    )
+    assert store.get_active() == series
+    assert (series.repo, series.part, series.total_parts, series.started_on) == (
+        "Project",
+        3,
+        5,
+        started,
+    )
+    assert [
+        (p.part, p.text_de, p.text_ua, p.published_on) for p in store.history(series)
+    ] == [(1, "Eins", "Один", started)]
+    assert store.planned_part(series) == ("Drei", "Три")
+    assert store.posted_repos() >= {"project", "other"}
+    fourth = store.record_part("Project", 3, "Drei", "Три", series_id=series.id)
+    assert fourth is not None and store.planned_part(fourth) is None
+    fifth = store.record_part("Project", 4, "Vier", "Чотири", series_id=series.id)
+    assert fifth is not None and store.planned_part(fifth) == ("Fünf", "П'ять")
+    store.stop()
+
+
+@pytest.mark.parametrize("already_active", [True, False])
+def test_failed_series_import_leaves_tables_unchanged(conn, already_active):
+    store = SeriesStore(conn)
+    active = store.start("Existing", 4) if already_active else None
+    tables = ("series", "series_parts", "series_planned_parts", "posted_repos")
+
+    def counts():
+        return [
+            conn.execute(f"SELECT count(*) FROM {table}").fetchone() for table in tables
+        ]
+
+    with conn.transaction():
+        before = counts()
+        with pytest.raises(ActiveSeriesExists if already_active else UniqueViolation):
+            store.import_series(
+                repo="Project",
+                total_parts=5,
+                part=3,
+                started_on=date(2026, 11, 15),
+                published=[(1, "Eins", "Один", date(2026, 11, 15))],
+                planned=[(3, "Drei", "Три"), (3, "Duplicate", "Duplicate")],
+                posted_repos=["Should not persist"],
+            )
+        assert counts() == before
+        assert store.get_active() == active
+    if already_active:
+        store.stop()

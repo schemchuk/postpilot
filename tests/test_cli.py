@@ -1,6 +1,6 @@
 import json
 from contextlib import nullcontext
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import Mock, call
 
 import httpx
@@ -8,6 +8,7 @@ import pytest
 
 from postpilot import cli
 from postpilot.config import Settings
+from postpilot.sources.series import ActiveSeriesExists
 
 
 def test_no_command_shows_version_and_commands(capsys):
@@ -176,3 +177,143 @@ def test_render_video_missing_config(monkeypatch, capsys, has_heygen):
         "ANTHROPIC_API_KEY" if has_heygen else "HEYGEN_API_KEY"
     ) in capsys.readouterr().err
     connect.assert_not_called()
+
+
+@pytest.fixture
+def series_import(monkeypatch, tmp_path):
+    settings = Settings("fake-db", "fake-token", 123, "fake-key")
+    monkeypatch.setattr(cli.Settings, "from_env", Mock(return_value=settings))
+    steps = Mock()
+    steps.connect.return_value = nullcontext("connection")
+    steps.store.return_value.import_series = steps.import_series
+    monkeypatch.setattr(cli, "connect", steps.connect)
+    monkeypatch.setattr(cli.migrate, "up", steps.up)
+    monkeypatch.setattr(cli, "SeriesStore", steps.store)
+    monkeypatch.setattr(
+        cli, "run_job", Mock(side_effect=AssertionError("Unexpected job runner"))
+    )
+    data = {
+        "repo": "handmake",
+        "part": 3,
+        "total_parts": 5,
+        "started_on": "2026-11-15",
+        "published": [
+            {
+                "part": 1,
+                "text_de": "Private post",
+                "text_ua": "Один",
+                "published_on": "2026-11-16",
+            }
+        ],
+        "planned": [{"part": 3, "text_de": "Drei", "text_ua": "Три"}],
+        "posted_repos": ["Handmake", "work_in_Linkedin"],
+    }
+    return tmp_path / "series.json", data, steps
+
+
+def test_series_import_command(series_import, capsys):
+    path, data, steps = series_import
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert cli.main(["series-import", str(path)]) == 0
+    assert steps.mock_calls == [
+        call.connect("fake-db"),
+        call.up("connection"),
+        call.store("connection"),
+        call.import_series(
+            repo="handmake",
+            part=3,
+            total_parts=5,
+            started_on=date(2026, 11, 15),
+            published=[(1, "Private post", "Один", date(2026, 11, 16))],
+            planned=[(3, "Drei", "Три")],
+            posted_repos=["Handmake", "work_in_Linkedin"],
+        ),
+    ]
+    assert capsys.readouterr().out == (
+        "series-import: handmake part 3/5, 1 published, 1 planned, 2 posted repos\n"
+    )
+
+
+def test_series_import_requires_path(capsys):
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["series-import"])
+    assert caught.value.code != 0
+    assert "path" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("repo", " ", "repo must be"),
+        ("part", 6, "part and total_parts"),
+        ("part", True, "part and total_parts"),
+        ("total_parts", "5", "part and total_parts"),
+        ("started_on", "2026-02-30", "started_on must be"),
+        ("published", [{}], "published[0].part"),
+        ("published", None, "published must be an array"),
+        ("posted_repos", [False], "posted_repos must contain"),
+        ("planned", [{"part": 2}], "planned[0].part"),
+        ("planned", [{"part": 6}], "planned[0].part"),
+        ("planned", [{"part": 3, "text_de": "x" * 3001}], "planned[0].text_de"),
+        (
+            "planned",
+            [{"part": 3, "text_de": "Private post", "text_ua": " "}],
+            "planned[0].text_ua",
+        ),
+        (
+            "published",
+            [
+                {
+                    "part": 1,
+                    "text_de": "Eins",
+                    "text_ua": "Один",
+                    "published_on": "Friday",
+                }
+            ],
+            "published[0].published_on",
+        ),
+    ],
+)
+def test_series_import_rejects_invalid_values(
+    series_import, capsys, field, value, message
+):
+    path, data, steps = series_import
+    path.write_text(json.dumps({**data, field: value}), encoding="utf-8")
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["series-import", str(path)])
+    assert caught.value.code != 0
+    stderr = capsys.readouterr().err
+    assert message in stderr and "Private post" not in stderr
+    assert steps.mock_calls == []
+
+
+@pytest.mark.parametrize("field", ["published", "planned"])
+def test_series_import_rejects_duplicate_parts(series_import, capsys, field):
+    path, data, steps = series_import
+    data[field] *= 2
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        cli.main(["series-import", str(path)])
+    assert f"{field}[1].part must be unique" in capsys.readouterr().err
+    assert steps.mock_calls == []
+
+
+def test_series_import_rejects_malformed_json(series_import, capsys):
+    path, _, steps = series_import
+    path.write_text('{"text_de": "Private post', encoding="utf-8")
+    with pytest.raises(SystemExit):
+        cli.main(["series-import", str(path)])
+    stderr = capsys.readouterr().err
+    assert "valid UTF-8 JSON" in stderr and "Private post" not in stderr
+    assert steps.mock_calls == []
+
+
+def test_series_import_reports_active_series(series_import, capsys):
+    path, data, steps = series_import
+    path.write_text(json.dumps(data), encoding="utf-8")
+    steps.import_series.side_effect = ActiveSeriesExists("A series is already active.")
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["series-import", str(path)])
+    assert caught.value.code != 0
+    out, err = capsys.readouterr()
+    assert not out and "A series is already active." in err
