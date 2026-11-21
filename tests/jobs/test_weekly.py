@@ -351,9 +351,18 @@ def test_generation_payload_and_preview(job, in_series):
     job.weekly.expire_older.assert_called_once_with(job.item.id)
 
 
-@pytest.mark.parametrize("in_series", [False, True])
-def test_model_skip(job, in_series):
+@pytest.mark.parametrize(
+    ("in_series", "queued"), [(False, False), (True, False), (True, True)]
+)
+def test_model_skip(job, in_series, queued):
     series = start_series(job) if in_series else None
+    following = Series(uuid4(), "beta", 1, 5, WEEK, "active") if queued else None
+
+    def complete(**_):
+        job.series.get_active.return_value = following
+        return series
+
+    job.series.complete.side_effect = complete
     script(
         job,
         json.dumps(
@@ -378,6 +387,8 @@ def test_model_skip(job, in_series):
     if series:
         job.series.complete.assert_called_once_with(series_id=series.id)
         expected += "\nThe series about alpha ended."
+        if queued:
+            expected += "\nNext series started: beta."
     else:
         job.series.complete.assert_not_called()
     assert job.messages == [expected]
