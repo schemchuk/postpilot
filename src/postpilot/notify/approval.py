@@ -26,7 +26,12 @@ from postpilot.engagement.threads import (
 from postpilot.notify.renewal import RenewalHandler
 from postpilot.notify.telegram import Notifier, TelegramApi, TelegramError
 from postpilot.sources.github import GitHubClient, GitHubError
-from postpilot.sources.series import ActiveSeriesExists, SeriesStore
+from postpilot.sources.series import (
+    ActiveSeriesExists,
+    NoActiveSeries,
+    QueuedSeriesExists,
+    SeriesStore,
+)
 from postpilot.sources.telegram import TelegramInbox
 from postpilot.stats import StatsStore, format_stats
 from postpilot.store.bot_state import PROFILE_LIMIT
@@ -40,9 +45,17 @@ _PROFILE_COMMAND = re.compile(
     r"^/(profile_add|profile_clear|profile|advise)(?:@[a-zA-Z0-9_]+)?(?=\s|$)"
 )
 _SERIES_COMMAND = re.compile(
-    r"^/(series_start|series_stop|series)(?:@[a-zA-Z0-9_]+)?(?=\s|$)"
+    r"^/(series_start|series_stop|series_next_cancel|series_next|series)"
+    r"(?:@[a-zA-Z0-9_]+)?(?=\s|$)"
 )
 _SERIES_USAGE = "Usage: /series_start <repo> [parts (2-10)]"
+_SERIES_NEXT_USAGE = "Usage: /series_next <repo> [parts (2-10)]"
+
+
+def _parts_label(parts: int | None) -> str:
+    return f"{parts} parts" if parts else "open-ended"
+
+
 _AWAITING = ItemState.AWAITING_APPROVAL
 _ACTIONS = {
     "approve": (ItemState.APPROVED, "Approved"),
@@ -160,10 +173,17 @@ class ApprovalHandler:
         try:
             if store is None:
                 reply = "Series commands are unavailable."
-            elif command == "series_start":
-                reply = self._start_series(store, args)
+            elif command in ("series_start", "series_next"):
+                reply = self._start_series(store, args, queue=command == "series_next")
             elif args:
                 reply = f"Usage: /{command}"
+            elif command == "series_next_cancel":
+                cancelled = store.cancel_queued()
+                reply = (
+                    f"Queued series about {cancelled.repo} cancelled."
+                    if cancelled
+                    else "No queued series."
+                )
             elif command == "series_stop":
                 stopped = store.stop()
                 reply = (
@@ -171,10 +191,16 @@ class ApprovalHandler:
                     if stopped
                     else "No active series."
                 )
+                if stopped and (following := store.get_active()) is not None:
+                    reply += f"\nNext series started: {following.repo}."
             elif active := store.get_active():
                 reply = f"Active series: {active.repo}, next part {active.part}"
                 if active.total_parts is not None:
                     reply += f"/{active.total_parts}"
+                if (queued := store.get_queued()) is not None:
+                    reply += f"\nQueued next: {queued.repo}, " + _parts_label(
+                        queued.total_parts
+                    )
             else:
                 reply = "No active series."
                 if posted := sorted(store.posted_repos()):
@@ -186,22 +212,28 @@ class ApprovalHandler:
             reply = "Series storage operation failed."
         _reply(self.api.send_message, chat_id, reply)
 
-    def _start_series(self, store: SeriesStore, args: list[str]) -> str:
+    def _start_series(self, store: SeriesStore, args: list[str], *, queue: bool) -> str:
+        usage = _SERIES_NEXT_USAGE if queue else _SERIES_USAGE
         if not 1 <= len(args) <= 2 or not re.fullmatch(
             r"[A-Za-z0-9._-]{1,100}", args[0]
         ):
-            return _SERIES_USAGE
+            return usage
         parts = None
         if len(args) == 2:
             try:
                 parts = int(args[1], 10)
             except ValueError:
-                return _SERIES_USAGE
+                return usage
             if not 2 <= parts <= 10:
-                return _SERIES_USAGE
+                return usage
         try:
-            if store.get_active() is not None:
+            active = store.get_active()
+            if queue and active is None:
+                raise NoActiveSeries
+            if not queue and active is not None:
                 raise ActiveSeriesExists
+            if queue and store.get_queued() is not None:
+                raise QueuedSeriesExists
             if self.github_factory is None:
                 raise GitHubError
             meta = self.github_factory().get_repo(args[0])
@@ -213,17 +245,31 @@ class ApprovalHandler:
                 or meta.fork
                 or meta.owner.casefold() != self.github_owner.casefold()
             ):
-                return _SERIES_USAGE
+                return usage
+            if queue:
+                queued = store.queue(meta.name, parts)
+                return (
+                    f"Series queued: {queued.repo}, {_parts_label(parts)}. "
+                    "It starts when the active series ends."
+                )
             started = store.start(meta.name, parts)
         except ActiveSeriesExists:
             active = store.get_active()
             name = active.repo if active else args[0]
             return (
-                f"A series about {name} is already active. Stop it with /series_stop."
+                f"A series about {name} is already active. Stop it with /series_stop"
+                " or queue the next one with /series_next."
             )
-        return f"Series started: {started.repo}, " + (
-            f"{parts} parts" if parts else "open-ended"
-        )
+        except NoActiveSeries:
+            return "No active series. Start one with /series_start <repo> [parts]."
+        except QueuedSeriesExists:
+            waiting = store.get_queued()
+            name = waiting.repo if waiting else args[0]
+            return (
+                f"A series about {name} is already queued. "
+                "Cancel it with /series_next_cancel."
+            )
+        return f"Series started: {started.repo}, {_parts_label(parts)}"
 
     def _handle_profile_command(self, chat_id: int, command: str, text: str) -> None:
         if command == "advise":

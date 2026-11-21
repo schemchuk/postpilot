@@ -96,9 +96,13 @@ def test_migration_up_noop_and_down(conn):
         "0012_engagement_replies",
         "0013_weekly_drafts",
         "0014_series_planned_parts",
+        "0015_series_queue",
     ]
     migrate.up(conn)
     assert applied_migrations(conn) == initial
+    migrate.down(conn)
+    assert applied_migrations(conn) == initial[:14]
+    assert table_names(conn) == full_schema | {"weekly_drafts", "series_planned_parts"}
     migrate.down(conn)
     assert applied_migrations(conn) == initial[:13]
     assert table_names(conn) == full_schema | {"weekly_drafts"}
