@@ -105,6 +105,15 @@ Live: temporary manual dispatch gives a preview in Telegram (Volodymyr presses S
 again afterwards.
 **T17 Docs + portfolio.** README with architecture diagram, ADR index, demo, note that the LinkedIn app
 is reused and why.
+**T18a Take over the handmake series (ADR 018 amendment 2026-11-21).** Owner: Codex. Reviewer: Claude Code.
+Migration 0014 `series_planned_parts`; `SeriesStore` reads the planned text for the current part;
+`draft-weekly` uses a planned text as is (no AI, no humanizer; link gates, short links, length check
+stay; source block says `planned text`); Regenerate on a planned part is refused and the preview resent;
+CLI `postpilot series-import <file.json>` (series at a given part, published parts, planned parts, posted
+repos, one transaction, refuses an active series). Accept: tests for a planned part (no model call,
+texts unchanged except links), a series part without a planned text (generation as before), link blocked,
+regenerate refused, import success, import with an active series, invalid import files; live: import on
+Neon, draft on 2026-11-25 shows part 3 in Telegram.
 **T18 Cutover.** Run both agents side by side for two weeks, then disable and delete work_in_Linkedin
 (Volodymyr confirms). Also delete social_bridge and "lumara" Projects if not yet done.
 T18 is not before 2026-12-11 (end of the old agent's handmake series, ADR 018 amendment): copy the old

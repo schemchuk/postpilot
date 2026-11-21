@@ -93,3 +93,30 @@ Status: ACCEPTED (Volodymyr, 2026-11-20). Implements spec F1 and F4 with the bui
 - First live dispatch (run 44760632324, 2026-11-20) failed in the quality gate: the 20-commit cap made
   postpilot and handmake tie (name order picked handmake), and the humanizer rejected both texts after 3
   rounds (generated bullet lists count as markdown; strict fact review). Fixes are part of T20b.
+
+## Amendment 2026-11-21 (Volodymyr): postpilot takes over the handmake series now
+
+Supersedes the rollout order above. Volodymyr does not want to wait until 2026-12-11.
+
+- postpilot continues the old agent's handmake series from part 3 of 5. Parts 3-5 were written by
+  Volodymyr in advance (old agent `series_state.json`, key `planned`); postpilot publishes these texts as
+  they are: no Claude call, no humanizer (AGENTS.md: never rewrite his texts). Only the link handling of
+  decision 5 applies (`check_repo`, `finalize_links`, tracked short.io link per language) plus the
+  LinkedIn length check.
+- New table `series_planned_parts (series_id, part, text_de, text_ua)` (migration 0014). When the
+  active series has a planned text for its current part, `draft-weekly` uses it instead of generating.
+  The preview source block says `planned text`. Regenerate on such an item is refused (`Regeneration is
+  unavailable for a planned part`) and the item stays AWAITING_APPROVAL with its preview resent.
+- New one-off CLI `postpilot series-import <file.json>`: in one transaction it starts the active series
+  at a given part, stores the already published parts in `series_parts` (so later generated parts see
+  them as `previous_parts`), stores the planned parts, and inserts the old agent's posted repositories
+  into `posted_repos`. It refuses when a series is already active.
+- Part 5 had an image in the old agent; postpilot's LinkedIn channel posts text only, so part 5 goes out
+  without it (accepted).
+- Schedule: draft Wednesday 2026-11-25 18:00 Europe/Berlin (workflow + cron-job.org job 8906614
+  enabled again), publication Friday 09:00 UTC. Parts 4 and 5 follow on 2026-12-04 and 2026-12-11.
+  After part 5: `/series_start postpilot 5` (generated parts), then the normal weekly rhythm.
+- The old agent stays installed (Volodymyr, 2026-11-21: nothing is stopped). Risk: its Wednesday and
+  Friday timers would draft and publish part 3 a second time; Volodymyr decides about these timers
+  before 2026-11-25.
+- Task **T18a** (Codex writes, Claude reviews, standard merge rule).
