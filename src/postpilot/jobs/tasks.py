@@ -66,7 +66,7 @@ from postpilot.tokens.instagram import token_expiry
 from postpilot.tokens.linkedin import LinkedInTokenManager
 from postpilot.tokens.store import TokenStore
 from postpilot.tokens.threads import TOKEN_LIFETIME, ThreadsTokenManager
-from postpilot.trace import trace
+from postpilot.trace import error_fields, trace
 from postpilot.video.heygen import HeyGenClient
 from postpilot.video.pipeline import render_one
 from postpilot.video.publications import VideoPublicationStore
@@ -1030,7 +1030,7 @@ def snapshot_traffic(settings: Settings, conn: Connection[TupleRow]) -> None:
         return
 
     day = _now().date()
-    succeeded = False
+    succeeded = failed = False
     with httpx.Client() as client:
         github = GitHubClient(
             settings.github_owner, settings.github_token, client=client
@@ -1038,13 +1038,28 @@ def snapshot_traffic(settings: Settings, conn: Connection[TupleRow]) -> None:
         for repo in sorted(repos):
             try:
                 traffic = github.traffic(repo, day=day)
-                if traffic is not None:
-                    store.upsert_traffic(repo, day, traffic)
-                    succeeded = True
-                    continue
-            except (GitHubError, Error):
-                pass
-            logger.warning("Traffic snapshot failed for %s", repo)
+            except (GitHubError, Error) as error:
+                failed = True
+                trace(
+                    "snapshot-traffic", "repo-failed", repo=repo, **error_fields(error)
+                )
+                logger.warning("Traffic snapshot failed for %s", repo)
+                continue
+            if traffic is None:
+                # Private, archived, deleted or outside the token's scope: not an error.
+                trace("snapshot-traffic", "repo-not-accessible", repo=repo)
+                continue
+            try:
+                store.upsert_traffic(repo, day, traffic)
+            except Error as error:
+                failed = True
+                trace(
+                    "snapshot-traffic", "repo-failed", repo=repo, **error_fields(error)
+                )
+                logger.warning("Traffic snapshot failed for %s", repo)
+                continue
+            succeeded = True
+            trace("snapshot-traffic", "repo-saved", repo=repo)
 
     shortio = ShortioClient(settings.shortio) if links and settings.shortio else None
     try:
@@ -1057,10 +1072,18 @@ def snapshot_traffic(settings: Settings, conn: Connection[TupleRow]) -> None:
                     continue
             except Error:
                 pass
+            failed = True
             logger.warning("Click snapshot failed for %s", link.link_id)
     finally:
         if shortio is not None:
             shortio.close()
 
-    if not succeeded:
+    trace(
+        "snapshot-traffic",
+        "summary",
+        repos=len(repos),
+        links=len(links),
+        saved=succeeded,
+    )
+    if failed and not succeeded:
         raise RuntimeError("All traffic and click snapshots failed")
