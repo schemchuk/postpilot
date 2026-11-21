@@ -654,3 +654,27 @@ def test_poll_advice_after_approval_and_publish(
         else:
             api.send_message.assert_called_once_with(chat["id"], "Advice failed")
             assert "Profile advisor failed (" in caplog.text
+
+
+def test_snapshot_traffic_skips_inaccessible_repos(settings, monkeypatch, capsys):
+    settings = replace(settings, github_token="mock-traffic-token")
+    monkeypatch.setattr(tasks, "_now", lambda: datetime(2026, 11, 21, tzinfo=UTC))
+    store = Mock()
+    store.list_links.return_value = []
+    monkeypatch.setattr(tasks, "LinkStore", Mock(return_value=store))
+    monkeypatch.setattr(
+        tasks,
+        "SeriesStore",
+        Mock(return_value=Mock(posted_repos=Mock(return_value={"private", "gone"}))),
+    )
+    github = Mock()
+    github.traffic.return_value = None
+    monkeypatch.setattr(tasks, "GitHubClient", Mock(return_value=github))
+
+    tasks.snapshot_traffic(settings, Mock())
+
+    store.upsert_traffic.assert_not_called()
+    out = capsys.readouterr().out
+    assert "repo-not-accessible repo=gone" in out
+    assert "repo-not-accessible repo=private" in out
+    assert "summary repos=2 links=0 saved=False" in out
