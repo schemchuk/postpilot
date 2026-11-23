@@ -1,8 +1,10 @@
 import logging
 import re
+import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
+from functools import partial
 from html import escape
 from urllib.parse import unquote, urlsplit
 
@@ -11,7 +13,7 @@ from psycopg import Error
 from postpilot.ai.client import AIError
 from postpilot.config import ImapSettings
 from postpilot.engagement.drafts import Analysis, ReplyDrafter
-from postpilot.engagement.imap import message_text, read_inbox
+from postpilot.engagement.imap import ImapError, message_text, read_inbox
 from postpilot.engagement.store import EngagementEvent, EngagementStore
 from postpilot.engagement.threads import ThreadsEngagementClient, ThreadsEngagementError
 from postpilot.notify.telegram import TelegramApi, TelegramError
@@ -22,6 +24,8 @@ _LOG = logging.getLogger(__name__)
 
 _POST_DOMAINS = ("linkedin.com", "threads.com", "threads.net")
 _THREADS_DRAFT_CAP = 20
+_IMAP_RETRY_DELAY = 5.0
+IMAP_ALERT_AFTER = 3
 
 
 def comment_message(
@@ -66,6 +70,42 @@ def comment_message(
 
 
 def collect_linkedin(
+    settings: ImapSettings,
+    state: BotState,
+    store: EngagementStore,
+    drafter: ReplyDrafter,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
+    """Read LinkedIn emails, tolerating short IMAP outages.
+
+    One IMAP failure is retried once in the same run. If the retry fails too,
+    the run only alerts after IMAP_ALERT_AFTER failed runs in a row; the cursor
+    is untouched, so the next run reads the skipped emails.
+    """
+    read = partial(_read_linkedin, settings, state, store, drafter)
+    try:
+        try:
+            found = read()
+        except ImapError:
+            _LOG.warning("linkedin: IMAP read failed, retrying once")
+            sleep(_IMAP_RETRY_DELAY)
+            found = read()
+    except ImapError:
+        failures = state.record_imap_failure()
+        if failures >= IMAP_ALERT_AFTER:
+            raise
+        _LOG.warning(
+            "linkedin: IMAP read failed in %d run(s) in a row, alert after %d",
+            failures,
+            IMAP_ALERT_AFTER,
+        )
+        return 0
+    state.reset_imap_failures()
+    return found
+
+
+def _read_linkedin(
     settings: ImapSettings,
     state: BotState,
     store: EngagementStore,
@@ -243,7 +283,8 @@ def poll_engagement_sources(
     for source, collect in sources.items():
         try:
             found[source] = collect()
-        except Exception:  # noqa: BLE001 - isolate failures and keep source data private
+        except Exception as exc:  # noqa: BLE001 - isolate failures and keep source data private
+            _LOG.warning("%s failed (%s)", source, type(exc).__name__)
             failed = True
     try:
         notified, delivery_failed = notify_pending(store, api, chat_id)

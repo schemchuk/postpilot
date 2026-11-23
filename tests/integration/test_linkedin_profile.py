@@ -22,3 +22,11 @@ def test_linkedin_profile_round_trip(conn, database_schema):
         assert state.get_linkedin_profile() == "я" * 20_000
         state.delete_linkedin_profile()
         assert other.get_linkedin_profile() is None
+
+
+def test_imap_failure_counter_counts_and_resets(conn, database_schema):
+    state = BotState(conn)
+    state.reset_imap_failures()
+    assert [state.record_imap_failure() for _ in range(3)] == [1, 2, 3]
+    state.reset_imap_failures()
+    assert state.record_imap_failure() == 1

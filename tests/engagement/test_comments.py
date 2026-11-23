@@ -12,7 +12,7 @@ from postpilot.ai.client import AIError
 from postpilot.config import ImapSettings
 from postpilot.engagement import job
 from postpilot.engagement.drafts import Analysis, ReplyDrafter
-from postpilot.engagement.imap import message_text, read_inbox
+from postpilot.engagement.imap import ImapError, message_text, read_inbox
 from postpilot.engagement.store import EngagementEvent
 from postpilot.engagement.threads import Reply, ThreadsEngagementError
 from postpilot.notify.approval import ApprovalHandler
@@ -128,6 +128,15 @@ class MemoryState:
     def set_imap_cursor(self, validity, uid):
         self.cursor = validity, uid
 
+    failures = 0
+
+    def record_imap_failure(self):
+        self.failures += 1
+        return self.failures
+
+    def reset_imap_failures(self):
+        self.failures = 0
+
 
 class MemoryStore:
     def __init__(self):
@@ -190,7 +199,14 @@ def poll(monkeypatch):
     api = Mock(spec=TelegramApi)
     api.send_message.return_value = 32
     state, store = MemoryState(), MemoryStore()
-    source = partial(job.collect_linkedin, IMAP, state, store, ReplyDrafter(model))
+    source = partial(
+        job.collect_linkedin,
+        IMAP,
+        state,
+        store,
+        ReplyDrafter(model),
+        sleep=lambda _: None,
+    )
     run = partial(job.poll_engagement_sources, {"linkedin": source}, store, api, 42)
     return run, imap, model, api, state, store
 
@@ -262,6 +278,7 @@ def test_ai_error_logs_other_and_continues_to_next_email(poll):
 def test_source_failure_drains_queue_without_skipping_failed_email(poll):
     run, imap, _, api, state, store = poll
     imap.failure = 2
+    state.failures = 2  # third failed run in a row alerts
     with pytest.raises(RuntimeError, match="source"):
         run()
     assert state.cursor == (1, 1)
@@ -502,3 +519,68 @@ def test_poll_summary_counts_new_rows_and_deliveries_without_comment_text(
     assert "<reply>" not in caplog.text
     assert "<draft>" not in caplog.text
     assert "reader" not in caplog.text
+
+
+class FlakyRead:
+    """read_inbox stand-in that raises ImapError for the first `fail` calls."""
+
+    def __init__(self, fail):
+        self.fail = fail
+        self.calls = 0
+        self.inner = partial(read_inbox, factory=lambda *a, **k: FakeImap([1]))
+
+    def __call__(self, settings, cursor):
+        self.calls += 1
+        if self.calls <= self.fail:
+            raise ImapError("IMAP read failed")
+        return self.inner(settings, cursor)
+
+
+def _linkedin(monkeypatch, fail, state):
+    monkeypatch.setattr(job, "read_inbox", FlakyRead(fail))
+    model = Mock()
+    model.complete.return_value = response(COMMENT)
+    sleeps = []
+    store = MemoryStore()
+    collect = partial(
+        job.collect_linkedin,
+        IMAP,
+        state,
+        store,
+        ReplyDrafter(model),
+        sleep=sleeps.append,
+    )
+    return collect, sleeps, store
+
+
+def test_imap_failure_is_retried_once_in_the_same_run(monkeypatch):
+    state = MemoryState()
+    state.failures = 2
+    collect, sleeps, store = _linkedin(monkeypatch, 1, state)
+    assert collect() == 1
+    assert sleeps == [5.0]
+    assert state.failures == 0 and state.cursor == (1, 1)
+    assert len(store.events) == 1
+
+
+def test_imap_failures_alert_only_after_three_runs_in_a_row(monkeypatch, caplog):
+    state = MemoryState()
+    collect, sleeps, _ = _linkedin(monkeypatch, 99, state)
+    with caplog.at_level("WARNING"):
+        assert collect() == 0
+        assert collect() == 0
+    assert state.failures == 2 and state.cursor == (1, 0)
+    assert "linkedin: IMAP read failed in 2 run(s) in a row, alert after 3" in (
+        caplog.messages
+    )
+    with pytest.raises(ImapError):
+        collect()
+    assert state.failures == 3 and len(sleeps) == 3
+
+
+def test_source_failure_is_logged_with_error_type_only(poll, caplog):
+    _, _, _, api, _, store = poll
+    boom = Mock(side_effect=ThreadsEngagementError("secret detail"))
+    with caplog.at_level("WARNING"), pytest.raises(RuntimeError):
+        job.poll_engagement_sources({"threads": boom}, store, api, 42)
+    assert caplog.messages == ["threads failed (ThreadsEngagementError)"]

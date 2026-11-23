@@ -41,6 +41,25 @@ class BotState:
                 (f"{validity}:{uid}",),
             )
 
+    def record_imap_failure(self) -> int:
+        with self.conn.transaction():
+            row = self.conn.execute(
+                """
+                INSERT INTO bot_state (key, value) VALUES ('linkedin_imap_failures', '1')
+                ON CONFLICT (key) DO UPDATE
+                SET value = (bot_state.value::int + 1)::text
+                RETURNING value
+                """
+            ).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    def reset_imap_failures(self) -> None:
+        with self.conn.transaction():
+            self.conn.execute(
+                "DELETE FROM bot_state WHERE key = 'linkedin_imap_failures'"
+            )
+
     def get_github_watch(self) -> dict[str, GitHubWatchCounts]:
         with self.conn.transaction():
             row = self.conn.execute(
