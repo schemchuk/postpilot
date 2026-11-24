@@ -2,7 +2,7 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 from uuid import uuid4
 
 import httpx
@@ -72,6 +72,7 @@ def repo(monkeypatch):
         Mock(return_value=Mock(list_interrupted=Mock(return_value=[]))),
     )
     repo.list_approved_item_ids.return_value = []
+    repo.list_unfinished_item_ids.return_value = []
     repo.has_inbox_update.return_value = False
     monkeypatch.setattr(tasks, "ItemRepo", Mock(return_value=repo))
     return repo
@@ -138,7 +139,10 @@ def test_poll_telegram_confirms_saved_offset(
     ]
     handler.handle_update.assert_called_once_with(processed)
     assert repo.bot_state.get_offset() == 42
-    repo.list_approved_item_ids.assert_called_once_with(source="telegram")
+    assert repo.list_approved_item_ids.call_args_list == [
+        call(source="telegram"),
+        call(source="own_video"),
+    ]
     assert caplog.messages == (
         ["Telegram update confirmation failed (TelegramError)"] if confirm_fails else []
     )
@@ -167,7 +171,9 @@ def test_renewal_releases_held_items_with_current_token(
 ):
     now = datetime.now(UTC)
     item_id = uuid4()
-    repo.list_unfinished_item_ids.return_value = [item_id]
+    repo.list_unfinished_item_ids.side_effect = lambda *, source=None: (
+        [item_id] if source is None else []
+    )
     store = Mock()
     store.get.return_value = SimpleNamespace(
         expires_at=now - timedelta(days=1), access_token="test-token"
@@ -230,33 +236,39 @@ def test_publish_due_processes_unfinished_and_approved_items(
     ]
 
 
+@pytest.mark.parametrize("source", ["telegram", "own_video"])
 @pytest.mark.parametrize("outcome", ["published", "failed"])
-def test_poll_publishes_telegram_approval_after_saving_offset(
-    settings, repo, api, monkeypatch, outcome
+def test_poll_publishes_immediate_approval_after_saving_offset(
+    settings, repo, api, monkeypatch, outcome, source
 ):
-    telegram_id, github_id = uuid4(), uuid4()
+    approved_id, github_id = uuid4(), uuid4()
     repo.get_item.return_value = SimpleNamespace(
         state=tasks.ItemState.AWAITING_APPROVAL
     )
-    repo.list_approved_item_ids.side_effect = lambda *, source=None: (
-        [telegram_id] if source == "telegram" else [github_id, telegram_id]
-    )
+
+    def list_approved(*, source=None):
+        if source is None:
+            return [github_id, approved_id]
+        return [approved_id] if source == approved_source else []
+
+    approved_source = source
+    repo.list_approved_item_ids.side_effect = list_approved
     api.get_updates.return_value = [
         {
             "update_id": 41,
             "callback_query": {
                 "from": {"id": settings.telegram_chat_id},
                 "id": "button",
-                "data": f"approve:{telegram_id}",
+                "data": f"approve:{approved_id}",
             },
         }
     ]
 
     def publish(item_id):
-        assert item_id == telegram_id
+        assert item_id == approved_id
         assert repo.bot_state.get_offset() == 42
         repo.transition.assert_called_once_with(
-            telegram_id,
+            approved_id,
             tasks.ItemState.APPROVED,
             expected_state=tasks.ItemState.AWAITING_APPROVAL,
             approved_by=settings.telegram_chat_id,
@@ -270,8 +282,11 @@ def test_poll_publishes_telegram_approval_after_saving_offset(
             tasks.poll_telegram(settings, None)
     else:
         tasks.poll_telegram(settings, None)
-    publisher.publish_item.assert_called_once_with(telegram_id)
-    repo.list_approved_item_ids.assert_called_once_with(source="telegram")
+    publisher.publish_item.assert_called_once_with(approved_id)
+    assert repo.list_approved_item_ids.call_args_list == [
+        call(source="telegram"),
+        call(source="own_video"),
+    ]
 
 
 @pytest.mark.parametrize("key", [None, "test-api-key"])
@@ -576,7 +591,7 @@ def test_poll_advice_after_approval_and_publish(
         return_value=None if mode == "missing" else private
     )
     repo.list_approved_item_ids.side_effect = lambda **_: (
-        [item_id] if repo.transition.called else []
+        [item_id] if repo.transition.called and _.get("source") == "telegram" else []
     )
     publisher = Mock()
     publisher.publish_item.return_value.channels = {}

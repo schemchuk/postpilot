@@ -152,3 +152,108 @@ def test_publisher_traces_claim_retry_and_result_without_text(capsys) -> None:
     assert "channel=fake remote_id=***" in out
     assert "attempt=1 error=TransientChannelError" in out
     assert "Beitragstext" not in out
+
+
+@pytest.mark.parametrize("source", ["own_video", "github", "telegram"])
+def test_selects_adapters_for_item_source(source):
+    from dataclasses import replace
+
+    now = datetime.now(UTC)
+    item = Item(uuid4(), source, ItemState.APPROVED, now, now, 1, now)
+    variants = [Variant(item.id, "de", "Ein Beitrag")]
+    repo = create_autospec(ItemRepo, instance=True)
+    repo.get_item.return_value = item
+    repo.get_variants.return_value = variants
+    repo.list_publications.return_value = []
+    names = ["linkedin", "linkedin-ua", "threads"]
+    reels = ("instagram-reels", "facebook-reels")
+    base = [FakeChannel(name) for name in names]
+    video = [FakeChannel(name) for name in names[:2]]
+    statuses = {}
+
+    def transition(item_id, state):
+        assert item_id == item.id
+        repo.get_item.return_value = replace(item, state=state)
+        return repo.get_item.return_value
+
+    def claim(item_id, channel, *, stale_after):
+        assert repo.get_item.return_value.state == ItemState.PUBLISHING
+        return Claim(
+            Publication(
+                item_id, channel, PublicationStatus.PUBLISHING, None, None, now
+            ),
+            recovered=False,
+        )
+
+    def mark_published(item_id, name, remote_id, *, claim):
+        statuses[name] = remote_id
+
+    def finish(item_id, channels):
+        if channels <= statuses.keys():
+            transition(item_id, ItemState.PUBLISHED)
+
+    repo.transition.side_effect = transition
+    repo.claim_publication.side_effect = claim
+    repo.mark_published.side_effect = mark_published
+    repo.finish_publishing.side_effect = finish
+    report = Publisher(
+        repo, base, own_video_channels=video, own_video_held_channels=reels
+    ).publish_item(item.id)
+
+    if source == "own_video":
+        assert [result.outcome for result in report.channels.values()] == [
+            "published",
+            "published",
+            "held",
+            "held",
+            "held",
+        ]
+        assert set(statuses) == set(names[:2])
+        assert repo.claim_publication.call_count == 2
+        assert repo.get_item.return_value.state == ItemState.PUBLISHING
+        assert all(channel.posts for channel in video)
+        assert not any(channel.posts for channel in base)
+    else:
+        assert all(result.outcome == "published" for result in report.channels.values())
+        assert repo.get_item.return_value.state == ItemState.PUBLISHED
+        assert all(channel.posts for channel in base)
+        assert not any(channel.posts for channel in video)
+    expected = set(names) | (set(reels) if source == "own_video" else set())
+    repo.finish_publishing.assert_called_once_with(item.id, expected)
+
+
+def test_own_video_without_adapters_is_held_before_transition():
+    now = datetime.now(UTC)
+    item = Item(uuid4(), "own_video", ItemState.APPROVED, now, now, 1, now)
+    repo = create_autospec(ItemRepo, instance=True)
+    repo.get_item.return_value = item
+    report = Publisher(repo, [FakeChannel("linkedin")]).publish_item(item.id)
+    assert report.channels == {"linkedin": ChannelResult("held")}
+    repo.transition.assert_not_called()
+    repo.claim_publication.assert_not_called()
+    repo.finish_publishing.assert_not_called()
+
+
+def test_ref_adapter_waiting_for_video_reports_pending():
+    from unittest.mock import Mock
+
+    now = datetime.now(UTC)
+    item = Item(uuid4(), "own_video", ItemState.PUBLISHING, now, now, 1, now)
+    repo = create_autospec(ItemRepo, instance=True)
+    repo.get_item.return_value = item
+    repo.get_variants.return_value = []
+    repo.list_publications.return_value = []
+    claim = Claim(
+        Publication(item.id, "linkedin", PublicationStatus.PUBLISHING, None, None, now),
+        recovered=False,
+    )
+    repo.claim_publication.return_value = claim
+    channel = Mock(validate=Mock(), publish_with_ref=Mock(return_value=None))
+    channel.name = "linkedin"
+    publisher = Publisher(repo, [FakeChannel("linkedin")], own_video_channels=[channel])
+
+    assert publisher.publish_item(item.id).channels == {
+        "linkedin": ChannelResult("pending")
+    }
+    repo.mark_published.assert_not_called()
+    repo.mark_failed.assert_not_called()

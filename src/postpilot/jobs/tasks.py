@@ -21,10 +21,11 @@ from postpilot.ai.prompts import (
     SERIES_SYSTEM_PROMPT,
     generation_message,
 )
-from postpilot.channels.base import TransientChannelError
+from postpilot.channels.base import ChannelError, TransientChannelError
 from postpilot.channels.facebook_reels import FacebookReelsChannel
 from postpilot.channels.instagram_reels import InstagramReelsChannel
-from postpilot.channels.registry import build_channels
+from postpilot.channels.registry import build_channels, build_own_video_channels
+from postpilot.channels.threads import ThreadsChannel
 from postpilot.config import ConfigError, HeyGenSettings, Settings
 from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
 from postpilot.core.models import Item
@@ -57,6 +58,7 @@ from postpilot.sources.series import SeriesStore
 from postpilot.sources.telegram import TelegramInbox
 from postpilot.stats import StatsStore
 from postpilot.store.bot_state import BotState
+from postpilot.store.own_videos import OwnVideo, OwnVideoStore
 from postpilot.store.repo import ItemRepo
 from postpilot.store.weekly import WeeklyDraft, WeeklyStore
 from postpilot.tokens import service
@@ -125,8 +127,33 @@ def _publisher(
     if not channels:
         logger.warning("no channels configured")
         return None
+    store = OwnVideoStore(repo.conn)
+    api = TelegramApi(settings.telegram_bot_token, client=client)
+
+    def get_video(item_id: UUID) -> OwnVideo:
+        video = store.get_by_item(item_id)
+        if video is None:
+            raise ChannelError("Own video is unavailable")
+        return video
+
+    def fetch_video(item_id: UUID) -> bytes:
+        return api.download_file(api.get_file(get_video(item_id).file_id))
+
     return Publisher(
-        repo, channels, token_guard=lambda provider: bool(read_token(provider))
+        repo,
+        channels,
+        token_guard=lambda provider: bool(read_token(provider)),
+        own_video_channels=build_own_video_channels(
+            channels,
+            fetch_video=fetch_video,
+            ai_generated=lambda item_id: get_video(item_id).ai_generated,
+        ),
+        # These targets belong to S3 even when absent from the text publisher.
+        own_video_held_channels=(
+            ThreadsChannel.name,
+            InstagramReelsChannel.name,
+            FacebookReelsChannel.name,
+        ),
     )
 
 
@@ -296,6 +323,9 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
 
         try:
             item_ids = repo.list_approved_item_ids(source="telegram")
+            if settings.linkedin is not None:
+                item_ids += repo.list_approved_item_ids(source="own_video")
+                item_ids += repo.list_unfinished_item_ids(source="own_video")
             if (
                 item_ids
                 and (publisher := _publisher(settings, repo, client)) is not None

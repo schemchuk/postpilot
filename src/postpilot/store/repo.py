@@ -123,8 +123,8 @@ class ItemRepo:
             ).fetchone()
             return _item(row) if row is not None else None
 
-    def list_unfinished_item_ids(self) -> list[UUID]:
-        return self._list_item_ids(ItemState.PUBLISHING)
+    def list_unfinished_item_ids(self, *, source: Source | None = None) -> list[UUID]:
+        return self._list_item_ids(ItemState.PUBLISHING, source=source)
 
     def list_approved_item_ids(self, *, source: Source | None = None) -> list[UUID]:
         return self._list_item_ids(ItemState.APPROVED, source=source)
