@@ -5,7 +5,13 @@ from uuid import UUID
 from psycopg import Connection
 from psycopg.rows import TupleRow
 
+from postpilot.core.models import Language
 from postpilot.store.repo import LostPublicationClaim
+
+LINKEDIN_VIDEO_CHANNELS: dict[str, Language] = {
+    "linkedin-video": "de",
+    "linkedin-ua-video": "ua",
+}
 
 
 @dataclass(frozen=True)
@@ -37,13 +43,14 @@ class VideoPublicationStore:
                     SELECT 1 FROM unnest(%s::text[]) AS configured(channel)
                     LEFT JOIN video_publications p
                         ON p.render_id = r.id AND p.channel = configured.channel
-                    WHERE p.status IS NULL OR (%s AND p.status = 'FAILED')
-                        OR (p.status = 'PUBLISHING'
-                            AND p.updated_at < clock_timestamp() - %s::interval)
+                    WHERE (r.linkedin OR NOT (configured.channel = ANY(%s::text[])))
+                        AND (p.status IS NULL OR (%s AND p.status = 'FAILED')
+                            OR (p.status = 'PUBLISHING'
+                                AND p.updated_at < clock_timestamp() - %s::interval))
                 )
                 ORDER BY requested_at, id LIMIT 1
                 """,
-                (sorted(channels), retry, stale_after),
+                (sorted(channels), list(LINKEDIN_VIDEO_CHANNELS), retry, stale_after),
             ).fetchone()
         return UUID(str(row[0])) if row else None
 
@@ -57,10 +64,12 @@ class VideoPublicationStore:
     ) -> VideoClaim | None:
         with self.conn.transaction():
             render = self.conn.execute(
-                "SELECT status FROM video_renders WHERE id = %s FOR UPDATE",
+                "SELECT status, linkedin FROM video_renders WHERE id = %s FOR UPDATE",
                 (render_id,),
             ).fetchone()
             if render is None or render[0] != "APPROVED":
+                return None
+            if channel in LINKEDIN_VIDEO_CHANNELS and not render[1]:
                 return None
             previous = self.conn.execute(
                 "SELECT status FROM video_publications WHERE render_id = %s AND channel = %s FOR UPDATE",

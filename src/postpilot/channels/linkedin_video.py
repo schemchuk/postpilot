@@ -24,7 +24,9 @@ from postpilot.channels.base import (
 from postpilot.channels.linkedin import _VIDEOS, LinkedInChannel
 from postpilot.core.models import Item, Variant
 from postpilot.notify.telegram import TelegramError
-from postpilot.video.label import AI_VIDEO_CAPTION_LABEL
+from postpilot.store.repo import ItemRepo
+from postpilot.video.label import AI_AVATAR_CAPTION_LABEL, AI_VIDEO_CAPTION_LABEL
+from postpilot.video.store import VideoRender
 
 _UPLOAD = "video:"
 _FINAL = "video-final:"
@@ -44,38 +46,15 @@ def _exclude_upload_urls(record: logging.LogRecord) -> bool:
 logging.getLogger("httpx").addFilter(_exclude_upload_urls)
 
 
-class LinkedInVideoChannel:
+class _LinkedInVideoPublisher:
     token_provider = LinkedInChannel.token_provider
 
     def __init__(
-        self,
-        linkedin: LinkedInChannel,
-        *,
-        fetch_video: Callable[[UUID], bytes],
-        ai_generated: Callable[[UUID], bool],
-        sleep: Callable[[float], None] = time.sleep,
+        self, linkedin: LinkedInChannel, sleep: Callable[[float], None]
     ) -> None:
         self.name = linkedin.name
         self._linkedin = linkedin
-        self._fetch_video = fetch_video
-        self._ai_generated = ai_generated
         self._sleep = sleep
-
-    def _commentary(self, item: Item, variants: list[Variant]) -> str:
-        label = AI_VIDEO_CAPTION_LABEL if self._ai_generated(item.id) else ""
-        return self._linkedin._commentary(item, variants, label=label)
-
-    def validate(self, item: Item, variants: list[Variant]) -> None:
-        self._commentary(item, variants)
-
-    def _video_bytes(self, item_id: UUID) -> bytes:
-        try:
-            data = self._fetch_video(item_id)
-        except TelegramError:
-            raise ChannelError("Telegram video retrieval failed") from None
-        if not 0 < len(data) <= _FILE_LIMIT:
-            raise ChannelError("Invalid LinkedIn video size")
-        return data
 
     def _upload_part(self, url: str, data: bytes) -> str:
         for attempt in range(_PART_ATTEMPTS):
@@ -110,9 +89,10 @@ class LinkedInVideoChannel:
         raise TransientChannelError("LinkedIn upload part failed")
 
     def _upload(
-        self, item_id: UUID, author: str, token: str, save_ref: Callable[[str], None]
+        self, data: bytes, author: str, token: str, save_ref: Callable[[str], None]
     ) -> str:
-        data = self._video_bytes(item_id)
+        if not data:
+            raise ChannelError("An approved video is required")
         linkedin = self._linkedin
         response = linkedin._request(
             "POST",
@@ -193,6 +173,80 @@ class LinkedInVideoChannel:
                 self._sleep(_POLL_INTERVAL)
         return False
 
+    def _publish(
+        self,
+        item_id: UUID,
+        token: str,
+        commentary: Callable[[], str],
+        video_bytes: Callable[[], bytes],
+        ref: str | None,
+        save_ref: Callable[[str], None],
+    ) -> str | None:
+        linkedin = self._linkedin
+        if ref and ref.startswith(_POSTING):
+            try:
+                return linkedin._find_existing(item_id, token)
+            except ChannelError:
+                raise UncertainPublication("LinkedIn post lookup failed") from None
+
+        text = commentary()
+        author = linkedin._author(token)
+        resumed = ref is not None and ref.startswith(_FINAL)
+        if resumed and ref is not None:
+            urn = ref.removeprefix(_FINAL)
+        else:
+            urn = self._upload(video_bytes(), author, token, save_ref)
+        try:
+            if not self._available(urn, token):
+                return None
+            if resumed and (existing := linkedin._find_existing(item_id, token)):
+                return existing
+        except TransientChannelError:
+            # Keep the finalized upload for the next run.
+            return None
+
+        save_ref(_POSTING + urn)
+        try:
+            return linkedin._create_post(text, author, token, video=urn)
+        except UncertainPublication:
+            raise
+        except TransientChannelError:
+            save_ref(_FINAL + urn)
+            return None
+        except (ChannelError, ChannelHeld):
+            save_ref(_FINAL + urn)
+            raise
+
+
+class LinkedInVideoChannel(_LinkedInVideoPublisher):
+    def __init__(
+        self,
+        linkedin: LinkedInChannel,
+        *,
+        fetch_video: Callable[[UUID], bytes],
+        ai_generated: Callable[[UUID], bool],
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        super().__init__(linkedin, sleep)
+        self._fetch_video = fetch_video
+        self._ai_generated = ai_generated
+
+    def _commentary(self, item: Item, variants: list[Variant]) -> str:
+        label = AI_VIDEO_CAPTION_LABEL if self._ai_generated(item.id) else ""
+        return self._linkedin._commentary(item, variants, label=label)
+
+    def validate(self, item: Item, variants: list[Variant]) -> None:
+        self._commentary(item, variants)
+
+    def _video_bytes(self, item_id: UUID) -> bytes:
+        try:
+            data = self._fetch_video(item_id)
+        except TelegramError:
+            raise ChannelError("Telegram video retrieval failed") from None
+        if not 0 < len(data) <= _FILE_LIMIT:
+            raise ChannelError("Invalid LinkedIn video size")
+        return data
+
     def publish_with_ref(
         self,
         item: Item,
@@ -202,38 +256,52 @@ class LinkedInVideoChannel:
         claimed_at: datetime,
         save_ref: Callable[[str], None],
     ) -> str | None:
-        linkedin = self._linkedin
-        token = linkedin._token()
-        if ref and ref.startswith(_POSTING):
-            try:
-                return linkedin._find_existing(item.id, token)
-            except ChannelError:
-                raise UncertainPublication("LinkedIn post lookup failed") from None
+        return self._publish(
+            item.id,
+            self._linkedin._token(),
+            lambda: self._commentary(item, variants),
+            lambda: self._video_bytes(item.id),
+            ref,
+            save_ref,
+        )
 
-        commentary = self._commentary(item, variants)
-        author = linkedin._author(token)
-        resumed = ref is not None and ref.startswith(_FINAL)
-        if resumed and ref is not None:
-            urn = ref.removeprefix(_FINAL)
-        else:
-            urn = self._upload(item.id, author, token, save_ref)
-        try:
-            if not self._available(urn, token):
-                return None
-            if resumed and (existing := linkedin._find_existing(item.id, token)):
-                return existing
-        except TransientChannelError:
-            # Keep the finalized upload for the next run.
-            return None
 
-        save_ref(_POSTING + urn)
-        try:
-            return linkedin._create_post(commentary, author, token, video=urn)
-        except UncertainPublication:
-            raise
-        except TransientChannelError:
-            save_ref(_FINAL + urn)
-            return None
-        except (ChannelError, ChannelHeld):
-            save_ref(_FINAL + urn)
-            raise
+class LinkedInRenderChannel(_LinkedInVideoPublisher):
+    def __init__(
+        self,
+        linkedin: LinkedInChannel,
+        repo: ItemRepo,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        super().__init__(linkedin, sleep)
+        self._repo = repo
+
+    def publish_render(
+        self,
+        render: VideoRender,
+        token: str,
+        ref: str | None,
+        save_ref: Callable[[str], None],
+    ) -> str | None:
+        def commentary() -> str:
+            item = self._repo.get_item(render.item_id)
+            if item is None:
+                raise ChannelError("Render item is unavailable")
+            return self._linkedin._commentary(
+                item,
+                self._repo.get_variants(item.id),
+                leading_label=AI_AVATAR_CAPTION_LABEL,
+            )
+
+        return self._publish(
+            render.item_id,
+            token,
+            commentary,
+            lambda: render.video or b"",
+            ref,
+            save_ref,
+        )
+
+    def permalink(self, remote_id: str) -> str:
+        return f"https://www.linkedin.com/feed/update/{quote(remote_id, safe=':')}/"

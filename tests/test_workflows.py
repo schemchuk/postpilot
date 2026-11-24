@@ -88,11 +88,13 @@ def test_scheduled_workflow(name, cron):
             "TELEGRAM_CHAT_ID",
             "TOKEN_ENCRYPTION_KEY",
         }
-        channel_credentials = {
+        linkedin_credentials = {
             "LINKEDIN_CLIENT_ID",
             "LINKEDIN_CLIENT_SECRET",
             "LINKEDIN_REDIRECT_URI",
             "LINKEDIN_SCOPES",
+        }
+        channel_credentials = linkedin_credentials | {
             "THREADS_APP_ID",
             "THREADS_APP_SECRET",
         }
@@ -111,7 +113,10 @@ def test_scheduled_workflow(name, cron):
             )
         elif name == "publish-reels":
             assert job["timeout-minutes"] == 15
-            expected.update({"FACEBOOK_PAGE_ID", "INSTAGRAM_BUSINESS_ACCOUNT_ID"})
+            expected.update(
+                linkedin_credentials
+                | {"FACEBOOK_PAGE_ID", "INSTAGRAM_BUSINESS_ACCOUNT_ID"}
+            )
         elif name == "render-video":
             assert job["timeout-minutes"] == 25
             assert any(

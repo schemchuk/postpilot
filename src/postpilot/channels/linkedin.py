@@ -37,6 +37,8 @@ class LinkedInChannel:
         client: httpx.Client,
         version: str | None = None,
         limit: int = _MAX_LENGTH,
+        *,
+        video_marker: bool = False,
     ) -> None:
         self.name = name
         self._lang = lang
@@ -44,13 +46,19 @@ class LinkedInChannel:
         self._client = client
         self._version = version or os.getenv("LINKEDIN_VERSION") or "202607"
         self._limit = limit
+        self._marker_tail = "/video" if video_marker else ""
         self._identity: tuple[bytes, str] | None = None
 
     def _suffix(self, item_id: UUID) -> str:
-        return f"\n\n{marker(item_id)}/{self._lang}"
+        return f"\n\n{marker(item_id)}/{self._lang}{self._marker_tail}"
 
     def _commentary(
-        self, item: Item, variants: list[Variant], *, label: str = ""
+        self,
+        item: Item,
+        variants: list[Variant],
+        *,
+        label: str = "",
+        leading_label: str = "",
     ) -> str:
         for variant in variants:
             if variant.item_id == item.id and variant.lang == self._lang:
@@ -60,9 +68,11 @@ class LinkedInChannel:
             raise ChannelError("Missing required language variant")
         if not text.strip():
             raise ChannelError("LinkedIn text is empty")
+        suffix = self._suffix(item.id)
+        if leading_label:
+            text = leading_label + "\n\n" + text
         if label:
             text += "\n\n" + label
-        suffix = self._suffix(item.id)
         if len(text) > self._limit or len(text) + len(suffix) > _MAX_LENGTH:
             raise ChannelError("Text exceeds the LinkedIn length limit")
         escaped = _LITTLE_TEXT.sub(lambda match: match[1] or "\\" + match[2], text)

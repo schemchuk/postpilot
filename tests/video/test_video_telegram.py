@@ -33,7 +33,7 @@ def test_notifier_preview_and_oversized_alert(monkeypatch):
     monkeypatch.setattr(telegram, "_VIDEO_LIMIT", 7)
     api = Mock(spec=telegram.TelegramApi)
     notifier = telegram.Notifier(api, 123)
-    render = Mock(id=uuid4())
+    render = Mock(id=uuid4(), linkedin=False)
     notifier.send_video_preview(render, b"1234567")
     notifier.send_video_preview(render, b"12345678")
     api.send_video.assert_called_once_with(
@@ -45,7 +45,13 @@ def test_notifier_preview_and_oversized_alert(monkeypatch):
                 [
                     {"text": "Approve", "callback_data": f"vapprove:{render.id}"},
                     {"text": "Reject", "callback_data": f"vreject:{render.id}"},
-                ]
+                ],
+                [
+                    {
+                        "text": "Also on LinkedIn: no",
+                        "callback_data": f"vlinkedin:{render.id}",
+                    }
+                ],
             ]
         },
     )
@@ -130,3 +136,77 @@ def test_video_callback_requires_preview():
     )
     store.approve.assert_not_called()
     api.answer_callback_query.assert_called_once_with("callback", "Already handled")
+
+
+@pytest.mark.parametrize(
+    "user,value", [(123, True), (123, False), (123, None), (456, True)]
+)
+def test_video_linkedin_toggle_callback(user, value):
+    api = Mock(spec=telegram.TelegramApi)
+    store = Mock(spec=VideoStore)
+    store.toggle_linkedin.return_value = value
+    # Reply failures must not prevent the markup update after committing the flip.
+    api.answer_callback_query.side_effect = telegram.TelegramError
+    render_id = uuid4()
+    reply_markup = telegram.video_preview_markup(render_id, not value)
+    handler = ApprovalHandler(Mock(spec=ItemRepo), api, 123, video_store=store)
+    handler.handle_update(
+        {
+            "callback_query": {
+                "id": "callback",
+                "from": {"id": user},
+                "message": {
+                    "chat": {"id": 123},
+                    "message_id": 42,
+                    "video": {"file_id": "preview"},
+                    "reply_markup": reply_markup,
+                },
+                "data": f"vlinkedin:{render_id}",
+            }
+        }
+    )
+    if user != 123:
+        store.toggle_linkedin.assert_not_called()
+        assert not api.mock_calls
+        return
+    store.toggle_linkedin.assert_called_once_with(render_id)
+    api.answer_callback_query.assert_called_once_with(
+        "callback", "Already handled" if value is None else None
+    )
+    if value is None:
+        api.edit_message_reply_markup.assert_not_called()
+    else:
+        api.edit_message_reply_markup.assert_called_once_with(
+            123, 42, telegram.video_preview_markup(render_id, value)
+        )
+        label = api.edit_message_reply_markup.call_args.args[2]["inline_keyboard"][1][0]
+        assert label["text"] == (
+            "Also on LinkedIn: yes" if value else "Also on LinkedIn: no"
+        )
+
+
+@pytest.mark.parametrize("chat_id,message_id", [(None, 42), (123, "42")])
+def test_video_linkedin_toggle_answers_invalid_preview(chat_id, message_id):
+    api = Mock(spec=telegram.TelegramApi)
+    store = Mock(spec=VideoStore)
+    render_id = uuid4()
+    handler = ApprovalHandler(Mock(spec=ItemRepo), api, 123, video_store=store)
+    handler.handle_update(
+        {
+            "callback_query": {
+                "id": "callback",
+                "from": {"id": 123},
+                "message": {
+                    "chat": {"id": chat_id},
+                    "message_id": message_id,
+                    "video": {"file_id": "preview"},
+                    "reply_markup": telegram.video_preview_markup(render_id, False),
+                },
+                "data": f"vlinkedin:{render_id}",
+            }
+        }
+    )
+
+    api.answer_callback_query.assert_called_once_with("callback", "Invalid preview")
+    api.edit_message_reply_markup.assert_not_called()
+    store.toggle_linkedin.assert_not_called()

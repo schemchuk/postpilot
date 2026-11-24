@@ -24,7 +24,12 @@ from postpilot.engagement.threads import (
     UncertainThreadsReply,
 )
 from postpilot.notify.renewal import RenewalHandler
-from postpilot.notify.telegram import Notifier, TelegramApi, TelegramError
+from postpilot.notify.telegram import (
+    Notifier,
+    TelegramApi,
+    TelegramError,
+    video_preview_markup,
+)
 from postpilot.sources.github import GitHubClient, GitHubError
 from postpilot.sources.own_video import OwnVideoInbox
 from postpilot.sources.series import (
@@ -57,6 +62,7 @@ def _parts_label(parts: int | None) -> str:
     return f"{parts} parts" if parts else "open-ended"
 
 
+_VIDEO_ACTIONS = {"vapprove", "vreject", "vlinkedin"}
 _AWAITING = ItemState.AWAITING_APPROVAL
 _ACTIONS = {
     "approve": (ItemState.APPROVED, "Approved"),
@@ -345,8 +351,7 @@ class ApprovalHandler:
             "edit",
             "own:gen",
             "own:skip",
-            "vapprove",
-            "vreject",
+            *_VIDEO_ACTIONS,
             "eng:redraft",
             "eng:send",
         }:
@@ -375,7 +380,7 @@ class ApprovalHandler:
                 )
                 handler(item_id, chat_id, message_id, callback_id)
             return
-        if action in {"vapprove", "vreject"}:
+        if action in _VIDEO_ACTIONS:
             store = self.video_store
             if store is None:
                 return
@@ -386,6 +391,26 @@ class ApprovalHandler:
                 for button in row
             ):
                 _reply(self.api.answer_callback_query, callback_id, "Already handled")
+                return
+            if action == "vlinkedin":
+                if type(chat_id) is not int or type(message_id) is not int:
+                    _reply(
+                        self.api.answer_callback_query, callback_id, "Invalid preview"
+                    )
+                    return
+                linkedin = store.toggle_linkedin(item_id)
+                _reply(
+                    self.api.answer_callback_query,
+                    callback_id,
+                    "Already handled" if linkedin is None else None,
+                )
+                if linkedin is not None:
+                    _reply(
+                        self.api.edit_message_reply_markup,
+                        chat_id,
+                        message_id,
+                        video_preview_markup(item_id, linkedin),
+                    )
                 return
             approve = action == "vapprove"
             changed = (

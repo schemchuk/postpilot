@@ -30,6 +30,7 @@ class VideoRender:
     requested_at: datetime
     approved_by: int | None
     approved_at: datetime | None
+    linkedin: bool = False
 
 
 class VideoStore:
@@ -79,7 +80,8 @@ class VideoStore:
                 ON CONFLICT (item_id, lang) DO UPDATE SET
                     id = EXCLUDED.id, status = EXCLUDED.status,
                     requested_at = EXCLUDED.requested_at, retried = true,
-                    heygen_video_id = NULL, script = NULL, video = NULL, duration = NULL
+                    heygen_video_id = NULL, script = NULL, video = NULL, duration = NULL,
+                    linkedin = false
                 WHERE %s AND video_renders.status = 'FAILED' AND NOT video_renders.retried
                 RETURNING id
                 """,
@@ -146,12 +148,24 @@ class VideoStore:
             (render_id,),
         )
 
+    def toggle_linkedin(self, render_id: UUID) -> bool | None:
+        with self.conn.transaction():
+            row = self.conn.execute(
+                """
+                UPDATE video_renders SET linkedin = NOT linkedin
+                WHERE id = %s AND status = 'READY'
+                RETURNING linkedin
+                """,
+                (render_id,),
+            ).fetchone()
+        return bool(row[0]) if row is not None else None
+
     def get(self, render_id: UUID) -> VideoRender | None:
         with self.conn.transaction():
             row = self.conn.execute(
                 """
                 SELECT id, item_id, lang, heygen_video_id, status, script, video,
-                    duration, requested_at, approved_by, approved_at
+                    duration, requested_at, approved_by, approved_at, linkedin
                 FROM video_renders WHERE id = %s
                 """,
                 (render_id,),
