@@ -8,3 +8,5 @@ venv/
 .pytest_cache/
 *.log
 .remember/
+uv.lock
+*.egg-info/
