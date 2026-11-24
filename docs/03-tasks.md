@@ -132,7 +132,23 @@ agent's posted repos into `posted_repos`, `/series_start postpilot 5`, enable `d
 cron-job.org job 8906614 (first draft Wed 2026-12-16).
 T18 owner: Claude Code alone (Volodymyr, 2026-11-20: Codex is not available by then). Claude Code
 implements and checks; Volodymyr reviews and gives the OK before any merge (author never merges own work).
+**T21 Own video via `/work` (ADR 019, source S3).** Owner: Codex. Reviewer: Claude Code.
+**T21a** Intake + generation + preview: migration 0016 (`own_videos`: item_id, file_id, file_unique_id
+unique, size, duration, width, height, ai flag; item source S3); poll-telegram handles a video/mp4
+document with caption `/work [ai] [text]`, text replies (message or `.txt`) to the "Video received"
+message, `Generate` button; 20 MB and duplicate refusals; one Claude call UA+DE + humanizer; preview
+(video by file_id, texts, `AI label: yes|no`, target channels) with Approve/Edit/Regenerate/Skip;
+`render-video` skips S3. Accept: tests for caption parsing (`/work`, `/work ai`, text, no text),
+foreign sender ignored, over 20 MB, duplicate video, `.txt` reply, joined replies, generation and
+humanizer failure (no item), regenerate, no S3 render; live: one test video gives a preview.
+**T21b** LinkedIn video posts for S3: initializeUpload, 4 MB parts with ETags, finalizeUpload, poll
+`AVAILABLE` (bounded, else pending for the next run), URN stored before the post, post with
+`content.media.id`, AI text line only when flagged. Accept: tests for upload success, part failure retry,
+`PROCESSING_FAILED`, rerun reuses stored URN, no duplicate post; live: one S3 post on LinkedIn.
+**T21c** Reels + Threads for S3: IG/FB read bytes via Telegram `getFile`, ffmpeg fit to 1080x1920 (scale + pad,
+no crop) when not 9:16 or below 540x960, outside 3-90 s skip Reels with a preview warning, label rules per ADR 019 decision 6, Threads shortened DE text. Accept:
+tests for label/no label, skipped Reels, getFile failure; live: one S3 reel.
 
 ## Order
-T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T18.
+T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T18.
 First useful vertical slice after T11: Telegram text to approval to LinkedIn.
