@@ -101,3 +101,33 @@ def test_render_lease_excludes_other_connections_and_reclaims_expired_owner(
                 assert not concurrent
         with other.render_lock() as acquired:
             assert acquired
+
+
+def test_linkedin_opt_in_migration_and_frozen_decisions(conn):
+    renders = VideoStore(conn)
+    items = ItemRepo(conn)
+    test_store.migrate.down(conn)
+
+    def legacy_ready():
+        item = items.create_item("github")
+        with conn.transaction():
+            return conn.execute(
+                "INSERT INTO video_renders (item_id, lang, status) "
+                "VALUES (%s, 'de', 'READY') RETURNING id",
+                (item.id,),
+            ).fetchone()[0]
+
+    approved, rejected = legacy_ready(), legacy_ready()
+
+    test_store.migrate.up(conn)
+    assert renders.get(approved).linkedin is False
+    assert renders.get(rejected).linkedin is False
+    assert renders.toggle_linkedin(approved) is True
+    assert renders.toggle_linkedin(approved) is False
+    assert renders.toggle_linkedin(approved) is True
+    assert renders.approve(approved, 123, datetime.now(UTC))
+    assert renders.reject(rejected, 123)
+    assert renders.toggle_linkedin(approved) is None
+    assert renders.toggle_linkedin(rejected) is None
+    assert renders.get(approved).linkedin is True
+    assert renders.get(rejected).linkedin is False

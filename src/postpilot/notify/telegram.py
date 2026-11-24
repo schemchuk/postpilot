@@ -27,6 +27,23 @@ def _exclude_bot_requests(record: logging.LogRecord) -> bool:
 logging.getLogger("httpx").addFilter(_exclude_bot_requests)
 
 
+def video_preview_markup(render_id: UUID, linkedin: bool) -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "Approve", "callback_data": f"vapprove:{render_id}"},
+                {"text": "Reject", "callback_data": f"vreject:{render_id}"},
+            ],
+            [
+                {
+                    "text": f"Also on LinkedIn: {'yes' if linkedin else 'no'}",
+                    "callback_data": f"vlinkedin:{render_id}",
+                }
+            ],
+        ]
+    }
+
+
 class TelegramApi:
     def __init__(self, token: str, *, client: httpx.Client | None = None) -> None:
         self._token = token
@@ -145,6 +162,16 @@ class TelegramApi:
             message_id=message_id,
             caption=caption,
             reply_markup={"inline_keyboard": []},
+        )
+
+    def edit_message_reply_markup(
+        self, chat_id: int, message_id: int, reply_markup: dict[str, Any]
+    ) -> None:
+        self._request(
+            "editMessageReplyMarkup",
+            chat_id=chat_id,
+            message_id=message_id,
+            reply_markup=reply_markup,
         )
 
     def delete_message(self, chat_id: int, message_id: int) -> None:
@@ -271,14 +298,7 @@ class Notifier:
             self.chat_id,
             video,
             "AI-generated avatar video (label burned in) - approve to allow Instagram/Facebook",
-            {
-                "inline_keyboard": [
-                    [
-                        {"text": "Approve", "callback_data": f"vapprove:{render.id}"},
-                        {"text": "Reject", "callback_data": f"vreject:{render.id}"},
-                    ]
-                ]
-            },
+            video_preview_markup(render.id, render.linkedin),
         )
 
     def send_alert(self, text: str) -> None:

@@ -14,7 +14,12 @@ from postpilot.channels.base import (
     TransientChannelError,
     UncertainPublication,
 )
-from postpilot.config import FacebookSettings, InstagramSettings, Settings
+from postpilot.config import (
+    FacebookSettings,
+    InstagramSettings,
+    LinkedInSettings,
+    Settings,
+)
 from postpilot.jobs import tasks
 from postpilot.video.publisher import publish_one
 from postpilot.video.store import VideoStatus
@@ -356,3 +361,52 @@ def test_check_instagram_tokens_alerts_once_daily(
         state.send_token_alert_once.assert_not_called()
     store.save.assert_not_called()
     notifier.send_renewal_prompt.assert_not_called()
+
+
+@pytest.mark.parametrize("has_token", [True, False])
+def test_job_publishes_heygen_with_linkedin_only(monkeypatch, has_token):
+
+    settings = Settings(
+        "db", "bot", 1, "key", linkedin=LinkedInSettings("id", "secret", "uri", ())
+    )
+    store, renders, claim = setup_publish(VideoStatus.APPROVED)
+    monkeypatch.setattr(tasks, "VideoPublicationStore", Mock(return_value=store))
+    monkeypatch.setattr(tasks, "VideoStore", Mock(return_value=renders))
+    monkeypatch.setattr(tasks, "TokenCipher", Mock())
+    monkeypatch.setattr(tasks, "Notifier", Mock())
+    monkeypatch.setattr(tasks, "OwnVideoStore", Mock())
+    publish = Mock(return_value="urn:li:share:1")
+    monkeypatch.setattr(tasks.LinkedInRenderChannel, "publish_render", publish)
+    token = SimpleNamespace(
+        access_token="test-token",
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+    )
+    tokens = Mock()
+    tokens.get.return_value = token if has_token else None
+    monkeypatch.setattr(tasks, "TokenStore", Mock(return_value=tokens))
+
+    tasks.publish_reels(settings, Mock())
+
+    store.oldest_eligible.assert_called_once_with(
+        {"linkedin-video", "linkedin-ua-video"}, timedelta(minutes=15), retry=False
+    )
+    assert [call.args[1] for call in store.claim.call_args_list] == [
+        "linkedin-video",
+        "linkedin-ua-video",
+    ]
+    assert len(tokens.get.call_args_list) == 2
+    tokens.get.assert_called_with("linkedin")
+    tasks.OwnVideoStore.assert_not_called()
+    if has_token:
+        assert publish.call_count == 2
+        assert publish.call_args.args[:3] == (
+            renders.get.return_value,
+            "test-token",
+            None,
+        )
+        assert store.mark_published.call_count == 2
+        store.mark_published.assert_called_with(claim, "urn:li:share:1")
+    else:
+        publish.assert_not_called()
+        assert store.release.call_count == 2
+        store.mark_published.assert_not_called()

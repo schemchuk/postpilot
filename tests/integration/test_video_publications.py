@@ -87,3 +87,32 @@ def test_failed_and_active_claims_do_not_block_newer_render(conn):
     publications.mark_failed(claim, "permanent")
     assert publications.oldest_eligible({"fb"}, STALE_AFTER) == newer
     assert publications.oldest_eligible({"fb"}, STALE_AFTER, retry=True) == older
+
+
+def test_linkedin_claim_requires_opt_in_and_approval(conn):
+    renders = VideoStore(conn)
+    publications = VideoPublicationStore(conn)
+    items = ItemRepo(conn)
+    channels = {"linkedin-video", "linkedin-ua-video"}
+
+    off = renders.claim(items.create_item("github").id, "de")
+    assert renders.attach(off, "off", "Script", b"video", 20)
+    assert renders.approve(off, 1, datetime.now(UTC))
+    assert publications.oldest_eligible(channels, STALE_AFTER) is None
+    for channel in channels:
+        assert publications.claim(off, channel, STALE_AFTER, retry=True) is None
+    # Reels stay eligible for a render without the LinkedIn opt-in.
+    assert publications.claim(off, "facebook-reels", STALE_AFTER) is not None
+
+    on = renders.claim(items.create_item("github").id, "de")
+    assert renders.attach(on, "on", "Script", b"video", 20)
+    assert renders.toggle_linkedin(on) is True
+    assert publications.oldest_eligible(channels, STALE_AFTER) is None
+    assert publications.claim(on, "linkedin-video", STALE_AFTER) is None
+    assert renders.approve(on, 1, datetime.now(UTC))
+    assert publications.oldest_eligible(channels, STALE_AFTER) == on
+    for channel in channels:
+        claim = publications.claim(on, channel, STALE_AFTER)
+        assert claim is not None
+        publications.mark_published(claim, f"post:{channel}")
+    assert publications.oldest_eligible(channels, STALE_AFTER) is None

@@ -24,6 +24,8 @@ from postpilot.ai.prompts import (
 from postpilot.channels.base import ChannelError, TransientChannelError
 from postpilot.channels.facebook_reels import FacebookReelsChannel
 from postpilot.channels.instagram_reels import InstagramReelsChannel
+from postpilot.channels.linkedin import LinkedInChannel
+from postpilot.channels.linkedin_video import LinkedInRenderChannel
 from postpilot.channels.own_video_reels import OwnVideoReelsChannel
 from postpilot.channels.registry import build_channels, build_own_video_channels
 from postpilot.channels.threads import ThreadsChannel
@@ -73,8 +75,8 @@ from postpilot.tokens.threads import TOKEN_LIFETIME, ThreadsTokenManager
 from postpilot.trace import error_fields, trace
 from postpilot.video.heygen import HeyGenClient
 from postpilot.video.pipeline import render_one
-from postpilot.video.publications import VideoPublicationStore
-from postpilot.video.publisher import VideoChannel, alert, publish_one
+from postpilot.video.publications import LINKEDIN_VIDEO_CHANNELS, VideoPublicationStore
+from postpilot.video.publisher import RenderChannel, VideoChannel, alert, publish_one
 from postpilot.video.store import VideoStore
 
 logger = logging.getLogger(__name__)
@@ -429,7 +431,11 @@ def render_video(
 def publish_reels(
     settings: Settings, conn: Connection[TupleRow], *, retry: bool = False
 ) -> None:
-    if settings.facebook is None and settings.instagram is None:
+    if (
+        settings.facebook is None
+        and settings.instagram is None
+        and settings.linkedin is None
+    ):
         return
     store = TokenStore(conn, TokenCipher(settings.token_encryption_key))
 
@@ -438,11 +444,29 @@ def publish_reels(
         return token.access_token if token and token.expires_at > _now() else None
 
     with httpx.Client() as client:
-        channels: list[VideoChannel] = []
+        reel_channels: list[VideoChannel] = []
         if settings.facebook is not None:
-            channels.append(FacebookReelsChannel(settings.facebook, client))
+            reel_channels.append(FacebookReelsChannel(settings.facebook, client))
         if settings.instagram is not None:
-            channels.append(InstagramReelsChannel(settings.instagram, client))
+            reel_channels.append(InstagramReelsChannel(settings.instagram, client))
+        repo = ItemRepo(conn)
+        channels: list[VideoChannel | RenderChannel] = list(reel_channels)
+        if settings.linkedin is not None:
+            token_source = partial(read_token, LinkedInChannel.token_provider)
+            channels.extend(
+                LinkedInRenderChannel(
+                    LinkedInChannel(
+                        name,
+                        lang,
+                        token_source,
+                        client,
+                        settings.linkedin.version,
+                        video_marker=True,
+                    ),
+                    repo,
+                )
+                for name, lang in LINKEDIN_VIDEO_CHANNELS.items()
+            )
         api = TelegramApi(settings.telegram_bot_token, client=client)
         notify = Notifier(api, settings.telegram_chat_id).send_alert
         publish_one(
@@ -454,9 +478,10 @@ def publish_reels(
             retry=retry,
         )
 
-        repo = ItemRepo(conn)
+        if not reel_channels:
+            return
         own_videos = OwnVideoStore(conn)
-        reels = {channel.name: channel for channel in channels}
+        reels = {channel.name: channel for channel in reel_channels}
         publisher = Publisher(
             repo,
             [],
@@ -468,7 +493,7 @@ def publish_reels(
                     read_token,
                     caption_limit=2200 if channel.name == _INSTAGRAM_TARGET else None,
                 )
-                for channel in channels
+                for channel in reel_channels
             ],
             own_video_held_channels=(*_TEXT_TARGETS, *_REELS_TARGETS),
             own_video_excluded_channels=partial(
