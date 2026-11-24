@@ -149,13 +149,15 @@ humanizer failure (no item), regenerate, no S3 render; live: one test video give
 no crop) when not 9:16 or below 540x960, outside 3-90 s skip Reels with a preview warning, label rules per ADR 019 decision 6, Threads shortened DE text. Accept:
 tests for label/no label, skipped Reels, getFile failure; live: one S3 reel.
 
-**T21d** HeyGen avatar video on LinkedIn (Volodymyr asked 2026-11-24; needs an ADR 012/019 amendment
-first): reuse the T21b LinkedIn video upload for approved HeyGen renders (bytes from `video_renders`),
-opt-in per item: the video preview gets a toggle button `Also on LinkedIn: no|yes` (default no, stored
-per item, Volodymyr's tap only); with yes, LinkedIn DE and UA get video posts with the approved render,
-label line `KI-generierter Avatar / AI-generated avatar` always; with no (default) or no approved render,
-LinkedIn stays text-only as today. Accept: tests for toggle default no, toggle on/off, upload from a
-render, label always present, text-only when off, no duplicate post;
+**T21d** HeyGen avatar video on LinkedIn (Volodymyr asked 2026-11-24; ADR 012 amendment 2026-11-24):
+the HeyGen video preview gets a toggle `Also on LinkedIn: no|yes` (default no, Volodymyr's tap only,
+changeable only while the render is READY, stored as `video_renders.linkedin`, migration 0017). With yes,
+`publish-reels` publishes a second LinkedIn post per language (`linkedin-video` DE, `linkedin-ua-video` UA in
+`video_publications`) with the approved render (bytes from `video_renders`, T21b upload path), text = label line
+`KI-generierter Avatar / AI-generated avatar` + the approved variant text, marker `postpilot:<uuid>/<lang>/video`.
+The text posts stay unchanged. Accept: tests for toggle default no, toggle on/off, toggle refused after
+approve/reject and from another user, upload from a render, label always present, no video post when off,
+rerun reuses the stored URN (no duplicate post), marker distinct from the text post;
 live: one HeyGen video post on LinkedIn.
 
 ## Order
