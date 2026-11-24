@@ -149,6 +149,13 @@ humanizer failure (no item), regenerate, no S3 render; live: one test video give
 no crop) when not 9:16 or below 540x960, outside 3-90 s skip Reels with a preview warning, label rules per ADR 019 decision 6, Threads shortened DE text. Accept:
 tests for label/no label, skipped Reels, getFile failure; live: one S3 reel.
 
+**T21d** HeyGen avatar video on LinkedIn (Volodymyr asked 2026-11-24; needs an ADR 012/019 amendment
+first): reuse the T21b LinkedIn video upload for approved HeyGen renders (bytes from `video_renders`),
+LinkedIn DE and UA video posts instead of text-only posts once the render is approved, label line
+`KI-generierter Avatar / AI-generated avatar` always, text-only fallback when no render is approved.
+Accept: tests for upload from a render, label always present, fallback to text, no duplicate post;
+live: one HeyGen video post on LinkedIn.
+
 ## Order
-T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T18.
+T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18.
 First useful vertical slice after T11: Telegram text to approval to LinkedIn.
