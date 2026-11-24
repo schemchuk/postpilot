@@ -26,6 +26,7 @@ from postpilot.engagement.threads import (
 from postpilot.notify.renewal import RenewalHandler
 from postpilot.notify.telegram import Notifier, TelegramApi, TelegramError
 from postpilot.sources.github import GitHubClient, GitHubError
+from postpilot.sources.own_video import OwnVideoInbox
 from postpilot.sources.series import (
     ActiveSeriesExists,
     NoActiveSeries,
@@ -89,6 +90,7 @@ class ApprovalHandler:
         github_owner: str = "",
         renewal: RenewalHandler | None = None,
         inbox: TelegramInbox | None = None,
+        own_video: OwnVideoInbox | None = None,
         video_store: VideoStore | None = None,
         engagement: EngagementStore | None = None,
         drafter: ReplyDrafter | None = None,
@@ -106,6 +108,7 @@ class ApprovalHandler:
         self.drafter = drafter
         self.renewal = renewal
         self.inbox = inbox
+        self.own_video = own_video
         self.video_store = video_store
         self.repo = repo
         self.api = api
@@ -119,8 +122,16 @@ class ApprovalHandler:
         if type(sender) is not int or sender != self.allowed_user_id:
             return
 
+        update_id = update.get("update_id")
         if is_callback:
-            self._handle_callback(event, sender)
+            self._handle_callback(event, sender, update_id)
+        elif (
+            self.own_video is not None
+            and type(update_id) is int
+            and type(chat := _object(event.get("chat")).get("id")) is int
+            and self.own_video.message(update_id, chat, event)
+        ):
+            return
         elif isinstance(event.get("text"), str):
             chat_id = _object(event.get("chat")).get("id")
             if re.match(r"^/stats(?:@[a-zA-Z0-9_]+)?(?:\s|$)", event["text"]):
@@ -316,18 +327,24 @@ class ApprovalHandler:
             if item is None:
                 self.inbox.handle_text(update_id, chat_id, text)
                 return
-        if item is not None:
+        if item is not None and item.source == "own_video" and self.own_video:
+            self.own_video.preview(chat_id, item)
+        elif item is not None:
             Notifier(self.api, chat_id).send_preview(
                 item, self.repo.get_variants(item.id)
             )
 
-    def _handle_callback(self, event: dict[str, Any], sender: int) -> None:
+    def _handle_callback(
+        self, event: dict[str, Any], sender: int, update_id: object
+    ) -> None:
         data, callback_id = event.get("data"), event.get("id")
         if not isinstance(data, str) or not isinstance(callback_id, str):
             return
         action, _, raw_id = data.rpartition(":")
         if action not in _ACTIONS and action not in {
             "edit",
+            "own:gen",
+            "own:skip",
             "vapprove",
             "vreject",
             "eng:redraft",
@@ -342,6 +359,13 @@ class ApprovalHandler:
         message = _object(event.get("message"))
         chat_id = _object(message.get("chat")).get("id")
         message_id = message.get("message_id")
+        own = self.own_video
+        if action in {"own:gen", "own:skip"}:
+            if own and type(chat_id) is int and type(update_id) is int:
+                own.callback(
+                    update_id, chat_id, message_id, callback_id, action, item_id
+                )
+            return
         if action in {"eng:redraft", "eng:send"}:
             if type(chat_id) is int and chat_id == sender and type(message_id) is int:
                 handler = (
@@ -388,8 +412,17 @@ class ApprovalHandler:
             _reply(self.api.answer_callback_query, callback_id, "Already handled")
             return
 
+        if (
+            action == "regen"
+            and item.source == "own_video"
+            and own
+            and type(chat_id) is int
+            and type(update_id) is int
+        ):
+            own.callback(update_id, chat_id, message_id, callback_id, action, item_id)
+            return
         if action == "regen" and (
-            item.source == "telegram" or self.on_regenerate is None
+            item.source in {"telegram", "own_video"} or self.on_regenerate is None
         ):
             _reply(
                 self.api.answer_callback_query,

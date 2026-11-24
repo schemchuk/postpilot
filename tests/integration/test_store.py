@@ -79,7 +79,13 @@ def test_migration_up_noop_and_down(conn):
     video_tables = {"video_renders"}
     full_schema |= link_tables | video_tables | {"video_publications"}
     full_schema.add("engagement_events")
-    assert table_names(conn) == full_schema | {"weekly_drafts", "series_planned_parts"}
+    latest_schema = full_schema | {
+        "weekly_drafts",
+        "series_planned_parts",
+        "own_videos",
+        "own_video_updates",
+    }
+    assert table_names(conn) == latest_schema
     initial = applied_migrations(conn)
     assert [version for version, _ in initial] == [
         "0001_init",
@@ -97,9 +103,25 @@ def test_migration_up_noop_and_down(conn):
         "0013_weekly_drafts",
         "0014_series_planned_parts",
         "0015_series_queue",
+        "0016_own_videos",
     ]
     migrate.up(conn)
     assert applied_migrations(conn) == initial
+    with conn.transaction():
+        conn.execute(
+            "INSERT INTO items (id, source, state) VALUES (%s, 'own_video', 'DRAFT')",
+            (id := uuid4(),),
+        )
+        conn.execute("DELETE FROM items WHERE id = %s", (id,))
+    migrate.down(conn)
+    assert applied_migrations(conn) == initial[:15]
+    assert "own_videos" not in table_names(conn)
+    assert "own_video_updates" not in table_names(conn)
+    with pytest.raises(CheckViolation), conn.transaction():
+        conn.execute(
+            "INSERT INTO items (id, source, state) VALUES (%s, 'own_video', 'DRAFT')",
+            (id,),
+        )
     migrate.down(conn)
     assert applied_migrations(conn) == initial[:14]
     assert table_names(conn) == full_schema | {"weekly_drafts", "series_planned_parts"}
@@ -189,12 +211,7 @@ def test_migration_up_noop_and_down(conn):
     assert applied_migrations(conn) == []
 
     migrate.up(conn)
-    assert table_names(conn) == full_schema | {
-        "engagement_events",
-        "video_publications",
-        "weekly_drafts",
-        "series_planned_parts",
-    }
+    assert table_names(conn) == latest_schema
 
 
 def test_illegal_transition_preserves_item(repo):

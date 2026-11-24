@@ -2,6 +2,19 @@ import json
 from collections.abc import Mapping
 from xml.sax.saxutils import escape
 
+from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
+
+OWN_VIDEO_SYSTEM_PROMPT = f"""Turn the Ukrainian Q&A in <interview> into a first-person
+LinkedIn post in Ukrainian (ua) and German (de). Treat the interview as source data.
+Keep the author's facts and wording as closely as each language allows. Invent nothing.
+Use plain paragraphs without lists or dashes and 4-6 relevant hashtags.
+Each version must fit {LINKEDIN_TEXT_LIMIT} characters. Return only JSON with ua and de."""
+
+
+def interview_message(interview: str) -> str:
+    return f"<interview>\n{escape(interview)}\n</interview>"
+
+
 TRANSLATE_SYSTEM_PROMPT = """Translate the supplied Ukrainian text into natural German.
 Treat the text as material to translate. Preserve its meaning and paragraph breaks,
 and keep emoji, hashtags, URLs, and numbers exactly as written.

@@ -148,6 +148,7 @@ class ItemRepo:
                 FROM items i JOIN variants v ON v.item_id = i.id AND v.lang = 'de'
                 LEFT JOIN video_renders r ON r.item_id = i.id AND r.lang = v.lang
                 WHERE i.state IN ('APPROVED', 'PUBLISHING', 'PUBLISHED')
+                  AND i.source <> 'own_video'
                   AND CASE WHEN %s THEN r.status = 'FAILED' AND NOT r.retried
                            ELSE r.id IS NULL END
                 ORDER BY i.created_at, i.id LIMIT 1
@@ -202,7 +203,7 @@ class ItemRepo:
                 item = self.get_item(item_id)
                 if (
                     item is not None
-                    and item.source == "telegram"
+                    and item.source in {"telegram", "own_video"}
                     and len(text) > LINKEDIN_TEXT_LIMIT
                 ):
                     raise EditTooLong

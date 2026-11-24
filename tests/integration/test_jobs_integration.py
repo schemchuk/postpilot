@@ -27,7 +27,7 @@ def reset_job_state(conn):
         conn.execute(
             "TRUNCATE items, variants, publications, pending_edits, bot_state, tokens, "
             "inbox_updates, video_renders, video_publications, short_links, link_clicks, "
-            "weekly_drafts"
+            "weekly_drafts, own_videos, own_video_updates"
         )
 
 
