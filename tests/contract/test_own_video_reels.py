@@ -44,7 +44,12 @@ def test_own_video_instagram_caption_and_fit(item, monkeypatch, ai, size, long):
 
     def ffmpeg(command, *, check, capture_output, timeout):
         assert command[0] == "ffmpeg"
-        assert "pad=1080:1920" in command[command.index("-vf") + 1]
+        if size == (1080, 1920):
+            assert "-vf" not in command
+            assert command[command.index("-c:v") + 1] == "copy"
+        else:
+            assert "pad=1080:1920" in command[command.index("-vf") + 1]
+        assert command[command.index("-ar") + 1] == "48000"
         assert "-t" not in command
         assert check and capture_output and timeout == 180
         assert Path(command[command.index("-i") + 1]).read_bytes() == b"original"
@@ -72,9 +77,7 @@ def test_own_video_instagram_caption_and_fit(item, monkeypatch, ai, size, long):
             return httpx.Response(200, json={"id": "container"})
         if request.url.host == "rupload.facebook.com":
             assert saved == ["container"]
-            assert request.content == (
-                b"original" if size == (1080, 1920) else b"fitted"
-            )
+            assert request.content == b"fitted"
             return httpx.Response(200, json={"success": True})
         if path.endswith("/container"):
             return httpx.Response(200, json={"status_code": "FINISHED"})
@@ -102,7 +105,7 @@ def test_own_video_instagram_caption_and_fit(item, monkeypatch, ai, size, long):
             save_ref=saved.append,
         )
     assert published == "post"
-    assert run.call_count == (size != (1080, 1920))
+    assert run.call_count == 1
 
 
 @pytest.mark.parametrize("failure", ["getFile", "clip.mp4"])
