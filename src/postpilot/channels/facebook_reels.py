@@ -6,14 +6,12 @@ from urllib.parse import quote
 import httpx
 
 from postpilot.channels.base import (
-    ChannelError,
     TransientChannelError,
     UncertainPublication,
 )
 from postpilot.channels.meta_reels import request
 from postpilot.config import FacebookSettings
-from postpilot.video.label import AI_AVATAR_CAPTION_LABEL
-from postpilot.video.store import VideoRender, VideoStatus
+from postpilot.video.reel import ReelVideo
 
 
 class FacebookReelsChannel:
@@ -30,25 +28,19 @@ class FacebookReelsChannel:
     def permalink(self, remote_id: str) -> str:
         return f"https://www.facebook.com/reel/{quote(remote_id, safe='')}"
 
-    def validate(self, render: VideoRender) -> None:
-        if render.status != VideoStatus.APPROVED or not render.video:
-            raise ChannelError("An approved video is required")
-        if not render.script or not render.script.strip():
-            raise ChannelError("A video script is required")
-        if render.duration is not None and not 3 <= render.duration <= 90:
-            raise ChannelError("Facebook Reels must be 3 to 90 seconds long")
+    def validate(self, reel: ReelVideo) -> None:
+        reel.validate("Facebook Reels", 90)
 
     def publish_with_ref(
         self,
-        render: VideoRender,
+        reel: ReelVideo,
         token: str,
         ref: str | None,
         save_ref: Callable[[str], None],
         *,
         claimed_at: datetime,
     ) -> str | None:
-        self.validate(render)
-        assert render.video is not None
+        self.validate(reel)
         offset = 0
         if ref is not None:
             result = self._request(
@@ -90,11 +82,11 @@ class FacebookReelsChannel:
                 uploaded = upload.get(
                     "bytes_transferred", upload.get("bytes_transfered", 0)
                 )
-                if type(uploaded) is not int or not 0 <= uploaded <= len(render.video):
+                if type(uploaded) is not int or not 0 <= uploaded <= len(reel.video):
                     raise TransientChannelError("Invalid Facebook Reels upload offset")
                 offset = uploaded
             elif publishing.get("status") == "not_started":
-                offset = len(render.video)
+                offset = len(reel.video)
             else:
                 return None
         if ref is None:
@@ -108,9 +100,11 @@ class FacebookReelsChannel:
                 raise TransientChannelError("Facebook Reels did not return a video ID")
             ref = new_ref
             save_ref(ref)
-        if offset < len(render.video):
+        if offset < len(reel.video):
             url = f"https://rupload.facebook.com/video-upload/{self._settings.graph_version}/{quote(ref, safe='')}"
-            self._request("POST", url, token, video=render.video, offset=offset)
+            self._request("POST", url, token, video=reel.video, offset=offset)
+        # Verify claim ownership again after upload, before publishing.
+        save_ref(ref)
         result = self._request(
             "POST",
             self._endpoint,
@@ -120,7 +114,7 @@ class FacebookReelsChannel:
                 "upload_phase": "finish",
                 "video_id": ref,
                 "video_state": "PUBLISHED",
-                "description": f"{render.script}\n\n{AI_AVATAR_CAPTION_LABEL}",
+                "description": reel.caption,
             },
         )
         if result.get("success") is not True:

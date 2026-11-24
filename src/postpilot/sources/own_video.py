@@ -238,7 +238,7 @@ class OwnVideoInbox:
     def _preview(self, video: OwnVideo, item: Item) -> None:
         label = "yes" if video.ai_generated else "no"
         details = f"Own video · AI label: {label} · Channels: LinkedIn DE+UA, Threads, Instagram, Facebook"
-        if video.duration is not None and not 3 <= video.duration <= 90:
+        if not video.reels_eligible:
             details += f"\nReels skipped: video is {video.duration} s (3-90 s allowed)"
         try:
             self.api.send_video(video.chat_id, video.file_id)

@@ -24,8 +24,8 @@ from postpilot.channels.base import (
 from postpilot.channels.linkedin import _VIDEOS, LinkedInChannel
 from postpilot.core.models import Item, Variant
 from postpilot.notify.telegram import TelegramError
+from postpilot.video.label import AI_VIDEO_CAPTION_LABEL
 
-_AI_LABEL = "KI-generiertes Video / AI-generated video"
 _UPLOAD = "video:"
 _FINAL = "video-final:"
 _POSTING = "video-posting:"
@@ -62,7 +62,7 @@ class LinkedInVideoChannel:
         self._sleep = sleep
 
     def _commentary(self, item: Item, variants: list[Variant]) -> str:
-        label = _AI_LABEL if self._ai_generated(item.id) else ""
+        label = AI_VIDEO_CAPTION_LABEL if self._ai_generated(item.id) else ""
         return self._linkedin._commentary(item, variants, label=label)
 
     def validate(self, item: Item, variants: list[Variant]) -> None:

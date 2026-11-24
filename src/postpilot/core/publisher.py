@@ -51,40 +51,51 @@ class Publisher:
         token_guard: Callable[[str], bool] | None = None,
         own_video_channels: list[Channel] | None = None,
         own_video_held_channels: tuple[str, ...] = (),
+        own_video_excluded_channels: Callable[[UUID], set[str]] | None = None,
     ) -> None:
         self.repo = repo
         self.channels = channels
         self.stale_after = stale_after
         self.sleep = sleep
         self.token_guard = token_guard
-        self.own_video_channels = own_video_channels or []
+        self.own_video_channels = own_video_channels
         self.own_video_held_channels = own_video_held_channels
+        self.own_video_excluded_channels = own_video_excluded_channels
 
     def publish_item(self, item_id: UUID) -> PublishReport:
-        if not self.channels:
+        if not self.channels and not self.own_video_channels:
             raise ValueError("No channels configured")
         item = self.repo.get_item(item_id)
         if item is None:
             raise KeyError(item_id)
         own_video = item.source == "own_video"
-        if own_video and not self.own_video_channels:
+        if own_video and self.own_video_channels is None:
             return PublishReport(
                 {channel.name: ChannelResult("held") for channel in self.channels}
             )
-        video_adapters = {channel.name: channel for channel in self.own_video_channels}
+        channels = (self.own_video_channels or []) if own_video else self.channels
+        if not own_video and not channels:
+            raise ValueError("No channels configured")
         if item.state not in {
             ItemState.APPROVED,
             ItemState.FAILED,
             ItemState.PUBLISHING,
         }:
             raise IllegalTransition(f"Cannot publish an item in {item.state}")
+        excluded = (
+            self.own_video_excluded_channels(item_id)
+            if own_video and self.own_video_excluded_channels is not None
+            else set()
+        )
         trace(
             "publish",
             "item",
             item=item.id,
             source=item.source,
             state=item.state,
-            channels=[channel.name for channel in self.channels],
+            channels=[
+                channel.name for channel in channels if channel.name not in excluded
+            ],
         )
         if item.state != ItemState.PUBLISHING:
             try:
@@ -102,18 +113,23 @@ class Publisher:
             if publication.status == PublicationStatus.PUBLISHED
         }
         results = {}
-        for channel in self.channels:
+        for channel in channels:
             name = channel.name
-            adapter = video_adapters.get(name) if own_video else channel
-            if adapter is None:
-                results[name] = ChannelResult("held")
-            elif name in published:
+            if name in excluded:
+                continue
+            if name in published:
                 results[name] = ChannelResult("skipped")
             else:
-                results[name] = self._publish_channel(adapter, item, variants)
+                results[name] = self._publish_channel(channel, item, variants)
         if own_video:
-            for name in self.own_video_held_channels:
-                results.setdefault(name, ChannelResult("held"))
+            for name in (
+                *[channel.name for channel in self.channels],
+                *self.own_video_held_channels,
+            ):
+                if name not in excluded:
+                    results.setdefault(
+                        name, ChannelResult("skipped" if name in published else "held")
+                    )
         for name, result in results.items():
             trace(
                 "publish",

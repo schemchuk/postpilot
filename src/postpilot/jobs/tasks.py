@@ -24,12 +24,13 @@ from postpilot.ai.prompts import (
 from postpilot.channels.base import ChannelError, TransientChannelError
 from postpilot.channels.facebook_reels import FacebookReelsChannel
 from postpilot.channels.instagram_reels import InstagramReelsChannel
+from postpilot.channels.own_video_reels import OwnVideoReelsChannel
 from postpilot.channels.registry import build_channels, build_own_video_channels
 from postpilot.channels.threads import ThreadsChannel
 from postpilot.config import ConfigError, HeyGenSettings, Settings
 from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
 from postpilot.core.models import Item
-from postpilot.core.publisher import Publisher
+from postpilot.core.publisher import ChannelResult, Publisher
 from postpilot.core.repo_safety import check_repo, finalize_links
 from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.engagement.drafts import ReplyDrafter
@@ -73,7 +74,7 @@ from postpilot.trace import error_fields, trace
 from postpilot.video.heygen import HeyGenClient
 from postpilot.video.pipeline import render_one
 from postpilot.video.publications import VideoPublicationStore
-from postpilot.video.publisher import VideoChannel, publish_one
+from postpilot.video.publisher import VideoChannel, alert, publish_one
 from postpilot.video.store import VideoStore
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,18 @@ def _read_token(
     return token.access_token
 
 
+_TEXT_TARGETS = ("linkedin", "linkedin-ua", ThreadsChannel.name)
+_INSTAGRAM_TARGET = InstagramReelsChannel.name
+_REELS_TARGETS = (_INSTAGRAM_TARGET, FacebookReelsChannel.name)
+
+
+def _excluded_own_video_channels(store: OwnVideoStore, item_id: UUID) -> set[str]:
+    video = store.get_by_item(item_id)
+    return (
+        set(_REELS_TARGETS) if video is not None and not video.reels_eligible else set()
+    )
+
+
 def _publisher(
     settings: Settings, repo: ItemRepo, client: httpx.Client
 ) -> Publisher | None:
@@ -139,25 +152,31 @@ def _publisher(
     def fetch_video(item_id: UUID) -> bytes:
         return api.download_file(api.get_file(get_video(item_id).file_id))
 
+    own_video_channels = build_own_video_channels(
+        channels,
+        fetch_video=fetch_video,
+        ai_generated=lambda item_id: get_video(item_id).ai_generated,
+    )
+    configured = {channel.name for channel in own_video_channels}
+    missing_text_targets = tuple(
+        name for name in _TEXT_TARGETS if name not in configured
+    )
     return Publisher(
         repo,
         channels,
         token_guard=lambda provider: bool(read_token(provider)),
-        own_video_channels=build_own_video_channels(
-            channels,
-            fetch_video=fetch_video,
-            ai_generated=lambda item_id: get_video(item_id).ai_generated,
-        ),
-        # These targets belong to S3 even when absent from the text publisher.
-        own_video_held_channels=(
-            ThreadsChannel.name,
-            InstagramReelsChannel.name,
-            FacebookReelsChannel.name,
-        ),
+        own_video_channels=own_video_channels,
+        own_video_held_channels=(*missing_text_targets, *_REELS_TARGETS),
+        own_video_excluded_channels=partial(_excluded_own_video_channels, store),
     )
 
 
-def _publish_items(publisher: Publisher, item_ids: Iterable[UUID]) -> None:
+def _publish_items(
+    publisher: Publisher,
+    item_ids: Iterable[UUID],
+    *,
+    on_result: Callable[[UUID, str, ChannelResult], None] | None = None,
+) -> None:
     failed = False
     for item_id in item_ids:
         try:
@@ -167,9 +186,10 @@ def _publish_items(publisher: Publisher, item_ids: Iterable[UUID]) -> None:
             if item is None or item.state != ItemState.PUBLISHED:
                 raise
         else:
-            failed |= any(
-                result.outcome == "failed" for result in report.channels.values()
-            )
+            for name, result in report.channels.items():
+                failed |= result.outcome == "failed"
+                if on_result is not None:
+                    on_result(item_id, name, result)
     if failed:
         raise RuntimeError("Channel publishing failed")
 
@@ -423,16 +443,57 @@ def publish_reels(
             channels.append(FacebookReelsChannel(settings.facebook, client))
         if settings.instagram is not None:
             channels.append(InstagramReelsChannel(settings.instagram, client))
+        api = TelegramApi(settings.telegram_bot_token, client=client)
+        notify = Notifier(api, settings.telegram_chat_id).send_alert
         publish_one(
             VideoPublicationStore(conn),
             VideoStore(conn),
             channels,
             read_token,
-            Notifier(
-                TelegramApi(settings.telegram_bot_token), settings.telegram_chat_id
-            ).send_alert,
+            notify,
             retry=retry,
         )
+
+        repo = ItemRepo(conn)
+        own_videos = OwnVideoStore(conn)
+        reels = {channel.name: channel for channel in channels}
+        publisher = Publisher(
+            repo,
+            [],
+            own_video_channels=[
+                OwnVideoReelsChannel(
+                    channel,
+                    own_videos.get_by_item,
+                    api,
+                    read_token,
+                    caption_limit=2200 if channel.name == _INSTAGRAM_TARGET else None,
+                )
+                for channel in channels
+            ],
+            own_video_held_channels=(*_TEXT_TARGETS, *_REELS_TARGETS),
+            own_video_excluded_channels=partial(
+                _excluded_own_video_channels, own_videos
+            ),
+        )
+
+        def notify_result(item_id: UUID, name: str, result: ChannelResult) -> None:
+            if result.outcome == "failed":
+                alert(notify, f"{name}: {result.error}")
+            elif result.outcome == "published":
+                for publication in repo.list_publications(item_id):
+                    if (
+                        publication.channel == name
+                        and publication.remote_id is not None
+                    ):
+                        alert(
+                            notify,
+                            f"{name}: published {reels[name].permalink(publication.remote_id)}",
+                        )
+                        break
+
+        item_ids = repo.list_approved_item_ids(source="own_video")
+        item_ids += repo.list_unfinished_item_ids(source="own_video")
+        _publish_items(publisher, dict.fromkeys(item_ids), on_result=notify_result)
 
 
 def check_tokens(settings: Settings, conn: Connection[TupleRow]) -> None:
