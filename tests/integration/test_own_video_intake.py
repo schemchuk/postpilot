@@ -12,6 +12,7 @@ from postpilot.core.models import Item
 from postpilot.core.publisher import Publisher
 from postpilot.core.states import ItemState
 from postpilot.notify.approval import ApprovalHandler
+from postpilot.notify.telegram import TelegramError
 from postpilot.sources.own_video import OwnVideoInbox
 from postpilot.sources.telegram import TelegramInbox
 
@@ -192,3 +193,21 @@ def test_generation_regeneration_and_approval(bot, conn, repo, media, monkeypatc
         == "held"
     )
     channel.publish.assert_not_called()
+
+
+def test_generate_survives_expired_callback_query(bot, conn, media, monkeypatch):
+    # poll-telegram runs every few minutes, so Telegram may refuse the late
+    # answerCallbackQuery; the Generate press must still produce the draft.
+    api, model, event = bot
+    event(video=media, caption="/work")
+    _, prompt, *_ = video_row(conn, media)
+    event(text="Interview", reply_to_message={"message_id": prompt})
+    api.answer_callback_query.side_effect = TelegramError("query is too old")
+    model.complete.return_value = '{"de":"Text","ua":"Текст"}'
+    monkeypatch.setattr(
+        "postpilot.sources.own_video.humanize_pair",
+        Mock(return_value=("Text", "Текст")),
+    )
+    event(action=f"own:gen:{video_row(conn, media)[0]}")
+    assert video_row(conn, media)[3] == "generated"
+    assert "Own video · AI label: no" in api.send_message.call_args.args[1]

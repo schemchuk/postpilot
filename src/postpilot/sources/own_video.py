@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from typing import Any
 from uuid import UUID
@@ -12,6 +13,8 @@ from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.notify.telegram import Notifier, TelegramApi, TelegramError
 from postpilot.store.own_videos import OwnVideo, OwnVideoStore
 from postpilot.store.repo import ItemRepo
+
+_LOG = logging.getLogger(__name__)
 
 WORK = re.compile(
     r"^/work(?:@[a-zA-Z0-9_]+)?(?:\s+(?P<ai>ai)(?=\s|$))?(?:\s+(?P<text>.*))?$",
@@ -143,9 +146,9 @@ class OwnVideoInbox:
                 or (action == "own:skip" and video.status != "collecting")
                 or not self.store.claim_update(update_id)
             ):
-                self.api.answer_callback_query(callback_id, "Already handled")
+                self._answer(callback_id, "Already handled")
                 return
-            self.api.answer_callback_query(callback_id)
+            self._answer(callback_id)
             if action == "own:skip":
                 self.store.finish(video.id)
                 if type(message_id) is int:
@@ -163,6 +166,17 @@ class OwnVideoInbox:
                     )
             finally:
                 self._preview(video, preview)
+
+    def _answer(self, callback_id: str, text: str | None = None) -> None:
+        # Polling every few minutes means the callback query may already have
+        # expired; the button press itself must still be handled.
+        try:
+            if text is None:
+                self.api.answer_callback_query(callback_id)
+            else:
+                self.api.answer_callback_query(callback_id, text)
+        except TelegramError:
+            _LOG.warning("Telegram callback reply failed")
 
     def _generate(self, video: OwnVideo) -> Item | None:
         chat = video.chat_id
