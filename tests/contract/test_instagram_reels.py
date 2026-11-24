@@ -1,7 +1,6 @@
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs
-from uuid import uuid4
 
 import httpx
 import pytest
@@ -14,7 +13,7 @@ from postpilot.channels.base import (
 )
 from postpilot.channels.instagram_reels import InstagramReelsChannel
 from postpilot.config import InstagramSettings
-from postpilot.video.store import VideoRender, VideoStatus
+from postpilot.video.reel import ReelVideo
 
 NOW = datetime(2026, 11, 20, tzinfo=UTC)
 TOKEN = "test-instagram-token"
@@ -24,18 +23,8 @@ LINK = "https://www.instagram.com/reel/example/"
 
 @pytest.fixture
 def render():
-    return VideoRender(
-        uuid4(),
-        uuid4(),
-        "de",
-        "heygen",
-        VideoStatus.APPROVED,
-        "Ein Skript.",
-        b"video",
-        25,
-        NOW,
-        1,
-        NOW,
+    return ReelVideo(
+        b"video", "Ein Skript.\n\nKI-generierter Avatar / AI-generated avatar", 25, True
     )
 
 
@@ -250,9 +239,8 @@ def test_failures(render, replies, expected):
 @pytest.mark.parametrize(
     "changed",
     [
-        {"status": VideoStatus.READY},
         {"video": b""},
-        {"script": " "},
+        {"caption": " "},
         {"duration": 900.01},
         {"duration": 2.99},
     ],

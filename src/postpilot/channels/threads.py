@@ -1,4 +1,3 @@
-import re
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from urllib.parse import quote
@@ -11,12 +10,12 @@ from postpilot.channels.base import (
     TransientChannelError,
     UncertainPublication,
 )
+from postpilot.core.limits import shorten_text
 from postpilot.core.models import Item, Variant
 
 _API = "https://graph.threads.com/v1.0"
 _MAX_LENGTH = 500
 _TIMESTAMP_MARGIN = timedelta(minutes=5)
-_SENTENCE_END = re.compile(r"""[.!?…]+["'”’»“‘)\]]*(?=\s|$)""")
 
 
 class ThreadsChannel:
@@ -39,18 +38,7 @@ class ThreadsChannel:
             raise ChannelError("Missing required language variant")
         if not text.strip():
             raise ChannelError("Threads text is empty")
-        if len(text) > _MAX_LENGTH:
-            budget = _MAX_LENGTH - 1
-            sentence_end = max(
-                (m.end() for m in _SENTENCE_END.finditer(text) if m.end() <= budget),
-                default=0,
-            )
-            word_end = max(
-                (m.end() for m in re.finditer(r"\S+(?=\s)", text) if m.end() <= budget),
-                default=budget,
-            )
-            text = text[: sentence_end or word_end] + "…"
-        return text
+        return shorten_text(text, _MAX_LENGTH)
 
     def validate(self, item: Item, variants: list[Variant]) -> None:
         self._text(item, variants)

@@ -16,6 +16,12 @@ class OwnVideo:
     ai_generated: bool
     interview: str
     status: str
+    width: int | None = None
+    height: int | None = None
+
+    @property
+    def reels_eligible(self) -> bool:
+        return self.duration is None or 3 <= self.duration <= 90
 
 
 class OwnVideoStore:
@@ -63,7 +69,7 @@ class OwnVideoStore:
         row = self.conn.execute(
             sql.SQL(
                 "SELECT id, item_id, chat_id, file_id, duration, ai_generated,"
-                " interview, status FROM own_videos WHERE chat_id = %s AND {} = %s FOR UPDATE"
+                " interview, status, width, height FROM own_videos WHERE chat_id = %s AND {} = %s FOR UPDATE"
             ).format(sql.Identifier(column)),
             (chat_id, value),
         ).fetchone()
@@ -73,7 +79,7 @@ class OwnVideoStore:
         with self.conn.transaction():
             row = self.conn.execute(
                 "SELECT id, item_id, chat_id, file_id, duration, ai_generated,"
-                " interview, status FROM own_videos WHERE item_id = %s",
+                " interview, status, width, height FROM own_videos WHERE item_id = %s",
                 (item_id,),
             ).fetchone()
         return OwnVideo(*row) if row else None

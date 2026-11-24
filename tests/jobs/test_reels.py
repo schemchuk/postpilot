@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -36,6 +37,8 @@ def test_job_wires_facebook_and_retry(monkeypatch, settings, retry):
     monkeypatch.setattr(tasks, "TokenCipher", Mock())
     monkeypatch.setattr(tasks, "publish_one", Mock())
     conn = Mock()
+    conn.transaction.side_effect = nullcontext
+    conn.execute.return_value.fetchall.return_value = []
     tasks.publish_reels(settings, conn, retry=retry)
     store, renders, channels, read_token, _ = tasks.publish_one.call_args.args
     assert store.conn is renders.conn is conn
@@ -89,7 +92,9 @@ def test_check_tokens_validates_facebook_without_refresh(monkeypatch, settings, 
 
 
 def setup_publish(status):
-    render = SimpleNamespace(id=uuid4(), status=status)
+    render = SimpleNamespace(
+        id=uuid4(), status=status, video=b"video", script="German script", duration=20
+    )
     claim = Mock(
         remote_ref=None, remote_ref_claimed_at=None, updated_at=datetime.now(UTC)
     )
@@ -131,6 +136,11 @@ def test_channel_failure_is_redacted_and_does_not_block_others():
         claim, "Channel operation failed (ChannelError)"
     )
     store.mark_published.assert_called_once_with(claim, "remote")
+    reel = second.publish_with_ref.call_args.args[0]
+    assert (
+        reel.caption == "German script\n\nKI-generierter Avatar / AI-generated avatar"
+    )
+    assert reel.ai_generated is True
     assert "secret information" not in str(notify.call_args_list)
     assert notify.call_count == 2
     assert "https://www.facebook.com/reel/remote" in notify.call_args.args[0]
@@ -225,7 +235,10 @@ def test_configured_reels_channels_use_independent_claims_and_tokens(
     if fail_facebook:
         adapters["facebook"].publish_with_ref.side_effect = ChannelError
 
-    tasks.publish_reels(settings, Mock())
+    conn = Mock()
+    conn.transaction.side_effect = nullcontext
+    conn.execute.return_value.fetchall.return_value = []
+    tasks.publish_reels(settings, conn)
 
     for provider, adapter in adapters.items():
         if provider == "facebook" and not facebook:

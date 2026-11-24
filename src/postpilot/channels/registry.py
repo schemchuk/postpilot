@@ -39,10 +39,14 @@ def build_own_video_channels(
     fetch_video: Callable[[UUID], bytes],
     ai_generated: Callable[[UUID], bool],
 ) -> list[Channel]:
-    return [
-        LinkedInVideoChannel(
-            channel, fetch_video=fetch_video, ai_generated=ai_generated
-        )
-        for channel in channels
-        if isinstance(channel, LinkedInChannel)
-    ]
+    adapters: list[Channel] = []
+    for channel in channels:
+        if isinstance(channel, LinkedInChannel):
+            adapters.append(
+                LinkedInVideoChannel(
+                    channel, fetch_video=fetch_video, ai_generated=ai_generated
+                )
+            )
+        elif isinstance(channel, ThreadsChannel):
+            adapters.append(channel)
+    return adapters

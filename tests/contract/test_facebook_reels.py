@@ -2,7 +2,6 @@ import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 from urllib.parse import parse_qs
-from uuid import uuid4
 
 import httpx
 import pytest
@@ -16,7 +15,7 @@ from postpilot.channels.base import (
 from postpilot.channels.facebook_reels import FacebookReelsChannel
 from postpilot.config import FacebookSettings
 from postpilot.tokens.facebook import token_is_valid
-from postpilot.video.store import VideoRender, VideoStatus
+from postpilot.video.reel import ReelVideo
 
 TOKEN = "example-test-token"
 SETTINGS = FacebookSettings("123")
@@ -24,18 +23,8 @@ SETTINGS = FacebookSettings("123")
 
 @pytest.fixture
 def render():
-    return VideoRender(
-        uuid4(),
-        uuid4(),
-        "de",
-        "rendered",
-        VideoStatus.APPROVED,
-        "Ein Skript.",
-        b"video",
-        25,
-        datetime.now(UTC),
-        1,
-        datetime.now(UTC),
+    return ReelVideo(
+        b"video", "Ein Skript.\n\nKI-generierter Avatar / AI-generated avatar", 25, True
     )
 
 
@@ -82,7 +71,8 @@ def test_start_checkpoints_before_upload_and_publishes_labelled_caption(render):
         return httpx.Response(200, json={"success": True})
 
     assert run(render, route, save=lambda ref: calls.append(f"saved:{ref}")) == "456"
-    assert len(calls) == 4
+    assert calls[-2] == "saved:456"
+    assert len(calls) == 5
 
 
 @pytest.mark.parametrize(
@@ -169,7 +159,9 @@ def test_recovery(render, status, offset, steps, result):
 
     assert run(render, route, ref="old", save=saved.append) == result
     assert calls == ["lookup", *steps]
-    assert saved == (["new"] if "start" in steps else [])
+    assert saved == (["new"] if "start" in steps else []) + (
+        [result] if "finish" in steps else []
+    )
 
 
 @pytest.mark.parametrize(
@@ -203,12 +195,8 @@ def test_failures_are_classified_and_redacted(render, phase, status, code, expec
 @pytest.mark.parametrize(
     "changed",
     [
-        {"status": VideoStatus.READY},
-        {"status": VideoStatus.REJECTED},
-        {"video": None},
         {"video": b""},
-        {"script": None},
-        {"script": " "},
+        {"caption": " "},
         {"duration": 2.99},
         {"duration": 90.01},
     ],

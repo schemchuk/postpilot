@@ -14,8 +14,7 @@ from postpilot.channels.base import (
 )
 from postpilot.channels.meta_reels import request
 from postpilot.config import InstagramSettings
-from postpilot.video.label import AI_AVATAR_CAPTION_LABEL
-from postpilot.video.store import VideoRender, VideoStatus
+from postpilot.video.reel import ReelVideo
 
 
 class InstagramReelsChannel:
@@ -43,26 +42,20 @@ class InstagramReelsChannel:
     def permalink(self, remote_id: str) -> str:
         return self._permalinks.get(remote_id, f"instagram media {remote_id}")
 
-    def validate(self, render: VideoRender) -> None:
-        if render.status != VideoStatus.APPROVED or not render.video:
-            raise ChannelError("An approved video is required")
-        if not render.script or not render.script.strip():
-            raise ChannelError("A video script is required")
-        if render.duration is not None and not 3 <= render.duration <= 900:
-            raise ChannelError("Instagram Reels must be 3 to 900 seconds long")
+    def validate(self, reel: ReelVideo) -> None:
+        reel.validate("Instagram Reels", 900)
 
     def publish_with_ref(
         self,
-        render: VideoRender,
+        reel: ReelVideo,
         token: str,
         ref: str | None,
         save_ref: Callable[[str], None],
         *,
         claimed_at: datetime,
     ) -> str | None:
-        self.validate(render)
-        assert render.video is not None
-        caption = f"{render.script}\n\n{AI_AVATAR_CAPTION_LABEL}"
+        self.validate(reel)
+        caption = reel.caption
         deadline = self._clock() + timedelta(minutes=5)
         if ref is not None:
             status = self._poll(ref, token, deadline, claimed_at)
@@ -80,7 +73,7 @@ class InstagramReelsChannel:
                 "media_type": "REELS",
                 "upload_type": "resumable",
                 "caption": caption,
-                "is_ai_generated": "true",
+                **({"is_ai_generated": "true"} if reel.ai_generated else {}),
             },
         ).get("id")
         if not isinstance(container, str) or not container:
@@ -91,7 +84,7 @@ class InstagramReelsChannel:
             f"{self._settings.graph_version}/{quote(container, safe='')}"
         )
         if (
-            self._request("POST", upload, token, video=render.video).get("success")
+            self._request("POST", upload, token, video=reel.video).get("success")
             is not True
         ):
             raise TransientChannelError("Instagram Reels upload was not confirmed")
