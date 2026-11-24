@@ -132,6 +132,7 @@ agent's posted repos into `posted_repos`, `/series_start postpilot 5`, enable `d
 cron-job.org job 8906614 (first draft Wed 2026-12-16).
 T18 owner: Claude Code alone (Volodymyr, 2026-11-20: Codex is not available by then). Claude Code
 implements and checks; Volodymyr reviews and gives the OK before any merge (author never merges own work).
+T18 DONE 2026-11-24 (no code left): posted repos imported and draft-weekly + cron enabled in T18a (2026-11-21); old agent stopped, deleted after backup, repo archived; social_bridge and empty Projects removed (2026-11-21); the two-week side-by-side run was dropped by Volodymyr to avoid duplicates. Remaining, Volodymyr's action: send `/series_start postpilot 5` in Telegram after part 5 of the handmake series (2026-12-11).
 **T21 Own video via `/work` (ADR 019, source S3).** Owner: Codex. Reviewer: Claude Code.
 **T21a** Intake + generation + preview: migration 0016 (`own_videos`: item_id, file_id, file_unique_id
 unique, size, duration, width, height, ai flag; item source S3); poll-telegram handles a video/mp4
