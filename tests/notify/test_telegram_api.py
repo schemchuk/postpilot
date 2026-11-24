@@ -153,3 +153,29 @@ def test_send_document_error_excludes_token():
     ):
         TelegramApi(TOKEN, client=client).send_document(42, "advice.md", b"advice")
     assert error.value.__context__ is None
+
+
+def test_get_file_download_and_send_video_reference(caplog):
+    def respond(request):
+        if request.url.path.endswith("/getFile"):
+            assert json.loads(request.content) == {"file_id": "document"}
+            return httpx.Response(
+                200, json={"ok": True, "result": {"file_path": "files/answer.txt"}}
+            )
+        if request.method == "GET":
+            assert request.url.path == f"/file/bot{TOKEN}/files/answer.txt"
+            return httpx.Response(200, content="Відповідь".encode())
+        assert request.url.path.endswith("/sendVideo")
+        assert json.loads(request.content) == {
+            "chat_id": 12,
+            "caption": "",
+            "video": "file",
+        }
+        return httpx.Response(200, json={"ok": True, "result": True})
+
+    caplog.set_level(logging.INFO, logger="httpx")
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        api = TelegramApi(TOKEN, client=client)
+        assert api.download_file(api.get_file("document")).decode() == "Відповідь"
+        api.send_video(12, "file")
+    assert TOKEN not in caplog.text

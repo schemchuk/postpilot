@@ -12,6 +12,7 @@ from postpilot.video.store import VideoRender
 _MESSAGE_LIMIT = 4096
 _VIDEO_LIMIT = 50_000_000
 _BOT_URL = "https://api.telegram.org/bot"
+_FILE_URL = "https://api.telegram.org/file/bot"
 
 
 class TelegramError(RuntimeError):
@@ -20,7 +21,7 @@ class TelegramError(RuntimeError):
 
 def _exclude_bot_requests(record: logging.LogRecord) -> bool:
     # HTTPX includes the full credential-bearing URL in its request log.
-    return _BOT_URL not in record.getMessage()
+    return not any(url in record.getMessage() for url in (_BOT_URL, _FILE_URL))
 
 
 logging.getLogger("httpx").addFilter(_exclude_bot_requests)
@@ -82,17 +83,48 @@ class TelegramApi:
             return message_id
         raise TelegramError("Telegram sendMessage returned an invalid message id")
 
+    def get_file(self, file_id: str) -> str:
+        result = self._request("getFile", file_id=file_id)
+        if isinstance(result, dict) and isinstance(
+            path := result.get("file_path"), str
+        ):
+            return path
+        raise TelegramError("Telegram getFile returned an invalid path")
+
+    def download_file(self, path: str) -> bytes:
+        get = httpx.get if self._client is None else self._client.get
+        try:
+            response = get(f"{_FILE_URL}{self._token}/{path}", follow_redirects=False)
+            response.raise_for_status()
+            return response.content
+        except (httpx.HTTPError, httpx.InvalidURL, httpx.StreamError):
+            pass
+        raise TelegramError("Telegram file download failed")
+
     def send_video(
-        self, chat_id: int, video: bytes, caption: str, reply_markup: dict[str, Any]
+        self,
+        chat_id: int,
+        video: bytes | str,
+        caption: str = "",
+        reply_markup: dict[str, Any] | None = None,
     ) -> None:
+        payload: dict[str, object] = {"chat_id": chat_id, "caption": caption}
+        if isinstance(video, str):
+            if reply_markup is not None:
+                payload["reply_markup"] = reply_markup
+            self._request("sendVideo", video=video, **payload)
+            return
+        if reply_markup is not None:
+            payload["reply_markup"] = json.dumps(reply_markup)
         self._request(
             "sendVideo",
             {"video": ("preview.mp4", video, "video/mp4")},
-            chat_id=chat_id,
-            caption=caption,
             supports_streaming="true",
-            reply_markup=json.dumps(reply_markup),
+            **payload,
         )
+
+    def send_document_ref(self, chat_id: int, file_id: str) -> None:
+        self._request("sendDocument", chat_id=chat_id, document=file_id)
 
     def send_document(
         self, chat_id: int, filename: str, content: bytes, caption: str | None = None
@@ -212,8 +244,10 @@ class Notifier:
         self, item: Item, variants: Iterable[Variant], *, source_details: str = ""
     ) -> int:
         markup = approval_keyboard(item.id, regenerate=item.source != "telegram")
-        if item.source == "telegram":
+        if item.source in {"telegram", "own_video"}:
             heading = f"Item {item.id.hex[:8]} · {item.source}"
+            if item.source == "own_video" and source_details:
+                heading += f"\n{source_details}"
             sections = [
                 f"{variant.lang.upper()}\n{variant.text}" for variant in variants
             ]

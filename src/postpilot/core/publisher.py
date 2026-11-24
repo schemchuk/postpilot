@@ -62,6 +62,11 @@ class Publisher:
         item = self.repo.get_item(item_id)
         if item is None:
             raise KeyError(item_id)
+        if item.source == "own_video":
+            # T21b/T21c: enable publication when own-video adapters are ready.
+            return PublishReport(
+                {channel.name: ChannelResult("held") for channel in self.channels}
+            )
         if item.state not in {
             ItemState.APPROVED,
             ItemState.FAILED,

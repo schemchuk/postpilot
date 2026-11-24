@@ -52,6 +52,7 @@ from postpilot.sources.github import (
     GitHubError,
     pick_project,
 )
+from postpilot.sources.own_video import OwnVideoInbox
 from postpilot.sources.series import SeriesStore
 from postpilot.sources.telegram import TelegramInbox
 from postpilot.stats import StatsStore
@@ -284,6 +285,7 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
             github_owner=settings.github_owner,
             renewal=renewal,
             inbox=TelegramInbox(repo, api, model),
+            own_video=OwnVideoInbox(repo, api, model),
             video_store=VideoStore(conn),
             engagement=EngagementStore(conn),
             stats=StatsStore(conn),
