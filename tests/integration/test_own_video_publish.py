@@ -32,6 +32,10 @@ repo = test_store.repo
 def test_own_video_jobs_share_targets_and_resume_saved_ref(
     repo, conn, monkeypatch, first, duration
 ):
+    # The payload is not a real MP4; ffmpeg normalisation is covered elsewhere.
+    monkeypatch.setattr(
+        "postpilot.channels.own_video_reels._fit_video", lambda video, scale: video
+    )
     item = repo.create_item("own_video")
     text = "Ein Satz. " + "Wort " * 550
     repo.add_variant(item.id, "ua", "Український текст.")

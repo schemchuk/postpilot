@@ -20,7 +20,11 @@ _FIT = (
 )
 
 
-def _fit_video(video: bytes) -> bytes:
+def _fit_video(video: bytes, *, scale: bool) -> bytes:
+    # Instagram rejects audio above 48 kHz (ProcessingFailedError), so the
+    # audio is always re-encoded; the picture is only re-encoded when it must
+    # be scaled and padded to 1080x1920.
+    picture = ["-vf", _FIT, "-c:v", "libx264"] if scale else ["-c:v", "copy"]
     with TemporaryDirectory() as directory:
         source = Path(directory) / "source.mp4"
         output = Path(directory) / "reel.mp4"
@@ -35,12 +39,11 @@ def _fit_video(video: bytes) -> bytes:
                     "-nostdin",
                     "-i",
                     str(source),
-                    "-vf",
-                    _FIT,
-                    "-c:v",
-                    "libx264",
+                    *picture,
                     "-c:a",
                     "aac",
+                    "-ar",
+                    "48000",
                     "-movflags",
                     "+faststart",
                     str(output),
@@ -112,14 +115,16 @@ class OwnVideoReelsChannel:
         if not content:
             raise ChannelError("Telegram video retrieval failed")
         width, height = video.width, video.height
-        if (
-            width is None
-            or height is None
-            or width < 540
-            or height < 960
-            or width * 16 != height * 9
-        ):
-            content = _fit_video(content)
+        content = _fit_video(
+            content,
+            scale=(
+                width is None
+                or height is None
+                or width < 540
+                or height < 960
+                or width * 16 != height * 9
+            ),
+        )
         return self._channel.publish_with_ref(
             ReelVideo(content, text + label, video.duration, video.ai_generated),
             token,
