@@ -16,6 +16,7 @@ from postpilot.channels.base import (
 from postpilot.core.models import Item, Language, Variant
 
 _POSTS = "https://api.linkedin.com/rest/posts"
+_VIDEOS = "https://api.linkedin.com/rest/videos"
 _USERINFO = "https://api.linkedin.com/v2/userinfo"
 _MAX_LENGTH = 3000
 # Keep hashtag and @mention prefixes. Preserve explicit LinkedIn URN mentions.
@@ -48,7 +49,9 @@ class LinkedInChannel:
     def _suffix(self, item_id: UUID) -> str:
         return f"\n\n{marker(item_id)}/{self._lang}"
 
-    def _commentary(self, item: Item, variants: list[Variant]) -> str:
+    def _commentary(
+        self, item: Item, variants: list[Variant], *, label: str = ""
+    ) -> str:
         for variant in variants:
             if variant.item_id == item.id and variant.lang == self._lang:
                 text = variant.text
@@ -57,6 +60,8 @@ class LinkedInChannel:
             raise ChannelError("Missing required language variant")
         if not text.strip():
             raise ChannelError("LinkedIn text is empty")
+        if label:
+            text += "\n\n" + label
         suffix = self._suffix(item.id)
         if len(text) > self._limit or len(text) + len(suffix) > _MAX_LENGTH:
             raise ChannelError("Text exceeds the LinkedIn length limit")
@@ -87,7 +92,7 @@ class LinkedInChannel:
         payload: dict[str, object] | None = None,
     ) -> httpx.Response:
         headers = {"Authorization": f"Bearer {token}"}
-        if url == _POSTS:
+        if url in {_POSTS, _VIDEOS} or url.startswith(_VIDEOS + "/"):
             headers.update(
                 {
                     "LinkedIn-Version": self._version,
@@ -95,7 +100,9 @@ class LinkedInChannel:
                 }
             )
         transient: type[ChannelError] = (
-            UncertainPublication if method == "POST" else TransientChannelError
+            UncertainPublication
+            if method == "POST" and url == _POSTS
+            else TransientChannelError
         )
         try:
             response = self._client.request(
@@ -147,22 +154,27 @@ class LinkedInChannel:
         commentary = self._commentary(item, variants)
         token = self._token()
         author = self._author(token)
-        response = self._request(
-            "POST",
-            _POSTS,
-            self._same_token(token),
-            payload={
-                "author": author,
-                "commentary": commentary,
-                "visibility": "PUBLIC",
-                "distribution": {
-                    "feedDistribution": "MAIN_FEED",
-                    "targetEntities": [],
-                    "thirdPartyDistributionChannels": [],
-                },
-                "lifecycleState": "PUBLISHED",
-                "isReshareDisabledByAuthor": False,
+        return self._create_post(commentary, author, token)
+
+    def _create_post(
+        self, commentary: str, author: str, token: str, *, video: str | None = None
+    ) -> str:
+        payload: dict[str, object] = {
+            "author": author,
+            "commentary": commentary,
+            "visibility": "PUBLIC",
+            "distribution": {
+                "feedDistribution": "MAIN_FEED",
+                "targetEntities": [],
+                "thirdPartyDistributionChannels": [],
             },
+            "lifecycleState": "PUBLISHED",
+            "isReshareDisabledByAuthor": False,
+        }
+        if video is not None:
+            payload["content"] = {"media": {"id": video}}
+        response = self._request(
+            "POST", _POSTS, self._same_token(token), payload=payload
         )
         remote_id = response.headers.get("x-restli-id")
         if not isinstance(remote_id, str) or not remote_id:
@@ -170,7 +182,9 @@ class LinkedInChannel:
         return remote_id
 
     def find_existing(self, item_id: UUID) -> str | None:
-        token = self._token()
+        return self._find_existing(item_id, self._token())
+
+    def _find_existing(self, item_id: UUID, token: str) -> str | None:
         author = self._author(token)
         start = 0
         suffix = self._suffix(item_id)

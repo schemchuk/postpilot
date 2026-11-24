@@ -69,6 +69,15 @@ class OwnVideoStore:
         ).fetchone()
         return OwnVideo(*row) if row else None
 
+    def get_by_item(self, item_id: UUID) -> OwnVideo | None:
+        with self.conn.transaction():
+            row = self.conn.execute(
+                "SELECT id, item_id, chat_id, file_id, duration, ai_generated,"
+                " interview, status FROM own_videos WHERE item_id = %s",
+                (item_id,),
+            ).fetchone()
+        return OwnVideo(*row) if row else None
+
     def set_prompt(self, id: UUID, message_id: int) -> None:
         self.conn.execute(
             "UPDATE own_videos SET prompt_message_id = %s WHERE id = %s",

@@ -49,12 +49,16 @@ class Publisher:
         *,
         sleep: Callable[[float], None] = time.sleep,
         token_guard: Callable[[str], bool] | None = None,
+        own_video_channels: list[Channel] | None = None,
+        own_video_held_channels: tuple[str, ...] = (),
     ) -> None:
         self.repo = repo
         self.channels = channels
         self.stale_after = stale_after
         self.sleep = sleep
         self.token_guard = token_guard
+        self.own_video_channels = own_video_channels or []
+        self.own_video_held_channels = own_video_held_channels
 
     def publish_item(self, item_id: UUID) -> PublishReport:
         if not self.channels:
@@ -62,11 +66,12 @@ class Publisher:
         item = self.repo.get_item(item_id)
         if item is None:
             raise KeyError(item_id)
-        if item.source == "own_video":
-            # T21b/T21c: enable publication when own-video adapters are ready.
+        own_video = item.source == "own_video"
+        if own_video and not self.own_video_channels:
             return PublishReport(
                 {channel.name: ChannelResult("held") for channel in self.channels}
             )
+        video_adapters = {channel.name: channel for channel in self.own_video_channels}
         if item.state not in {
             ItemState.APPROVED,
             ItemState.FAILED,
@@ -96,14 +101,19 @@ class Publisher:
             for publication in self.repo.list_publications(item_id)
             if publication.status == PublicationStatus.PUBLISHED
         }
-        results = {
-            channel.name: (
-                ChannelResult("skipped")
-                if channel.name in published
-                else self._publish_channel(channel, item, variants)
-            )
-            for channel in self.channels
-        }
+        results = {}
+        for channel in self.channels:
+            name = channel.name
+            adapter = video_adapters.get(name) if own_video else channel
+            if adapter is None:
+                results[name] = ChannelResult("held")
+            elif name in published:
+                results[name] = ChannelResult("skipped")
+            else:
+                results[name] = self._publish_channel(adapter, item, variants)
+        if own_video:
+            for name in self.own_video_held_channels:
+                results.setdefault(name, ChannelResult("held"))
         for name, result in results.items():
             trace(
                 "publish",
@@ -203,8 +213,13 @@ class Publisher:
         if not isinstance(channel, RefChannel) and recover_only and claim.stale:
             return channel.find_existing(item.id)
 
-        def save_ref(ref: str) -> None:
-            self.repo.save_publication_ref(claim, ref)
+        ref = claim.remote_ref
+
+        def save_ref(new_ref: str) -> None:
+            nonlocal ref
+            self.repo.save_publication_ref(claim, new_ref)
+            if item.source == "own_video":
+                ref = new_ref
 
         recover = claim.recovered and not recover_only
         for attempt in range(3):
@@ -213,7 +228,7 @@ class Publisher:
                     return channel.publish_with_ref(
                         item,
                         variants,
-                        ref=claim.remote_ref,
+                        ref=ref,
                         claimed_at=claim.publication.remote_ref_claimed_at
                         or claim.publication.updated_at,
                         save_ref=save_ref,
@@ -223,6 +238,10 @@ class Publisher:
                     if existing is not None:
                         return existing
                 return channel.publish(item, variants)
+            except ChannelHeld:
+                if item.source == "own_video" and ref is not None:
+                    return None
+                raise
             except UncertainPublication:
                 raise
             except TransientChannelError as error:
