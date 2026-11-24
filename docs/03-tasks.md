@@ -151,9 +151,11 @@ tests for label/no label, skipped Reels, getFile failure; live: one S3 reel.
 
 **T21d** HeyGen avatar video on LinkedIn (Volodymyr asked 2026-11-24; needs an ADR 012/019 amendment
 first): reuse the T21b LinkedIn video upload for approved HeyGen renders (bytes from `video_renders`),
-LinkedIn DE and UA video posts instead of text-only posts once the render is approved, label line
-`KI-generierter Avatar / AI-generated avatar` always, text-only fallback when no render is approved.
-Accept: tests for upload from a render, label always present, fallback to text, no duplicate post;
+opt-in per item: the video preview gets a toggle button `Also on LinkedIn: no|yes` (default no, stored
+per item, Volodymyr's tap only); with yes, LinkedIn DE and UA get video posts with the approved render,
+label line `KI-generierter Avatar / AI-generated avatar` always; with no (default) or no approved render,
+LinkedIn stays text-only as today. Accept: tests for toggle default no, toggle on/off, upload from a
+render, label always present, text-only when off, no duplicate post;
 live: one HeyGen video post on LinkedIn.
 
 ## Order
