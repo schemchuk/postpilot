@@ -96,12 +96,18 @@ class TelegramApi:
         reply_markup: dict[str, Any] | None = None,
         *,
         parse_mode: str | None = None,
+        reply_to_message_id: int | None = None,
     ) -> int:
         payload: dict[str, object] = {"chat_id": chat_id, "text": text}
         if parse_mode is not None:
             payload["parse_mode"] = parse_mode
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
+        if reply_to_message_id is not None:
+            payload["reply_parameters"] = {
+                "message_id": reply_to_message_id,
+                "allow_sending_without_reply": True,
+            }
         result = self._request("sendMessage", **payload)
         if (
             isinstance(result, dict)
@@ -293,6 +299,20 @@ def approval_keyboard(
             ]
         ]
     }
+
+
+def send_callback_result(
+    api: TelegramApi, chat_id: object, message_id: object, text: str
+) -> None:
+    if type(chat_id) is not int:
+        return
+    try:
+        if type(message_id) is int:
+            api.send_message(chat_id, text, reply_to_message_id=message_id)
+        else:
+            api.send_message(chat_id, text)
+    except TelegramError:
+        logging.getLogger(__name__).warning("Telegram callback reply failed")
 
 
 class Notifier:

@@ -16,7 +16,7 @@ from postpilot.channels.base import (
 from postpilot.core.models import Item, PublicationStatus, Variant
 from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.store.repo import Claim, ItemRepo, LostPublicationClaim
-from postpilot.trace import error_fields, trace
+from postpilot.trace import describe_error, error_fields, trace
 
 type Outcome = Literal["published", "skipped", "failed", "pending", "held"]
 
@@ -34,11 +34,6 @@ class PublishReport:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "channels", MappingProxyType(dict(self.channels)))
-
-
-def _redact_error(error: Exception) -> str:
-    # Adapter exception messages can contain credentials or entire request bodies.
-    return f"Channel operation failed ({type(error).__name__})"[:200]
 
 
 class Publisher:
@@ -162,7 +157,7 @@ class Publisher:
         try:
             channel.validate(item, variants)
         except Exception as error:  # noqa: BLE001 - isolate adapter failures
-            validation_error = _redact_error(error)
+            validation_error = describe_error(error)
 
         try:
             claim = self.repo.claim_publication(
@@ -200,11 +195,11 @@ class Publisher:
             except LostPublicationClaim:
                 return ChannelResult("pending")
             except UncertainPublication as error:
-                return ChannelResult("pending", _redact_error(error))
+                return ChannelResult("pending", describe_error(error))
             except Exception as error:  # noqa: BLE001 - isolate adapter failures
                 if preserve_claim:
-                    return ChannelResult("pending", _redact_error(error))
-                validation_error = _redact_error(error)
+                    return ChannelResult("pending", describe_error(error))
+                validation_error = describe_error(error)
             else:
                 if remote_id is None:
                     return ChannelResult("pending")
@@ -227,6 +222,13 @@ class Publisher:
             self.repo.mark_failed(item.id, channel.name, validation_error, claim=claim)
         except LostPublicationClaim:
             return ChannelResult("pending")
+        trace(
+            "publish",
+            "failed",
+            item=item.id,
+            channel=channel.name,
+            reason=validation_error,
+        )
         return ChannelResult("failed", validation_error)
 
     def _send(
@@ -275,6 +277,7 @@ class Publisher:
                     channel=channel.name,
                     attempt=attempt + 1,
                     **error_fields(error),
+                    reason=describe_error(error),
                 )
                 if attempt == 2:
                     raise

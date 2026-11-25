@@ -107,9 +107,13 @@ def test_video_callback(action, user, ready, label):
     operation = store.approve if action == "vapprove" else store.reject
     assert operation.call_count == 1
     assert operation.call_args.args[:2] == (render_id, user)
-    api.answer_callback_query.assert_called_once_with(
-        "callback", None if ready else "Already handled"
-    )
+    api.answer_callback_query.assert_not_called()
+    if ready:
+        api.send_message.assert_not_called()
+    else:
+        api.send_message.assert_called_once_with(
+            123, "Already handled", reply_to_message_id=42
+        )
     if label:
         api.edit_message_caption.assert_called_once_with(123, 42, label)
     else:
@@ -135,7 +139,10 @@ def test_video_callback_requires_preview():
         }
     )
     store.approve.assert_not_called()
-    api.answer_callback_query.assert_called_once_with("callback", "Already handled")
+    api.answer_callback_query.assert_not_called()
+    api.send_message.assert_called_once_with(
+        123, "Already handled", reply_to_message_id=42
+    )
 
 
 @pytest.mark.parametrize(
@@ -145,8 +152,7 @@ def test_video_linkedin_toggle_callback(user, value):
     api = Mock(spec=telegram.TelegramApi)
     store = Mock(spec=VideoStore)
     store.toggle_linkedin.return_value = value
-    # Reply failures must not prevent the markup update after committing the flip.
-    api.answer_callback_query.side_effect = telegram.TelegramError
+    api.send_message.side_effect = telegram.TelegramError
     render_id = uuid4()
     reply_markup = telegram.video_preview_markup(render_id, not value)
     handler = ApprovalHandler(Mock(spec=ItemRepo), api, 123, video_store=store)
@@ -170,12 +176,14 @@ def test_video_linkedin_toggle_callback(user, value):
         assert not api.mock_calls
         return
     store.toggle_linkedin.assert_called_once_with(render_id)
-    api.answer_callback_query.assert_called_once_with(
-        "callback", "Already handled" if value is None else None
-    )
+    api.answer_callback_query.assert_not_called()
     if value is None:
+        api.send_message.assert_called_once_with(
+            123, "Already handled", reply_to_message_id=42
+        )
         api.edit_message_reply_markup.assert_not_called()
     else:
+        api.send_message.assert_not_called()
         api.edit_message_reply_markup.assert_called_once_with(
             123, 42, telegram.video_preview_markup(render_id, value)
         )
@@ -207,6 +215,10 @@ def test_video_linkedin_toggle_answers_invalid_preview(chat_id, message_id):
         }
     )
 
-    api.answer_callback_query.assert_called_once_with("callback", "Invalid preview")
+    api.answer_callback_query.assert_not_called()
+    if chat_id is None:
+        api.send_message.assert_not_called()
+    else:
+        api.send_message.assert_called_once_with(chat_id, "Invalid preview")
     api.edit_message_reply_markup.assert_not_called()
     store.toggle_linkedin.assert_not_called()

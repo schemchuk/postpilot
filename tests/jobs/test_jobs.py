@@ -774,7 +774,9 @@ def test_poll_processes_failed_retry_and_next_update(
 
     def publish(id):
         repo.resolve_failed_item.assert_called_once_with(id, ItemState.PUBLISHING, 11)
-        api.answer_callback_query.assert_called_once_with("retry-button", "Retrying")
+        api.send_message.assert_called_once_with(
+            settings.telegram_chat_id, "Retrying", reply_to_message_id=11
+        )
         return failure
 
     publisher.publish_item.side_effect = publish
@@ -784,11 +786,14 @@ def test_poll_processes_failed_retry_and_next_update(
     inbox.record_failure.assert_not_called()
     assert inbox.mark_processed.call_args_list == [call(41), call(42)]
     repo.resolve_failed_item.assert_called_with(next_item_id, ItemState.SKIPPED, 12)
-    api.answer_callback_query.assert_called_with("skip-button", "Skipped")
+    api.answer_callback_query.assert_not_called()
+    api.send_message.assert_called_with(
+        settings.telegram_chat_id, "Skipped", reply_to_message_id=12
+    )
     assert caplog.messages == [
         f"Channel publishing failed after Telegram retry (item {item_id})"
     ]
 
     publisher.publish_item.assert_called_once_with(item_id)
-    assert api.send_message.call_count == 1
-    assert api.send_message.call_args.args[1].endswith("\nlinkedin: rejected")
+    assert api.send_message.call_count == 3
+    assert api.send_message.call_args_list[1].args[1].endswith("\nlinkedin: rejected")

@@ -98,7 +98,12 @@ def test_check_tokens_validates_facebook_without_refresh(monkeypatch, settings, 
 
 def setup_publish(status):
     render = SimpleNamespace(
-        id=uuid4(), status=status, video=b"video", script="German script", duration=20
+        id=uuid4(),
+        item_id=uuid4(),
+        status=status,
+        video=b"video",
+        script="German script",
+        duration=20,
     )
     claim = Mock(
         remote_ref=None, remote_ref_claimed_at=None, updated_at=datetime.now(UTC)
@@ -128,17 +133,19 @@ def test_non_approved_render_never_published():
     facebook.publish_with_ref.assert_not_called()
 
 
-def test_channel_failure_is_redacted_and_does_not_block_others():
+def test_channel_failure_is_reported_and_does_not_block_others(capsys):
     store, renders, claim = setup_publish(VideoStatus.APPROVED)
     first, second = channel("first"), channel("second")
-    first.publish_with_ref.side_effect = ChannelError("secret information")
+    first.publish_with_ref.side_effect = ChannelError(
+        "Reels request rejected (HTTP 400)"
+    )
     notify = Mock()
     publish_one(store, renders, [first, second], lambda _: "token", notify)
     store.oldest_eligible.assert_called_once_with(
         {"first", "second"}, timedelta(minutes=15), retry=False
     )
     store.mark_failed.assert_called_once_with(
-        claim, "Channel operation failed (ChannelError)"
+        claim, "ChannelError: Reels request rejected (HTTP 400)"
     )
     store.mark_published.assert_called_once_with(claim, "remote")
     reel = second.publish_with_ref.call_args.args[0]
@@ -146,7 +153,21 @@ def test_channel_failure_is_redacted_and_does_not_block_others():
         reel.caption == "German script\n\nKI-generierter Avatar / AI-generated avatar"
     )
     assert reel.ai_generated is True
-    assert "secret information" not in str(notify.call_args_list)
+    assert notify.call_args_list[0].args == (
+        "first: " + store.mark_failed.call_args.args[1],
+    )
+    item_id = renders.get.return_value.item_id
+    failed_lines = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("trace publish failed")
+    ]
+    assert failed_lines == [
+        (
+            f"trace publish failed item={item_id} channel=first "
+            "reason=ChannelError:_Reels_request_rejected_(HTTP_400)"
+        )
+    ]
     assert notify.call_count == 2
     assert "https://www.facebook.com/reel/remote" in notify.call_args.args[0]
 
@@ -255,9 +276,7 @@ def test_configured_reels_channels_use_independent_claims_and_tokens(
             "claimed_at": claim.updated_at
         }
         if provider == "facebook" and fail_facebook:
-            store.mark_failed.assert_called_once_with(
-                claim, "Channel operation failed (ChannelError)"
-            )
+            store.mark_failed.assert_called_once_with(claim, "ChannelError:")
         else:
             assert (claim, "remote") in [
                 call.args for call in store.mark_published.call_args_list

@@ -28,6 +28,7 @@ from postpilot.notify.telegram import (
     Notifier,
     TelegramApi,
     TelegramError,
+    send_callback_result,
     video_preview_markup,
 )
 from postpilot.sources.github import GitHubClient, GitHubError
@@ -79,11 +80,13 @@ def _object(value: object) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _reply[**P](method: Callable[P, object], *args: P.args, **kwargs: P.kwargs) -> None:
+def _reply[**P](method: Callable[P, object], *args: P.args, **kwargs: P.kwargs) -> bool:
     try:
         method(*args, **kwargs)
     except TelegramError:
         _LOG.warning("Telegram callback reply failed")
+        return False
+    return True
 
 
 class ApprovalHandler:
@@ -375,15 +378,15 @@ class ApprovalHandler:
             if type(chat_id) is not int or type(message_id) is not int:
                 return
             if action == "retry" and self.on_retry is None:
-                _reply(self.api.answer_callback_query, callback_id, "Retry unavailable")
+                send_callback_result(self.api, chat_id, message_id, "Retry unavailable")
                 return
             state, label = _FAILURE_ACTIONS[action]
             try:
                 self.repo.resolve_failed_item(item_id, state, message_id)
             except (IllegalTransition, KeyError):
-                _reply(self.api.answer_callback_query, callback_id, "Already handled")
+                send_callback_result(self.api, chat_id, message_id, "Already handled")
                 return
-            _reply(self.api.answer_callback_query, callback_id, label)
+            send_callback_result(self.api, chat_id, message_id, label)
             _reply(
                 self.api.edit_message_reply_markup,
                 chat_id,
@@ -396,9 +399,7 @@ class ApprovalHandler:
         own = self.own_video
         if action in {"own:gen", "own:skip"}:
             if own and type(chat_id) is int and type(update_id) is int:
-                own.callback(
-                    update_id, chat_id, message_id, callback_id, action, item_id
-                )
+                own.callback(update_id, chat_id, message_id, action, item_id)
             return
         if action in {"eng:redraft", "eng:send"}:
             if type(chat_id) is int and chat_id == sender and type(message_id) is int:
@@ -407,7 +408,7 @@ class ApprovalHandler:
                     if action == "eng:send"
                     else self._redraft
                 )
-                handler(item_id, chat_id, message_id, callback_id)
+                handler(item_id, chat_id, message_id)
             return
         if action in _VIDEO_ACTIONS:
             store = self.video_store
@@ -419,21 +420,20 @@ class ApprovalHandler:
                 for row in keyboard
                 for button in row
             ):
-                _reply(self.api.answer_callback_query, callback_id, "Already handled")
+                send_callback_result(self.api, chat_id, message_id, "Already handled")
                 return
             if action == "vlinkedin":
                 if type(chat_id) is not int or type(message_id) is not int:
-                    _reply(
-                        self.api.answer_callback_query, callback_id, "Invalid preview"
+                    send_callback_result(
+                        self.api, chat_id, message_id, "Invalid preview"
                     )
                     return
                 linkedin = store.toggle_linkedin(item_id)
-                _reply(
-                    self.api.answer_callback_query,
-                    callback_id,
-                    "Already handled" if linkedin is None else None,
-                )
-                if linkedin is not None:
+                if linkedin is None:
+                    send_callback_result(
+                        self.api, chat_id, message_id, "Already handled"
+                    )
+                else:
                     _reply(
                         self.api.edit_message_reply_markup,
                         chat_id,
@@ -447,23 +447,20 @@ class ApprovalHandler:
                 if approve
                 else store.reject(item_id, sender)
             )
-            _reply(
-                self.api.answer_callback_query,
-                callback_id,
-                None if changed else "Already handled",
-            )
-            if changed and type(chat_id) is int and type(message_id) is int:
+            if not changed:
+                send_callback_result(self.api, chat_id, message_id, "Already handled")
+            elif type(chat_id) is int and type(message_id) is int:
                 label = "Video approved" if approve else "Video rejected"
                 _reply(self.api.edit_message_caption, chat_id, message_id, label)
             return
         item = self.repo.get_item(item_id)
         if item is None or item.state != _AWAITING:
-            _reply(self.api.answer_callback_query, callback_id, "Already handled")
+            send_callback_result(self.api, chat_id, message_id, "Already handled")
             return
 
         # Telegram may replay the callback that was in flight when the poll died.
         if action == "regen" and item_id in self.recovered_regenerations:
-            _reply(self.api.answer_callback_query, callback_id, "Already handled")
+            send_callback_result(self.api, chat_id, message_id, "Already handled")
             return
 
         if (
@@ -473,15 +470,13 @@ class ApprovalHandler:
             and type(chat_id) is int
             and type(update_id) is int
         ):
-            own.callback(update_id, chat_id, message_id, callback_id, action, item_id)
+            own.callback(update_id, chat_id, message_id, action, item_id)
             return
         if action == "regen" and (
             item.source in {"telegram", "own_video"} or self.on_regenerate is None
         ):
-            _reply(
-                self.api.answer_callback_query,
-                callback_id,
-                "Regeneration is unavailable",
+            send_callback_result(
+                self.api, chat_id, message_id, "Regeneration is unavailable"
             )
             return
 
@@ -496,7 +491,6 @@ class ApprovalHandler:
                 else "ua"
             )
             self.repo.bot_state.set_pending_edit(sender, item_id, lang)
-            _reply(self.api.answer_callback_query, callback_id)
             _reply(self.api.send_message, chat_id, f"Send the new {lang.upper()} text.")
             return
 
@@ -510,22 +504,19 @@ class ApprovalHandler:
             )
         except IllegalTransition:
             trace("approval", "already-handled", item=item_id, action=action)
-            _reply(self.api.answer_callback_query, callback_id, "Already handled")
+            send_callback_result(self.api, chat_id, message_id, "Already handled")
             return
         trace("approval", "transition", item=item_id, action=action, state=state)
 
-        _reply(self.api.answer_callback_query, callback_id)
         if type(chat_id) is int and type(message_id) is int:
             _reply(self.api.edit_message_text, chat_id, message_id, label)
         if action == "regen" and self.on_regenerate is not None:
             self.on_regenerate(item_id)
 
-    def _redraft(
-        self, id: UUID, chat_id: int, message_id: int, callback_id: str
-    ) -> None:
+    def _redraft(self, id: UUID, chat_id: int, message_id: int) -> None:
         store, drafter = self.engagement, self.drafter
         if store is None:
-            _reply(self.api.answer_callback_query, callback_id, "Redraft unavailable")
+            send_callback_result(self.api, chat_id, message_id, "Redraft unavailable")
             return
         try:
             comment = store.get(id)
@@ -536,25 +527,23 @@ class ApprovalHandler:
             or comment.kind != "comment"
             or comment.telegram_message_id != message_id
         ):
-            _reply(self.api.answer_callback_query, callback_id, "Comment unavailable")
+            send_callback_result(self.api, chat_id, message_id, "Comment unavailable")
             return
         if comment.reply_status in ("SENT", "SENDING"):
-            _reply(self.api.answer_callback_query, callback_id, "Reply already sent")
+            send_callback_result(self.api, chat_id, message_id, "Reply already sent")
             return
         if drafter is None or not comment.text:
-            _reply(self.api.answer_callback_query, callback_id, "Redraft unavailable")
+            send_callback_result(self.api, chat_id, message_id, "Redraft unavailable")
             return
         try:
             draft = drafter.redraft(comment.text, comment.reply_draft or "")
         except AIError:
             draft = None
         if not draft:
-            _reply(self.api.answer_callback_query, callback_id, "Redraft unavailable")
+            send_callback_result(self.api, chat_id, message_id, "Redraft unavailable")
             return
         if not self._save_engagement_draft(store, comment, draft, chat_id):
-            _reply(self.api.answer_callback_query, callback_id, "Reply already sent")
-            return
-        _reply(self.api.answer_callback_query, callback_id)
+            send_callback_result(self.api, chat_id, message_id, "Reply already sent")
 
     def _edit_engagement_reply(self, chat_id: int, message_id: int, text: str) -> bool:
         store = self.engagement
@@ -590,14 +579,14 @@ class ApprovalHandler:
 
     def _edit_engagement_message(
         self, chat_id: int, comment: EngagementEvent, sent_link: str | None = None
-    ) -> None:
+    ) -> bool:
         message_id = comment.telegram_message_id
         if message_id is None:
-            return
+            return False
         text, keyboard = comment_message(comment)
         if comment.reply_status == "SENT":
             text += f"\n\nSent: {escape(sent_link)}" if sent_link else "\n\nSent"
-        _reply(
+        return _reply(
             self.api.edit_message_text,
             chat_id,
             message_id,
@@ -606,9 +595,7 @@ class ApprovalHandler:
             reply_markup=keyboard,
         )
 
-    def _send_engagement_reply(
-        self, id: UUID, chat_id: int, message_id: int, callback_id: str
-    ) -> None:
+    def _send_engagement_reply(self, id: UUID, chat_id: int, message_id: int) -> None:
         store = self.engagement
         if store is None:
             return
@@ -624,7 +611,7 @@ class ApprovalHandler:
             claimed = store.claim_reply(id, datetime.now(UTC))
             if claimed is None:
                 current = store.get(id)
-                answer = (
+                answer: str | None = (
                     "Already sent"
                     if current and current.reply_status == "SENT"
                     else "Sending in progress"
@@ -633,11 +620,12 @@ class ApprovalHandler:
                 answer = self._publish_engagement_reply(store, claimed, chat_id)
         except Error:
             raise RuntimeError("Could not store engagement reply") from None
-        _reply(self.api.answer_callback_query, callback_id, answer)
+        if answer is not None:
+            send_callback_result(self.api, chat_id, message_id, answer)
 
     def _publish_engagement_reply(
         self, store: EngagementStore, comment: EngagementEvent, chat_id: int
-    ) -> str:
+    ) -> str | None:
         client = self.threads_reply_client() if self.threads_reply_client else None
         if client is None:
             store.mark_reply_failed(comment.id)
@@ -665,7 +653,7 @@ class ApprovalHandler:
 
         store.mark_reply_sent(comment.id, remote_id, datetime.now(UTC))
         link = client.permalink(remote_id) if remote_id else None
-        self._edit_engagement_message(
+        edited = self._edit_engagement_message(
             chat_id, replace(comment, reply_status="SENT"), link or comment.post_url
         )
-        return "Sent"
+        return None if edited else "Sent"

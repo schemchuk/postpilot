@@ -11,7 +11,7 @@ from postpilot.engagement.job import comment_message
 from postpilot.engagement.store import EngagementEvent, EngagementStore
 from postpilot.engagement.threads import ThreadsReplyClient, ThreadsReplyError
 from postpilot.notify.approval import ApprovalHandler
-from postpilot.notify.telegram import TelegramApi
+from postpilot.notify.telegram import TelegramApi, TelegramError
 
 NOW = datetime.now(UTC)
 POST = "https://www.threads.com/@reader/post/comment"
@@ -140,7 +140,20 @@ def test_send_persists_container_before_publish_and_edits_telegram(reply):
         parse_mode="HTML",
         reply_markup={"inline_keyboard": [[{"text": "Open post", "url": POST}]]},
     )
-    handler.api.answer_callback_query.assert_called_once_with("query", "Sent")
+    handler.api.answer_callback_query.assert_not_called()
+    handler.api.send_message.assert_not_called()
+
+
+def test_sent_reply_falls_back_to_chat_if_preview_edit_fails(reply):
+    handler, store, _, _, responses, press = reply
+    handler.api.edit_message_text.side_effect = TelegramError("edit failed")
+    responses += [ok(id="container"), ok(id="remote"), ok(permalink=LINK)]
+
+    press()
+
+    assert store.event.reply_status == "SENT"
+    handler.api.answer_callback_query.assert_not_called()
+    handler.api.send_message.assert_called_once_with(42, "Sent", reply_to_message_id=32)
 
 
 @pytest.mark.parametrize(
@@ -152,7 +165,8 @@ def test_duplicate_press_does_not_read_token_or_contact_threads(reply, status, a
     press()
     factory.assert_not_called()
     assert not requests
-    handler.api.answer_callback_query.assert_called_once_with("query", answer)
+    handler.api.send_message.assert_called_once_with(42, answer, reply_to_message_id=32)
+    handler.api.answer_callback_query.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -196,7 +210,10 @@ def test_definite_error_can_retry(reply):
     ]
     press()
     assert store.event.reply_status == "FAILED"
-    handler.api.answer_callback_query.assert_called_once_with("query", "Send failed")
+    handler.api.send_message.assert_called_once_with(
+        42, "Send failed", reply_to_message_id=32
+    )
+    handler.api.answer_callback_query.assert_not_called()
     handler.api.edit_message_text.assert_not_called()
     responses += [ok(status="FINISHED"), ok(id="remote"), ok(permalink=LINK)]
     press()
@@ -230,7 +247,8 @@ def test_publish_failure_classification(reply, failure, status, answer):
     responses += [ok(id="container"), failure]
     press()
     assert store.event.reply_status == status
-    handler.api.answer_callback_query.assert_called_once_with("query", answer)
+    handler.api.send_message.assert_called_once_with(42, answer, reply_to_message_id=32)
+    handler.api.answer_callback_query.assert_not_called()
     handler.api.edit_message_text.assert_not_called()
 
 
@@ -240,9 +258,10 @@ def test_missing_token_marks_failed_without_http(reply):
     press()
     assert not requests
     assert store.event.reply_status == "FAILED"
-    handler.api.answer_callback_query.assert_called_once_with(
-        "query", "Threads token unavailable"
+    handler.api.send_message.assert_called_once_with(
+        42, "Threads token unavailable", reply_to_message_id=32
     )
+    handler.api.answer_callback_query.assert_not_called()
 
 
 @pytest.mark.parametrize("sender,chat,id", [(99, 42, 32), (42, 99, 32), (42, 42, 99)])
@@ -322,9 +341,10 @@ def test_redraft_refused_after_claim(reply, status):
     press(action="redraft")
     handler.drafter.redraft.assert_not_called()
     store.set_reply_draft.assert_not_called()
-    handler.api.answer_callback_query.assert_called_once_with(
-        "query", "Reply already sent"
+    handler.api.send_message.assert_called_once_with(
+        42, "Reply already sent", reply_to_message_id=32
     )
+    handler.api.answer_callback_query.assert_not_called()
 
 
 def test_unavailable_container_status_keeps_claim_for_recovery(reply):
@@ -339,6 +359,7 @@ def test_unavailable_container_status_keeps_claim_for_recovery(reply):
     press()
     assert len(requests) == 1
     assert store.event.reply_status == "SENDING"
-    handler.api.answer_callback_query.assert_called_once_with(
-        "query", "Send uncertain, press again in 5 minutes"
+    handler.api.send_message.assert_called_once_with(
+        42, "Send uncertain, press again in 5 minutes", reply_to_message_id=32
     )
+    handler.api.answer_callback_query.assert_not_called()

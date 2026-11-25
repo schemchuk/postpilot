@@ -12,7 +12,6 @@ from postpilot.core.models import Item
 from postpilot.core.publisher import Publisher
 from postpilot.core.states import ItemState
 from postpilot.notify.approval import ApprovalHandler
-from postpilot.notify.telegram import TelegramError
 from postpilot.sources.own_video import OwnVideoInbox
 from postpilot.sources.telegram import TelegramInbox
 
@@ -48,6 +47,7 @@ def bot(repo):
         else:
             update["message"] = {**header, **body}
         handler.handle_update(update)
+        return header["message_id"]
 
     return api, model, event
 
@@ -90,8 +90,11 @@ def test_rejected_size_duplicate_and_skip(bot, conn, media):
     assert api.send_message.call_count == 3
     event(video=media, caption="/work")
     api.send_message.assert_called_with(12, "This video was already added.")
-    event(action=f"own:gen:{video_id}")
-    api.send_message.assert_called_with(12, "Add the interview text first.")
+    message_id = event(action=f"own:gen:{video_id}")
+    api.send_message.assert_called_with(
+        12, "Add the interview text first.", reply_to_message_id=message_id
+    )
+    api.answer_callback_query.assert_not_called()
     event(action=f"own:skip:{video_id}")
     event(text="Closed", reply_to_message={"message_id": prompt})
     assert video_row(conn, media)[2:] == ("", "skipped", None)
@@ -195,14 +198,11 @@ def test_generation_regeneration_and_approval(bot, conn, repo, media, monkeypatc
     channel.publish.assert_not_called()
 
 
-def test_generate_survives_expired_callback_query(bot, conn, media, monkeypatch):
-    # poll-telegram runs every few minutes, so Telegram may refuse the late
-    # answerCallbackQuery; the Generate press must still produce the draft.
+def test_generate_does_not_answer_callback_query(bot, conn, media, monkeypatch):
     api, model, event = bot
     event(video=media, caption="/work")
     _, prompt, *_ = video_row(conn, media)
     event(text="Interview", reply_to_message={"message_id": prompt})
-    api.answer_callback_query.side_effect = TelegramError("query is too old")
     model.complete.return_value = '{"de":"Text","ua":"Текст"}'
     monkeypatch.setattr(
         "postpilot.sources.own_video.humanize_pair",
@@ -210,4 +210,5 @@ def test_generate_survives_expired_callback_query(bot, conn, media, monkeypatch)
     )
     event(action=f"own:gen:{video_row(conn, media)[0]}")
     assert video_row(conn, media)[3] == "generated"
+    api.answer_callback_query.assert_not_called()
     assert "Own video · AI label: no" in api.send_message.call_args.args[1]

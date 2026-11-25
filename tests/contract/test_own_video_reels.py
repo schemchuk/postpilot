@@ -147,7 +147,10 @@ def test_telegram_failure_marks_publication_failed_without_meta(item, failure):
         report = Publisher(repo, [], own_video_channels=[channel]).publish_item(item.id)
     assert report.channels[channel.name].outcome == "failed"
     repo.mark_failed.assert_called_once_with(
-        item.id, channel.name, "Channel operation failed (ChannelError)", claim=claim
+        item.id,
+        channel.name,
+        "ChannelError: Telegram video retrieval failed",
+        claim=claim,
     )
     repo.save_publication_ref.assert_not_called()
 

@@ -10,7 +10,12 @@ from postpilot.ai.prompts import OWN_VIDEO_SYSTEM_PROMPT, interview_message
 from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
 from postpilot.core.models import Item
 from postpilot.core.states import IllegalTransition, ItemState
-from postpilot.notify.telegram import Notifier, TelegramApi, TelegramError
+from postpilot.notify.telegram import (
+    Notifier,
+    TelegramApi,
+    TelegramError,
+    send_callback_result,
+)
 from postpilot.store.own_videos import OwnVideo, OwnVideoStore
 from postpilot.store.repo import ItemRepo
 
@@ -61,7 +66,7 @@ class OwnVideoInbox:
                         (caption["text"] or "").strip(),
                     )
                     if video and video.interview:
-                        generated = self._generate(video)
+                        generated = self._generate(video, message.get("message_id"))
             elif command:
                 if self.store.claim_update(update_id):
                     self.api.send_message(
@@ -133,7 +138,6 @@ class OwnVideoInbox:
         update_id: int,
         chat: int,
         message_id: object,
-        callback_id: str,
         action: str,
         id: UUID,
     ) -> None:
@@ -146,16 +150,22 @@ class OwnVideoInbox:
                 or (action == "own:skip" and video.status != "collecting")
                 or not self.store.claim_update(update_id)
             ):
-                self._answer(callback_id, "Already handled")
+                send_callback_result(self.api, chat, message_id, "Already handled")
                 return
-            self._answer(callback_id)
             if action == "own:skip":
                 self.store.finish(video.id)
                 if type(message_id) is int:
-                    self.api.edit_message_text(chat, message_id, "Skipped")
+                    try:
+                        self.api.edit_message_text(chat, message_id, "Skipped")
+                    except TelegramError:
+                        _LOG.warning("Telegram callback reply failed")
+                else:
+                    send_callback_result(self.api, chat, message_id, "Skipped")
                 return
             generated = (
-                self._generate(video) if regen or video.item_id is None else None
+                self._generate(video, message_id)
+                if regen or video.item_id is None
+                else None
             )
         preview: Item | None
         if generated:
@@ -171,24 +181,18 @@ class OwnVideoInbox:
                         message_id,
                         "Regenerated" if generated else "Previous draft kept",
                     )
-            finally:
-                self._preview(video, preview, warnings)
+            except TelegramError:
+                _LOG.warning("Telegram callback reply failed")
+            self._preview(video, preview, warnings)
 
-    def _answer(self, callback_id: str, text: str | None = None) -> None:
-        # Polling every few minutes means the callback query may already have
-        # expired; the button press itself must still be handled.
-        try:
-            if text is None:
-                self.api.answer_callback_query(callback_id)
-            else:
-                self.api.answer_callback_query(callback_id, text)
-        except TelegramError:
-            _LOG.warning("Telegram callback reply failed")
-
-    def _generate(self, video: OwnVideo) -> tuple[Item, tuple[str, ...]] | None:
+    def _generate(
+        self, video: OwnVideo, message_id: object
+    ) -> tuple[Item, tuple[str, ...]] | None:
         chat = video.chat_id
         if not video.interview:
-            self.api.send_message(chat, "Add the interview text first.")
+            send_callback_result(
+                self.api, chat, message_id, "Add the interview text first."
+            )
             return None
         step = "AI"
         try:
@@ -241,11 +245,14 @@ class OwnVideoInbox:
                     self.store.finish(video.id, item_id)
                 return self.repo.transition(item_id, _AWAITING), warnings
         except IllegalTransition:
-            self.api.send_message(chat, "Already handled")
+            send_callback_result(self.api, chat, message_id, "Already handled")
             return None
         except Exception:  # noqa: BLE001 - roll back the attempt and report only the step
-            self.api.send_message(
-                chat, f"Generation failed ({step}), press Generate again."
+            send_callback_result(
+                self.api,
+                chat,
+                message_id,
+                f"Generation failed ({step}), press Generate again.",
             )
             return None
 

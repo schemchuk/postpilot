@@ -701,11 +701,8 @@ def test_regenerate_replaces_both_variants_and_redoes_tracking(regeneration, sta
     complete = model.complete
 
     def after_feedback(*args):
-        assert [method for method, _ in job.telegram_calls[:2]] == [
-            "answerCallbackQuery",
-            "editMessageText",
-        ]
-        assert job.telegram_calls[1][1]["text"] == "Regenerating"
+        assert job.telegram_calls[0][0] == "editMessageText"
+        assert job.telegram_calls[0][1]["text"] == "Regenerating"
         assert job.item.state == ItemState.DRAFT
         return complete(*args)
 
@@ -810,12 +807,14 @@ def test_poll_restores_interrupted_draft_before_processing_replayed_callback(
     job.item = replace(job.item, state=ItemState.DRAFT)
     job.weekly.list_interrupted.return_value = [job.row]
     poll(job)
-    alert, preview = job.messages
+    alert, preview, refusal = job.messages
+    assert refusal == "Already handled"
     assert alert == "Regeneration interrupted, previous draft kept"
     assert "Old German" in preview and preview.endswith(job.source)
     method, body = job.telegram_calls[-1]
-    assert method == "answerCallbackQuery"
-    assert body["text"] == "Already handled"
+    assert method == "sendMessage"
+    assert body["reply_parameters"]["message_id"] == 9
+    assert all(method != "answerCallbackQuery" for method, _ in job.telegram_calls)
     job.weekly.get_by_item.assert_not_called()
 
 

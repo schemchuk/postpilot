@@ -30,7 +30,9 @@ class FakeApi:
     def __init__(self):
         self.sent = []
 
-    def send_message(self, chat_id, text, reply_markup=None):
+    def send_message(
+        self, chat_id, text, reply_markup=None, *, reply_to_message_id=None
+    ):
         self.sent.append((chat_id, text, reply_markup))
         return len(self.sent)
 
@@ -146,9 +148,12 @@ def test_resolve_failed_item(repo, action, source):
     update = callback(action, item.id)
     handler.handle_update(update)
     handler.handle_update(update)
-    assert api.answer_callback_query.call_args_list == [
-        call("button", "Retrying" if action == "retry" else "Skipped"),
-        call("button", "Already handled"),
+    api.answer_callback_query.assert_not_called()
+    assert api.send_message.call_args_list == [
+        call(
+            CHAT, "Retrying" if action == "retry" else "Skipped", reply_to_message_id=11
+        ),
+        call(CHAT, "Already handled", reply_to_message_id=11),
     ]
     api.edit_message_reply_markup.assert_called_once_with(
         CHAT, 11, {"inline_keyboard": []}
@@ -194,7 +199,8 @@ def test_old_failure_button_cannot_act_on_a_later_failure(repo):
     handler.handle_update(callback("retry", item_id))
     handler.handle_update(callback("skipfail", item_id))
     assert repo.get_item(item_id).state == ItemState.FAILED
-    api.answer_callback_query.assert_called_with("button", "Already handled")
+    api.answer_callback_query.assert_not_called()
+    api.send_message.assert_called_with(CHAT, "Already handled", reply_to_message_id=11)
     retry.assert_called_once_with(item_id)
 
     new_message = callback("skipfail", item_id)

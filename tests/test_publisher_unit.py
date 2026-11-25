@@ -1,19 +1,20 @@
 from datetime import UTC, datetime, timedelta
-from unittest.mock import create_autospec
+from unittest.mock import Mock, create_autospec
 from uuid import uuid4
 
 import pytest
 
+from postpilot.channels.base import ChannelError
 from postpilot.channels.fake import FakeChannel, SimulatedCrash
 from postpilot.core.models import Item, Publication, PublicationStatus, Variant
 from postpilot.core.publisher import (
     ChannelResult,
     Publisher,
     PublishReport,
-    _redact_error,
 )
 from postpilot.core.states import ItemState
 from postpilot.store.repo import Claim, ItemRepo
+from postpilot.trace import set_secrets
 
 
 def test_report_keeps_a_snapshot_of_channel_results() -> None:
@@ -32,16 +33,6 @@ def test_report_keeps_a_snapshot_of_channel_results() -> None:
         "third": ChannelResult("skipped"),
         "fourth": ChannelResult("pending"),
     }
-
-
-def test_error_does_not_expose_adapter_message() -> None:
-    error = ValueError("Authorization: Bearer secret-token")
-    assert _redact_error(error) == "Channel operation failed (ValueError)"
-
-
-def test_error_text_is_capped_at_200_characters() -> None:
-    long_exception = type("LongError" * 40, (Exception,), {})
-    assert len(_redact_error(long_exception())) == 200
 
 
 def test_publisher_recovers_a_send_after_a_crash_without_sending_again() -> None:
@@ -152,7 +143,10 @@ def test_publisher_traces_claim_retry_and_result_without_text(capsys) -> None:
     assert events == ["item", "claim", "transient", "remote", "channel", "finished"]
     # Fake remote ids are UUID strings, which the token-shape redaction hides.
     assert "channel=fake remote_id=***" in out
-    assert "attempt=1 error=TransientChannelError" in out
+    assert (
+        "attempt=1 error=TransientChannelError "
+        "reason=TransientChannelError:_Transient_fake_channel_failure"
+    ) in out
     assert "Beitragstext" not in out
 
 
@@ -264,3 +258,40 @@ def test_ref_adapter_waiting_for_video_reports_pending():
     }
     repo.mark_published.assert_not_called()
     repo.mark_failed.assert_not_called()
+
+
+def test_publisher_stores_and_traces_one_sanitized_failure(capsys):
+    now = datetime.now(UTC)
+    item = Item(uuid4(), "github", ItemState.PUBLISHING, now, now, 1, now)
+    publication = Publication(
+        item.id, "fake", PublicationStatus.PUBLISHING, None, None, now
+    )
+    claim = Claim(publication, recovered=False)
+    repo = create_autospec(ItemRepo, instance=True)
+    repo.get_item.return_value = item
+    repo.get_variants.return_value = [Variant(item.id, "de", "Ein Beitrag")]
+    repo.list_publications.return_value = [publication]
+    repo.claim_publication.return_value = claim
+    channel = create_autospec(FakeChannel("fake"), instance=True)
+    channel.name = "fake"
+    description = (
+        "Instagram request rejected while publishing the approved video (HTTP 400)"
+    )
+    secret = "example-sensitive-value"
+    channel.publish = Mock(side_effect=ChannelError(f"{description} {secret}"))
+    set_secrets([secret])
+    try:
+        report = Publisher(repo, [channel]).publish_item(item.id)
+    finally:
+        set_secrets(())
+
+    reason = f"ChannelError: {description} ***"
+    assert report.channels["fake"] == ChannelResult("failed", reason)
+    repo.mark_failed.assert_called_once_with(item.id, "fake", reason, claim=claim)
+    out = capsys.readouterr().out
+    assert secret not in out
+    assert [
+        line for line in out.splitlines() if line.startswith("trace publish failed")
+    ] == [
+        f"trace publish failed item={item.id} channel=fake reason={reason.replace(' ', '_')}"
+    ]
