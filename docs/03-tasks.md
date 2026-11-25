@@ -161,6 +161,15 @@ approve/reject and from another user, upload from a render, label always present
 rerun reuses the stored URN (no duplicate post), marker distinct from the text post;
 live: one HeyGen video post on LinkedIn.
 
+**T22 Pause UA LinkedIn (ADR 020).** Owner: Codex. Reviewer: Claude Code. Must be merged before the
+publication on Fri 2026-11-27 09:00 UTC. New `channels/paused.py` with `PAUSED_CHANNELS`; `build_channels`
+skips paused names; `_TEXT_TARGETS` and the publish-reels LinkedIn video channels drop paused names (own
+videos are not held); Telegram previews (text, own video, HeyGen toggle) list only active channels and mark
+the UA text `UA (not published: LinkedIn UA paused)`. Accept: tests that an approved S1/S2 item publishes
+only `linkedin` + Threads and reaches PUBLISHED, an S3 item is not held on `linkedin-ua`, a render with
+`Also on LinkedIn: yes` publishes only `linkedin-video`, an item with an old FAILED `linkedin-ua` row is not
+retried, preview text; no workflow change; live: part 3 of handmake on 2026-11-27 appears on LinkedIn DE only.
+
 ## Order
-T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18.
+T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22.
 First useful vertical slice after T11: Telegram text to approval to LinkedIn.
