@@ -199,6 +199,7 @@ or stale press -> `Already handled`. No migration, no workflow change. Accept: t
 (channels, errors cut to 300 chars, sent once per FAILED), retry publishes only failed channels and reaches
 PUBLISHED, own video retry leaves Reels for publish-reels, second press, skip, Telegram send failure does not
 fail the job; live: one forced or real failure retried from Telegram.
+T24a DONE 2026-11-25 (PR #52).
 **T24b** Logs and callback answers: when a channel fails, the job log line names item, channel and the
 sanitized error text (not only `ChannelError`); the Reels alert uses the same text; handlers stop calling
 `answerCallbackQuery` for inbox updates the receiver already answered (ADR 021 decision 2), user-facing
