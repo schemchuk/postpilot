@@ -171,6 +171,24 @@ only `linkedin` + Threads and reaches PUBLISHED, an S3 item is not held on `link
 retried, preview text; no workflow change; live: part 3 of handmake on 2026-11-27 appears on LinkedIn DE only.
 T22 DONE 2026-11-25 (PR #48).
 
+**T23 Telegram webhook inbox + soft S3 humanizer (ADR 021).** Owner: Codex. Reviewer: Claude Code.
+Found in the live run of beekeeper reel 002 (2026-11-25): button presses expire before the 5-minute poll,
+and the humanizer rejects Volodymyr's own interview wording.
+**T23a** Soft humanizer gate for S3 (ADR 021 decision 5), no infra change, first because it unblocks reel 002:
+reviewer prompt treats the interview as the author's wording and keeps `unsupported_facts` to unsupported
+claims only; for S3, after 3 rounds with only the AI review failing, keep the lowest-score candidate and add
+`Humanizer: not passed (score N), check the text` to the preview; hard rule failures still fail. S1 unchanged.
+Accept: tests for S3 soft pass (AI review fails 3x, rules pass -> item + warning), S3 hard rule failure
+(no item), S1 still strict, best-candidate choice; live: reel 002 reaches the preview.
+**T23b** Webhook receiver + inbox (ADR 021 decisions 1-4): migration `telegram_inbox`; receiver function on
+the chosen host with secret check, allowed-user filter, insert, immediate `answerCallbackQuery`, dispatch;
+poll-telegram drains the inbox instead of `getUpdates` (pre-check removed), 7-day purge; runbook steps for
+`setWebhook`/`deleteWebhook` and the receiver's secrets; cron-job.org poll-telegram job to hourly.
+Touches a workflow and secrets: Volodymyr's explicit OK before merge. Accept: tests for wrong secret (401),
+foreign user (nothing stored), duplicate update_id, DB failure -> 500, callback answered, dispatch failure
+still 200, inbox drained in order, failed row retried, processed rows purged after 7 days; live: three
+button presses in a row each answered within seconds and handled by the next run.
+
 ## Order
-T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22.
+T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22 -> T23a -> T23b.
 First useful vertical slice after T11: Telegram text to approval to LinkedIn.
