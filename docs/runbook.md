@@ -2,7 +2,7 @@
 
 | Workflow | UTC schedule | Manual dispatch | Purpose |
 | --- | --- | --- | --- |
-| Poll Telegram | Every five minutes | `gh workflow run poll-telegram.yml` | Process approvals and renewals, retry held publications after renewal, and save the Telegram offset. |
+| Poll Telegram | Webhook dispatch and hourly at :00 | `gh workflow run poll-telegram.yml` | Drain the Telegram inbox, process approvals and renewals, and retry held publications after renewal. |
 | Check tokens | Daily at 07:00 | `gh workflow run check-tokens.yml` | Check or refresh tokens and send expiry alerts and renewal prompts. |
 | Publish due | Friday at 09:00 | `gh workflow run publish-due.yml` | Publish approved items and resume unfinished publications when channels are configured. |
 
@@ -203,6 +203,61 @@ Generation sees up to 20 commit messages and the count, which also appears in th
   in the same transaction that ends the active series (last part published, skipped by the model, or
   `/series_stop`). `/series` shows it; `/series_next_cancel` removes it.
 
+## Telegram webhook (ADR 021)
+
+1. Import this repository as a Vercel project with `main` as the production branch and the repository
+   root as the project root. The WSGI entry point is configured in `pyproject.toml`. The webhook URL is
+   the root path of the production deployment, for example `https://<production-domain>/`.
+   Telegram must be able to POST to that URL without Vercel authentication.
+2. Set these Vercel environment variables for **Production** and deploy.
+
+   | Variable | Value |
+   |---|---|
+   | `TELEGRAM_BOT_TOKEN` | Approval bot token |
+   | `TELEGRAM_WEBHOOK_SECRET` | Random Telegram webhook secret, for example from `openssl rand -hex 32` |
+   | `DATABASE_URL` | Postgres connection URL for the Actions database |
+   | `TELEGRAM_CHAT_ID` | Allowed user's numeric private chat ID |
+   | `GITHUB_DISPATCH_TOKEN` | Fine-grained PAT scoped to `postpilot` with Actions read/write |
+   | `GITHUB_REPOSITORY` | Optional `owner/repo`, defaults to `schemchuk/postpilot` |
+
+3. Dispatch `gh workflow run poll-telegram.yml` on the updated `main` and wait for success so the inbox
+   migration is applied before registering the webhook. Edit the cron-job.org `poll-telegram` job
+   (8905864) to run hourly at minute 00 UTC.
+4. From the repository root, substitute the production domain below and run the commands. Keep the
+   bot token and webhook secret as unquoted values in the local gitignored `.env`.
+   The commands pass curl configuration on stdin to keep credentials out of curl's arguments.
+
+   ```sh
+   webhook_url='https://<production-domain>/'
+   {
+     printf 'url = "https://api.telegram.org/bot%s/setWebhook"\n' \
+       "$(grep '^TELEGRAM_BOT_TOKEN=' .env | cut -d= -f2-)"
+     printf 'data-urlencode = "url=%s"\n' "$webhook_url"
+     printf 'data-urlencode = "secret_token=%s"\n' \
+       "$(grep '^TELEGRAM_WEBHOOK_SECRET=' .env | cut -d= -f2-)"
+   } | curl --silent --show-error --fail --config - \
+     --data-urlencode 'allowed_updates=["message","callback_query"]'
+
+   printf 'url = "https://api.telegram.org/bot%s/getWebhookInfo"\n' \
+     "$(grep '^TELEGRAM_BOT_TOKEN=' .env | cut -d= -f2-)" |
+     curl --silent --show-error --fail --config -
+   ```
+
+   Check that `ok` is true, `result.url` matches the production URL, and `allowed_updates` lists
+   `message` and `callback_query`. Press three approval buttons and verify each receives
+   `Received, working on it` and is handled by the next run.
+
+For rollback, delete the webhook while retaining Telegram's pending updates.
+
+```sh
+printf 'url = "https://api.telegram.org/bot%s/deleteWebhook"\n' \
+  "$(grep '^TELEGRAM_BOT_TOKEN=' .env | cut -d= -f2-)" |
+  curl --silent --show-error --fail --config - --data 'drop_pending_updates=false'
+```
+
+Run the inbox consumer on `main` until pending inbox rows are handled. Revert T23b to restore
+`getUpdates`, then return the cron-job.org job to every five minutes.
+
 ## External schedule trigger (cron-job.org)
 
 GitHub `schedule` is unreliable for this repository (ADR 017), so cron-job.org dispatches the
@@ -214,7 +269,7 @@ POST, body `{"ref":"main"}`, headers `Authorization: Bearer <PAT>`,
 
 | Workflow file | Schedule (UTC unless specified) |
 |---|---|
-| poll-telegram.yml | every 5 minutes (needs the DB-free fast path, T19a) |
+| poll-telegram.yml | hourly at :00 (`0 * * * *`) |
 | poll-engagement.yml | every 30 minutes |
 | publish-reels.yml | hourly at :00 (`0 * * * *`) |
 | check-tokens.yml | daily 07:00 |
@@ -232,16 +287,15 @@ poll-engagement 8905882, publish-reels 8906005, check-tokens 8906007, snapshot-t
 publish-due 8906013, render-video 8906015.
 
 Keep the intervals: the Neon free plan has 100 CU-hours a month and every database run keeps the
-compute awake ~6 minutes (ADR 017 decision 5). `poll-telegram` skips the database when Telegram has no
-pending update (log line `poll-telegram: no pending updates, database not opened`), except in the first
-5 minutes of each UTC hour. Check Neon usage in the Neon console (Billing / Usage).
+compute awake ~6 minutes (ADR 017 decision 5). Each `poll-telegram` run opens the database
+to check the inbox and perform scheduled duties. Check Neon usage in the Neon console (Billing / Usage).
 
 PAT `postpilot-cron-dispatch`: fine-grained, resource owner `schemchuk`, only repository `postpilot`,
 Repository permissions Actions: Read and write, created 2026-11-20 without an expiry date (cannot be
 changed afterwards; regenerate with an expiry if wanted). A 403 from GitHub means a missing
 `User-Agent` header or a missing Actions permission. It is stored only in cron-job.org. Renewal: create a new PAT
 the same way, replace the header in every cron-job.org job, delete the old PAT. Check with
-`gh run list --workflow poll-telegram.yml -L 5` (event `workflow_dispatch` every ~5 minutes).
+`gh run list --workflow poll-telegram.yml -L 5` (hourly dispatches and dispatches from the webhook).
 
 ## LinkedIn profile advisor
 

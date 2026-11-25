@@ -1,0 +1,6 @@
+tests/
+docs/
+site/
+scripts/
+.github/
+.env

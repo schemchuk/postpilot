@@ -1,4 +1,3 @@
-import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -32,15 +31,8 @@ def settings():
 
 class State:
     def __init__(self):
-        self.offset = 0
         self.sent = set()
         self.nonces = set()
-
-    def get_offset(self):
-        return self.offset
-
-    def set_offset(self, offset):
-        self.offset = offset
 
     def send_token_alert_once(self, provider, day, send):
         self._send_once(("alert", provider, day), send)
@@ -86,6 +78,13 @@ def api(monkeypatch):
 
 
 @pytest.fixture
+def inbox(monkeypatch):
+    inbox = Mock()
+    monkeypatch.setattr(tasks, "UpdateInbox", Mock(return_value=inbox))
+    return inbox
+
+
+@pytest.fixture
 def record_weekly(monkeypatch):
     record = Mock()
     monkeypatch.setattr(tasks, "_record_weekly_publications", record)
@@ -108,46 +107,6 @@ def test_publisher_rejects_no_channels_before_reading_item(repo):
     assert repo.mock_calls == []
 
 
-@pytest.mark.parametrize("confirm_fails", [False, True])
-def test_poll_telegram_confirms_saved_offset(
-    settings, repo, monkeypatch, caplog, confirm_fails
-):
-    processed = {"update_id": 41}
-    pending = {"update_id": 42}
-    payloads = []
-    handler = Mock(advice_chat_id=None)
-    monkeypatch.setattr(tasks, "ApprovalHandler", Mock(return_value=handler))
-
-    def respond(request):
-        assert request.url.path.endswith("/getUpdates")
-        payload = json.loads(request.content)
-        payloads.append(payload)
-        if payload["offset"] == 0:
-            return httpx.Response(200, json={"ok": True, "result": [processed]})
-        assert repo.bot_state.get_offset() == 42
-        if confirm_fails:
-            raise httpx.ConnectError("private payload", request=request)
-        return httpx.Response(200, json={"ok": True, "result": [pending]})
-
-    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        monkeypatch.setattr(httpx, "post", client.post)
-        tasks.poll_telegram(settings, None)
-
-    assert payloads == [
-        {"offset": 0, "timeout": 0},
-        {"offset": 42, "timeout": 0, "limit": 1},
-    ]
-    handler.handle_update.assert_called_once_with(processed)
-    assert repo.bot_state.get_offset() == 42
-    assert repo.list_approved_item_ids.call_args_list == [
-        call(source="telegram"),
-        call(source="own_video"),
-    ]
-    assert caplog.messages == (
-        ["Telegram update confirmation failed (TelegramError)"] if confirm_fails else []
-    )
-
-
 def test_check_tokens_deduplicates_daily_alert_and_renewal(
     settings, repo, api, monkeypatch
 ):
@@ -167,7 +126,7 @@ def test_check_tokens_deduplicates_daily_alert_and_renewal(
 
 
 def test_renewal_releases_held_items_with_current_token(
-    settings, repo, api, monkeypatch
+    settings, repo, inbox, api, monkeypatch
 ):
     now = datetime.now(UTC)
     item_id = uuid4()
@@ -195,7 +154,7 @@ def test_renewal_releases_held_items_with_current_token(
     state = make_state(
         settings.token_encryption_key.encode(), "linkedin", now, store=repo.bot_state
     )
-    api.get_updates.return_value = [
+    updates = [
         {
             "update_id": 19,
             "message": {
@@ -206,6 +165,7 @@ def test_renewal_releases_held_items_with_current_token(
             },
         }
     ]
+    inbox.pending.return_value = [(update["update_id"], update) for update in updates]
     tasks.poll_telegram(settings, None)
     manager.complete_renewal.assert_called_once_with("test-code")
     publisher.publish_item.assert_called_once_with(item_id)
@@ -215,7 +175,7 @@ def test_renewal_releases_held_items_with_current_token(
     assert not guard("linkedin")
     store.get.return_value = None
     assert not guard("linkedin")
-    assert repo.bot_state.get_offset() == 20
+    inbox.mark_processed.assert_called_once_with(19)
 
 
 def test_publish_due_processes_unfinished_and_approved_items(
@@ -238,8 +198,8 @@ def test_publish_due_processes_unfinished_and_approved_items(
 
 @pytest.mark.parametrize("source", ["telegram", "own_video"])
 @pytest.mark.parametrize("outcome", ["published", "failed"])
-def test_poll_publishes_immediate_approval_after_saving_offset(
-    settings, repo, api, monkeypatch, outcome, source
+def test_poll_publishes_immediate_approval_after_marking_update_processed(
+    settings, repo, inbox, api, monkeypatch, outcome, source
 ):
     approved_id, github_id = uuid4(), uuid4()
     repo.get_item.return_value = SimpleNamespace(
@@ -253,7 +213,7 @@ def test_poll_publishes_immediate_approval_after_saving_offset(
 
     approved_source = source
     repo.list_approved_item_ids.side_effect = list_approved
-    api.get_updates.return_value = [
+    updates = [
         {
             "update_id": 41,
             "callback_query": {
@@ -264,9 +224,11 @@ def test_poll_publishes_immediate_approval_after_saving_offset(
         }
     ]
 
+    inbox.pending.return_value = [(update["update_id"], update) for update in updates]
+
     def publish(item_id):
         assert item_id == approved_id
-        assert repo.bot_state.get_offset() == 42
+        inbox.mark_processed.assert_called_once_with(41)
         repo.transition.assert_called_once_with(
             approved_id,
             tasks.ItemState.APPROVED,
@@ -291,7 +253,7 @@ def test_poll_publishes_immediate_approval_after_saving_offset(
 
 @pytest.mark.parametrize("key", [None, "test-api-key"])
 def test_poll_only_creates_translation_client_with_key(
-    settings, repo, api, monkeypatch, key
+    settings, repo, api, inbox, monkeypatch, key
 ):
     read_token = Mock()
     monkeypatch.setattr(tasks, "_read_token", read_token)
@@ -301,7 +263,7 @@ def test_poll_only_creates_translation_client_with_key(
     client = Mock()
     client.return_value.complete.return_value = "Mein Text"
     monkeypatch.setattr(tasks, "ClaudeClient", client)
-    api.get_updates.return_value = [
+    updates = [
         {
             "update_id": 50,
             "message": {
@@ -312,6 +274,7 @@ def test_poll_only_creates_translation_client_with_key(
         }
     ]
 
+    inbox.pending.return_value = [(update["update_id"], update) for update in updates]
     tasks.poll_telegram(settings, None)
 
     read_token.assert_not_called()
@@ -583,7 +546,7 @@ def test_poll_engagement_runs_github_without_drafter_or_token(settings, monkeypa
     "mode", ["ok", "missing", "no-key", "github-error", "ai-error", "upload-error"]
 )
 def test_poll_advice_after_approval_and_publish(
-    settings, repo, api, monkeypatch, caplog, mode
+    settings, repo, api, inbox, monkeypatch, caplog, mode
 ):
     from postpilot.notify.telegram import TelegramError
 
@@ -612,7 +575,7 @@ def test_poll_advice_after_approval_and_publish(
 
     chat = {"id": settings.telegram_chat_id}
     advice = {"from": chat, "chat": chat, "text": "/advise@ExampleBot"}
-    api.get_updates.return_value = [
+    updates = [
         {"update_id": 20, "message": advice},
         {"update_id": 21, "message": advice},
         {
@@ -625,12 +588,13 @@ def test_poll_advice_after_approval_and_publish(
             },
         },
     ]
+    inbox.pending.return_value = [(update["update_id"], update) for update in updates]
     github_calls = []
     model_calls = []
 
     def respond(request):
         publisher.publish_item.assert_called_once_with(item_id)
-        assert repo.bot_state.get_offset() == 23
+        assert inbox.mark_processed.call_args_list == [call(20), call(21), call(22)]
         assert request.url.path == "/users/portfolio-owner/repos"
         assert request.headers["Authorization"] == "Bearer fake-github-key"
         github_calls.append(request.url.path)

@@ -48,7 +48,7 @@ from postpilot.engagement.threads import ThreadsEngagementClient, ThreadsReplyCl
 from postpilot.links.shortio import ShortioClient, tracked_link
 from postpilot.links.store import LinkStore
 from postpilot.notify.approval import ApprovalHandler
-from postpilot.notify.poller import poll_once
+from postpilot.notify.poller import drain_inbox
 from postpilot.notify.renewal import RenewalHandler
 from postpilot.notify.telegram import Notifier, TelegramApi, TelegramError
 from postpilot.sources.github import (
@@ -64,6 +64,7 @@ from postpilot.stats import StatsStore
 from postpilot.store.bot_state import BotState
 from postpilot.store.own_videos import OwnVideo, OwnVideoStore
 from postpilot.store.repo import ItemRepo
+from postpilot.store.update_inbox import UpdateInbox
 from postpilot.store.weekly import WeeklyDraft, WeeklyStore
 from postpilot.tokens import service
 from postpilot.tokens.base import TokenManager, days_left
@@ -346,7 +347,7 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
             threads_reply_client=threads_reply_client,
             drafter=ReplyDrafter(model) if model is not None else None,
         )
-        poll_once(api, handler, repo.bot_state, raise_errors=True)
+        drain_inbox(UpdateInbox(conn), handler, raise_errors=True)
 
         try:
             item_ids = repo.list_approved_item_ids(source="telegram")

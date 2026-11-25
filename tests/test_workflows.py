@@ -8,7 +8,7 @@ WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 SCHEDULES = {
     "draft-weekly": "0 17 * * 3",
     "poll-engagement": "*/10 * * * *",
-    "poll-telegram": "*/5 * * * *",
+    "poll-telegram": "0 * * * *",
     "check-tokens": "0 7 * * *",
     "snapshot-traffic": "30 7 * * *",
     "publish-due": "0 9 * * 5",

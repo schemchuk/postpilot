@@ -10,3 +10,7 @@ venv/
 .remember/
 uv.lock
 *.egg-info/
+
+# Vercel CLI project link
+.vercel/
+.env.local
