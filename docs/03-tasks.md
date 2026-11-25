@@ -189,6 +189,7 @@ Touches a workflow and secrets: Volodymyr's explicit OK before merge. Accept: te
 foreign user (nothing stored), duplicate update_id, DB failure -> 500, callback answered, dispatch failure
 still 200, inbox drained in order, failed row retried, processed rows purged after 7 days; live: three
 button presses in a row each answered within seconds and handled by the next run.
+T23b DONE 2026-11-25 (PR #51).
 
 ## Order
 T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22 -> T23a -> T23b.
