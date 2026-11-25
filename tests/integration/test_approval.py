@@ -5,7 +5,6 @@ import test_store
 
 from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.notify.approval import ApprovalHandler
-from postpilot.notify.poller import poll_once
 
 pytestmark = [
     pytest.mark.integration,
@@ -26,8 +25,6 @@ repo = test_store.repo
 class FakeApi:
     def __init__(self):
         self.sent = []
-        self.updates = []
-        self.offsets = []
 
     def send_message(self, chat_id, text, reply_markup=None):
         self.sent.append((chat_id, text, reply_markup))
@@ -38,10 +35,6 @@ class FakeApi:
 
     def edit_message_text(self, chat_id, message_id, text):
         pass
-
-    def get_updates(self, offset, timeout=0, *, limit=None):
-        self.offsets.append(offset)
-        return self.updates
 
 
 def awaiting(repo, *languages):
@@ -119,29 +112,3 @@ def test_edit_refused_after_approval(repo):
     assert repo.bot_state.take_pending_edit(USER) is None
     assert repo.get_variants(item_id)[0].text == "Original"
     assert len(api.sent) == 1
-
-
-def test_offset_persisted_after_batch_even_if_one_handler_fails(repo, caplog):
-    api = FakeApi()
-    state = repo.bot_state
-    seen = []
-    initial_offset = state.get_offset()
-    item_id = awaiting(repo, "ua")
-
-    def regenerate(item_id):
-        seen.append((item_id, state.get_offset()))
-        raise RuntimeError("private payload")
-
-    handler = ApprovalHandler(repo, api, USER, on_regenerate=regenerate)
-    next_item = awaiting(repo, "ua")
-    api.updates = [
-        {"update_id": 51, **callback("regen", item_id)},
-        {"update_id": 52, **callback("approve", next_item)},
-    ]
-    poll_once(api, handler, state)
-    assert api.offsets == [initial_offset, 53]
-    assert seen == [(item_id, initial_offset)]
-    assert repo.get_item(next_item).state == ItemState.APPROVED
-    assert state.get_offset() == 53
-    assert "RuntimeError" in caplog.text
-    assert "private payload" not in caplog.text

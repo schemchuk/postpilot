@@ -10,6 +10,7 @@ from postpilot.channels.fake import FakeChannel
 from postpilot.config import LinkedInSettings, Settings
 from postpilot.core.states import ItemState
 from postpilot.jobs import tasks
+from postpilot.store.update_inbox import UpdateInbox
 from postpilot.tokens.crypto import TokenCipher
 from postpilot.tokens.oauth_state import make_state
 from postpilot.tokens.store import TokenStore
@@ -27,7 +28,7 @@ def reset_job_state(conn):
         conn.execute(
             "TRUNCATE items, variants, publications, pending_edits, bot_state, tokens, "
             "inbox_updates, video_renders, video_publications, short_links, link_clicks, "
-            "weekly_drafts, own_videos, own_video_updates"
+            "weekly_drafts, own_videos, own_video_updates, telegram_inbox"
         )
 
 
@@ -57,11 +58,12 @@ def test_empty_channels_leave_items_untouched(conn, repo, approved_item, setting
     assert repo.list_publications(approved_item.id) == []
 
 
-def test_poll_saves_offset(conn, repo, settings, api):
-    update_id = repo.bot_state.get_offset() + 10
-    api.get_updates.return_value = [{"update_id": update_id}]
+def test_poll_marks_inbox_update_processed(conn, settings, api):
+    inbox = UpdateInbox(conn)
+    assert inbox.insert({"update_id": 10})
     tasks.poll_telegram(settings, conn)
-    assert repo.bot_state.get_offset() == update_id + 1
+    assert inbox.pending() == []
+    api.get_updates.assert_not_called()
 
 
 def test_check_tokens_deduplicates_prompts_in_postgres(
@@ -99,9 +101,9 @@ def test_renew_releases_held_item(
     state = make_state(
         settings.token_encryption_key.encode(), "linkedin", now, store=repo.bot_state
     )
-    api.get_updates.return_value = [
+    UpdateInbox(conn).insert(
         {
-            "update_id": repo.bot_state.get_offset() + 10,
+            "update_id": 10,
             "message": {
                 "message_id": 2,
                 "from": {"id": settings.telegram_chat_id},
@@ -109,7 +111,7 @@ def test_renew_releases_held_item(
                 "text": f"/renew test-code {state}",
             },
         }
-    ]
+    )
     tasks.poll_telegram(settings, conn)
     assert repo.get_item(approved_item.id).state == ItemState.PUBLISHED
     assert len(channel.posts) == 1
@@ -121,7 +123,7 @@ def test_poll_approval_publishes_telegram_and_leaves_github_for_friday(
     conn, repo, approved_item, settings, api, monkeypatch
 ):
     telegram = repo.create_inbox_item(101, "Мій текст", "Mein Text")
-    api.get_updates.return_value = [
+    UpdateInbox(conn).insert(
         {
             "update_id": 102,
             "callback_query": {
@@ -130,7 +132,7 @@ def test_poll_approval_publishes_telegram_and_leaves_github_for_friday(
                 "data": f"approve:{telegram.id}",
             },
         }
-    ]
+    )
     channel = FakeChannel("linkedin")
     monkeypatch.setattr(tasks, "build_channels", lambda *_: [channel])
     TokenStore(conn, TokenCipher(settings.token_encryption_key)).save(
@@ -142,4 +144,4 @@ def test_poll_approval_publishes_telegram_and_leaves_github_for_friday(
     assert repo.get_item(telegram.id).state == ItemState.PUBLISHED
     assert repo.get_item(approved_item.id).state == ItemState.APPROVED
     assert len(channel.posts) == 1
-    assert repo.bot_state.get_offset() == 103
+    assert UpdateInbox(conn).pending() == []

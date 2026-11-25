@@ -106,14 +106,6 @@ def job(monkeypatch):
         if request.url.host == "api.telegram.org":
             body = json.loads(request.content)
             state.telegram_calls.append((path.rsplit("/", 1)[-1], body))
-            if path.endswith("/getUpdates"):
-                return httpx.Response(
-                    200,
-                    json={
-                        "ok": True,
-                        "result": state.updates if body["offset"] == 0 else [],
-                    },
-                )
             if path.endswith("/sendMessage"):
                 state.messages.append(body["text"])
             return httpx.Response(
@@ -625,7 +617,7 @@ def test_draft_weekly_failure_alert_is_safe(job, scripted, step):
 
 
 @pytest.fixture
-def regeneration(job):
+def regeneration(job, monkeypatch):
     source = "Source: alpha · part 2/3 · 21 commits · link allowed"
     payload = {"part": 2, "previous_parts": [], "recent_commits": ["A commit"]}
     job.model_factory.side_effect = None
@@ -648,7 +640,11 @@ def regeneration(job):
     job.weekly.list_interrupted.return_value = []
     job.variants.update(de="Old German", ua="Old Ukrainian")
     job.repo.get_item.side_effect = lambda _: job.item
-    job.repo.bot_state.get_offset.return_value = 0
+    job.inbox = Mock()
+    job.inbox.pending.side_effect = lambda: [
+        (update["update_id"], update) for update in job.updates
+    ]
+    monkeypatch.setattr(tasks, "UpdateInbox", Mock(return_value=job.inbox))
 
     def transition(item_id, state, *, expected_state, **kwargs):
         assert item_id == job.item.id and job.item.state == expected_state
@@ -689,7 +685,7 @@ def poll(job):
     tasks.poll_telegram(job.settings, job.conn)
     assert job.item.state == ItemState.AWAITING_APPROVAL
     assert job.paths == []
-    job.repo.bot_state.set_offset.assert_called_once_with(21)
+    job.inbox.mark_processed.assert_any_call(20)
 
 
 @pytest.mark.parametrize("status", [200, 500])
@@ -705,12 +701,11 @@ def test_regenerate_replaces_both_variants_and_redoes_tracking(regeneration, sta
     complete = model.complete
 
     def after_feedback(*args):
-        assert [method for method, _ in job.telegram_calls[:3]] == [
-            "getUpdates",
+        assert [method for method, _ in job.telegram_calls[:2]] == [
             "answerCallbackQuery",
             "editMessageText",
         ]
-        assert job.telegram_calls[2][1]["text"] == "Regenerating"
+        assert job.telegram_calls[1][1]["text"] == "Regenerating"
         assert job.item.state == ItemState.DRAFT
         return complete(*args)
 
@@ -818,7 +813,9 @@ def test_poll_restores_interrupted_draft_before_processing_replayed_callback(
     alert, preview = job.messages
     assert alert == "Regeneration interrupted, previous draft kept"
     assert "Old German" in preview and preview.endswith(job.source)
-    assert job.telegram_calls[-2][1]["text"] == "Already handled"
+    method, body = job.telegram_calls[-1]
+    assert method == "answerCallbackQuery"
+    assert body["text"] == "Already handled"
     job.weekly.get_by_item.assert_not_called()
 
 

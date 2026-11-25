@@ -29,7 +29,9 @@ managed Postgres (ADR 001, 003). No always-on server.
 | `core/publisher.py` | Fan-out to channels; per item+channel idempotency key; retry of one channel |
 | `core/gates.py`, `core/repo_safety.py`, `core/limits.py` | Humanizer gate (S1 only), repository link checks, and text limits |
 | `sources/github.py`, `sources/series.py` | GitHub activity and project choice, series state and history |
-| `notify/poller.py`, `sources/telegram.py` | Polls Telegram updates, creates S2 items, and translates UA to DE |
+| `webhook.py` | Authenticates Telegram updates, stores them, acknowledges callbacks, and dispatches the inbox consumer |
+| `store/update_inbox.py` | Deduplicates incoming updates, tracks processing and retries, and purges processed payloads |
+| `notify/poller.py`, `sources/telegram.py` | Drains pending Telegram updates, creates S2 items, and translates UA to DE |
 | `ai/` | Claude client, prompts, humanizer; the only place that imports the Anthropic SDK |
 | `video/` | HeyGen API client, render budget, subtitles and AI label, approval and Reels publishing |
 | `channels/` | Publishing adapters. Text adapters validate items and variants and publish through marker- or remote-reference-based interfaces |
@@ -45,8 +47,9 @@ safety, generates DE+UA and runs the humanizer before storing the item in AWAITI
 and sending a preview. Fri cron: `publish-due` publishes APPROVED
 items. Unapproved items are never published; they wait or expire to SKIPPED.
 
-**S2 Telegram.** `poll-telegram` (every ~5 min, Actions cron) reads updates with a stored offset
-(Telegram keeps updates 24 h). A UA text from the allowed user id becomes an item; DE translation and
+**S2 Telegram.** The Vercel webhook stores updates from the allowed user and dispatches
+`poll-telegram` to drain the Postgres inbox. The hourly schedule provides a fallback.
+A UA text from the allowed user id becomes an item; DE translation and
 preview follow. On approval the same run publishes immediately.
 
 **Video.** After approval of the LinkedIn DE text, `video` renders (budget check first), the video is

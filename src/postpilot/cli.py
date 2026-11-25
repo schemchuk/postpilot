@@ -4,7 +4,7 @@ import argparse
 import json
 import logging
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import date
 from functools import partial
 from pathlib import Path
 
@@ -16,12 +16,9 @@ from postpilot.config import ConfigError, Settings
 from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
 from postpilot.jobs import tasks
 from postpilot.jobs.runner import run_job
-from postpilot.notify.telegram import TelegramApi, TelegramError
 from postpilot.sources.series import ActiveSeriesExists, SeriesStore
 from postpilot.store import migrate
 from postpilot.store.db import connect
-
-_utc_now = partial(datetime.now, UTC)
 
 _DATABASE_COMMANDS = {
     "draft-weekly": tasks.draft_weekly,
@@ -174,29 +171,7 @@ def _series_import(path: Path, settings: Settings) -> None:
     )
 
 
-def _poll_telegram(
-    operation: Callable[[], object], settings: Settings, now: Callable[[], datetime]
-) -> None:
-    # ADR 017: keep the full poll in the first five minutes of each UTC hour.
-    full_run = now().astimezone(UTC).minute < 5
-    try:
-        pending = TelegramApi(settings.telegram_bot_token).get_updates(
-            offset=0, timeout=0, limit=1
-        )
-    except TelegramError:
-        operation()
-        return
-    if pending or full_run:
-        operation()
-    else:
-        print("poll-telegram: no pending updates, database not opened")
-
-
-def main(
-    argv: list[str] | None = None,
-    *,
-    now: Callable[[], datetime] = _utc_now,
-) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="postpilot", description=f"postpilot {__version__}"
     )
@@ -236,9 +211,7 @@ def main(
         database_job = partial(tasks.publish_reels, retry=args.retry)
     assert database_job is not None
     operation = partial(_with_database, database_job, settings)
-    if args.command == "poll-telegram":
-        operation = partial(_poll_telegram, operation, settings, now)
-    elif args.command == "poll-engagement":
+    if args.command == "poll-engagement":
         logging.basicConfig(format="%(message)s")
         logging.getLogger("postpilot.engagement.job").setLevel(logging.INFO)
     return run_job(args.command, operation, settings)

@@ -84,6 +84,7 @@ def test_migration_up_noop_and_down(conn):
         "series_planned_parts",
         "own_videos",
         "own_video_updates",
+        "telegram_inbox",
     }
     assert table_names(conn) == latest_schema
     initial = applied_migrations(conn)
@@ -105,6 +106,7 @@ def test_migration_up_noop_and_down(conn):
         "0015_series_queue",
         "0016_own_videos",
         "0017_video_linkedin",
+        "0018_telegram_inbox",
     ]
     migrate.up(conn)
     assert applied_migrations(conn) == initial
@@ -114,6 +116,9 @@ def test_migration_up_noop_and_down(conn):
             (id := uuid4(),),
         )
         conn.execute("DELETE FROM items WHERE id = %s", (id,))
+    migrate.down(conn)
+    assert applied_migrations(conn) == initial[:17]
+    assert table_names(conn) == latest_schema - {"telegram_inbox"}
     migrate.down(conn)
     assert applied_migrations(conn) == initial[:16]
     migrate.down(conn)
