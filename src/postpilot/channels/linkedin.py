@@ -15,6 +15,8 @@ from postpilot.channels.base import (
 )
 from postpilot.core.models import Item, Language, Variant
 
+LINKEDIN_TEXT_CHANNELS: dict[str, Language] = {"linkedin": "de", "linkedin-ua": "ua"}
+
 _POSTS = "https://api.linkedin.com/rest/posts"
 _VIDEOS = "https://api.linkedin.com/rest/videos"
 _USERINFO = "https://api.linkedin.com/v2/userinfo"

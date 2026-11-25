@@ -388,25 +388,24 @@ def test_job_publishes_heygen_with_linkedin_only(monkeypatch, has_token):
     tasks.publish_reels(settings, Mock())
 
     store.oldest_eligible.assert_called_once_with(
-        {"linkedin-video", "linkedin-ua-video"}, timedelta(minutes=15), retry=False
+        {"linkedin-video"}, timedelta(minutes=15), retry=False
     )
     assert [call.args[1] for call in store.claim.call_args_list] == [
         "linkedin-video",
-        "linkedin-ua-video",
     ]
-    assert len(tokens.get.call_args_list) == 2
+    assert len(tokens.get.call_args_list) == 1
     tokens.get.assert_called_with("linkedin")
     tasks.OwnVideoStore.assert_not_called()
     if has_token:
-        assert publish.call_count == 2
+        assert publish.call_count == 1
         assert publish.call_args.args[:3] == (
             renders.get.return_value,
             "test-token",
             None,
         )
-        assert store.mark_published.call_count == 2
+        assert store.mark_published.call_count == 1
         store.mark_published.assert_called_with(claim, "urn:li:share:1")
     else:
         publish.assert_not_called()
-        assert store.release.call_count == 2
+        assert store.release.call_count == 1
         store.mark_published.assert_not_called()

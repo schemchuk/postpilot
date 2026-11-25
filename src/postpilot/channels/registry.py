@@ -5,8 +5,9 @@ from uuid import UUID
 import httpx
 
 from postpilot.channels.base import Channel
-from postpilot.channels.linkedin import LinkedInChannel
+from postpilot.channels.linkedin import LINKEDIN_TEXT_CHANNELS, LinkedInChannel
 from postpilot.channels.linkedin_video import LinkedInVideoChannel
+from postpilot.channels.paused import is_paused
 from postpilot.channels.threads import ThreadsChannel
 from postpilot.config import Settings
 
@@ -18,14 +19,9 @@ def build_channels(
     if settings.linkedin is not None:
         token_source = partial(token_reader, LinkedInChannel.token_provider)
         channels.extend(
-            [
-                LinkedInChannel(
-                    "linkedin", "de", token_source, client, settings.linkedin.version
-                ),
-                LinkedInChannel(
-                    "linkedin-ua", "ua", token_source, client, settings.linkedin.version
-                ),
-            ]
+            LinkedInChannel(name, lang, token_source, client, settings.linkedin.version)
+            for name, lang in LINKEDIN_TEXT_CHANNELS.items()
+            if not is_paused(name)
         )
     if settings.threads is not None:
         token_source = partial(token_reader, ThreadsChannel.token_provider)

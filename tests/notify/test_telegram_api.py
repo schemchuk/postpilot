@@ -90,7 +90,11 @@ def test_preview_and_keyboard():
     preview = render_preview(
         item, [Variant(item_id, "de", "Hallo"), Variant(item_id, "ua", "О" * 4096)]
     )
-    assert preview.startswith(f"Item {item_id.hex[:8]} · github\n\nDE\nHallo\n\nUA\n")
+    assert preview.startswith(
+        f"Item {item_id.hex[:8]} · github\n"
+        "Channels: LinkedIn DE, Threads\n\nDE\nHallo\n\n"
+        "UA (not published: LinkedIn UA paused)\n"
+    )
     assert len(preview) == 4096
     assert preview.endswith("…")
     buttons = approval_keyboard(item_id)["inline_keyboard"][0]
@@ -114,7 +118,7 @@ def test_long_first_variant_leaves_room_for_second_language():
         item, [Variant(item_id, "de", "x" * 4096), Variant(item_id, "ua", "Привіт")]
     )
     assert len(preview) == 4096
-    assert preview.endswith("…\n\nUA\nПривіт")
+    assert preview.endswith("…\n\nUA (not published: LinkedIn UA paused)\nПривіт")
 
 
 @pytest.mark.parametrize("caption", [None, "Profile advice"])

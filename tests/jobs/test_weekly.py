@@ -504,7 +504,10 @@ def test_preview_reserves_space_for_series_source(job):
     preview = render_preview(job.item, variants, source_details=source)
     assert len(preview) == 4096
     assert preview.endswith(source)
-    assert "\n\nDE\n" in preview and "\n\nUA\n" in preview
+    assert (
+        "\n\nDE\n" in preview
+        and "\n\nUA (not published: LinkedIn UA paused)\n" in preview
+    )
 
 
 def test_publish_due_records_only_pending_published_rows(job, monkeypatch):

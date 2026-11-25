@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 from psycopg import Connection
 from psycopg.rows import TupleRow
 
+from postpilot.channels.paused import PAUSED_CHANNELS, is_paused
 from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
 from postpilot.core.models import (
     Item,
@@ -124,7 +125,25 @@ class ItemRepo:
             return _item(row) if row is not None else None
 
     def list_unfinished_item_ids(self, *, source: Source | None = None) -> list[UUID]:
-        return self._list_item_ids(ItemState.PUBLISHING, source=source)
+        # Resume items whose only failed publications are now paused.
+        with self.conn.transaction():
+            rows = self.conn.execute(
+                """
+                SELECT i.id FROM items i
+                WHERE (%s::text IS NULL OR i.source = %s)
+                  AND (i.state = 'PUBLISHING' OR (
+                    i.state = 'FAILED'
+                    AND EXISTS (
+                        SELECT 1 FROM publications p WHERE p.item_id = i.id
+                        AND p.status = 'FAILED'
+                        HAVING bool_and(p.channel = ANY(%s::text[]))
+                    )
+                  ))
+                ORDER BY i.created_at, i.id
+                """,
+                (source, source, sorted(PAUSED_CHANNELS)),
+            ).fetchall()
+            return [item_id for (item_id,) in rows]
 
     def list_approved_item_ids(self, *, source: Source | None = None) -> list[UUID]:
         return self._list_item_ids(ItemState.APPROVED, source=source)
@@ -365,12 +384,13 @@ class ItemRepo:
             statuses = {
                 publication.channel: publication.status
                 for publication in self.list_publications(item_id)
+                if not is_paused(publication.channel)
             }
             if PublicationStatus.FAILED in statuses.values():
                 self.transition(item_id, ItemState.FAILED)
             elif all(
                 statuses.get(channel) == PublicationStatus.PUBLISHED
-                for channel in channels
+                for channel in channels - PAUSED_CHANNELS
             ):
                 self.transition(item_id, ItemState.PUBLISHED)
 

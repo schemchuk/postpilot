@@ -6,7 +6,10 @@ from uuid import UUID
 
 import httpx
 
-from postpilot.core.models import Item, Variant
+from postpilot.channels.linkedin import LINKEDIN_TEXT_CHANNELS
+from postpilot.channels.paused import is_paused
+from postpilot.core.models import Item, Language, Variant
+from postpilot.video.publications import LINKEDIN_VIDEO_CHANNELS
 from postpilot.video.store import VideoRender
 
 _MESSAGE_LIMIT = 4096
@@ -28,6 +31,7 @@ logging.getLogger("httpx").addFilter(_exclude_bot_requests)
 
 
 def video_preview_markup(render_id: UUID, linkedin: bool) -> dict[str, Any]:
+    targets = _linkedin_targets(LINKEDIN_VIDEO_CHANNELS)
     return {
         "inline_keyboard": [
             [
@@ -36,7 +40,7 @@ def video_preview_markup(render_id: UUID, linkedin: bool) -> dict[str, Any]:
             ],
             [
                 {
-                    "text": f"Also on LinkedIn: {'yes' if linkedin else 'no'}",
+                    "text": f"Also on {', '.join(targets)}: {'yes' if linkedin else 'no'}",
                     "callback_data": f"vlinkedin:{render_id}",
                 }
             ],
@@ -217,11 +221,34 @@ def _truncate(text: str, limit: int = _MESSAGE_LIMIT) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _linkedin_targets(channels: dict[str, Language]) -> list[str]:
+    return [
+        f"LinkedIn {lang.upper()}"
+        for name, lang in channels.items()
+        if not is_paused(name)
+    ]
+
+
+def _preview_heading(item: Item, *, reels: bool = False) -> str:
+    targets = [*_linkedin_targets(LINKEDIN_TEXT_CHANNELS), "Threads"]
+    if reels:
+        targets.extend(("Instagram", "Facebook"))
+    return f"Item {item.id.hex[:8]} · {item.source}\nChannels: {', '.join(targets)}"
+
+
+def _variant_label(lang: Language) -> str:
+    if lang == "ua" and is_paused("linkedin-ua"):
+        return "UA (not published: LinkedIn UA paused)"
+    return lang.upper()
+
+
 def render_preview(
     item: Item, variants: Iterable[Variant], *, source_details: str = ""
 ) -> str:
-    preview = f"Item {item.id.hex[:8]} · {item.source}"
-    entries = [(f"\n\n{variant.lang.upper()}\n", variant.text) for variant in variants]
+    preview = _preview_heading(item)
+    entries = [
+        (f"\n\n{_variant_label(variant.lang)}\n", variant.text) for variant in variants
+    ]
     footer = (
         f"\n\n{source_details}" if source_details and item.source == "github" else ""
     )
@@ -268,15 +295,21 @@ class Notifier:
         self.chat_id = chat_id
 
     def send_preview(
-        self, item: Item, variants: Iterable[Variant], *, source_details: str = ""
+        self,
+        item: Item,
+        variants: Iterable[Variant],
+        *,
+        source_details: str = "",
+        reels: bool = False,
     ) -> int:
         markup = approval_keyboard(item.id, regenerate=item.source != "telegram")
         if item.source in {"telegram", "own_video"}:
-            heading = f"Item {item.id.hex[:8]} · {item.source}"
+            heading = _preview_heading(item, reels=reels)
             if item.source == "own_video" and source_details:
                 heading += f"\n{source_details}"
             sections = [
-                f"{variant.lang.upper()}\n{variant.text}" for variant in variants
+                f"{_variant_label(variant.lang)}\n{variant.text}"
+                for variant in variants
             ]
             preview = "\n\n".join([heading, *sections])
             if len(preview) > _MESSAGE_LIMIT:

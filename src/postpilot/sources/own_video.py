@@ -251,7 +251,7 @@ class OwnVideoInbox:
 
     def _preview(self, video: OwnVideo, item: Item) -> None:
         label = "yes" if video.ai_generated else "no"
-        details = f"Own video · AI label: {label} · Channels: LinkedIn DE+UA, Threads, Instagram, Facebook"
+        details = f"Own video · AI label: {label}"
         if not video.reels_eligible:
             details += f"\nReels skipped: video is {video.duration} s (3-90 s allowed)"
         try:
@@ -260,5 +260,8 @@ class OwnVideoInbox:
             # Telegram document file IDs can only be reused as documents.
             self.api.send_document_ref(video.chat_id, video.file_id)
         Notifier(self.api, video.chat_id).send_preview(
-            item, self.repo.get_variants(item.id), source_details=details
+            item,
+            self.repo.get_variants(item.id),
+            source_details=details,
+            reels=video.reels_eligible,
         )
