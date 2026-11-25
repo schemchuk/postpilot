@@ -49,7 +49,7 @@ class OwnVideoInbox:
         command = caption or WORK.fullmatch(text)
         if command is None and type(reply_id) is not int:
             return False
-        item = None
+        generated = None
         video = None
         with self.repo.conn.transaction():
             if caption and media:
@@ -61,7 +61,7 @@ class OwnVideoInbox:
                         (caption["text"] or "").strip(),
                     )
                     if video and video.interview:
-                        item = self._generate(video)
+                        generated = self._generate(video)
             elif command:
                 if self.store.claim_update(update_id):
                     self.api.send_message(
@@ -74,8 +74,8 @@ class OwnVideoInbox:
                     self._append(video, text, doc)
             else:
                 return False
-        if item and video:
-            self._preview(video, item)
+        if generated and video:
+            self._preview(video, *generated)
         return True
 
     def _add(
@@ -154,18 +154,25 @@ class OwnVideoInbox:
                 if type(message_id) is int:
                     self.api.edit_message_text(chat, message_id, "Skipped")
                 return
-            item = self._generate(video) if regen or video.item_id is None else None
-        preview = item or (self.repo.get_item(video.item_id) if video.item_id else None)
+            generated = (
+                self._generate(video) if regen or video.item_id is None else None
+            )
+        preview: Item | None
+        if generated:
+            preview, warnings = generated
+        else:
+            preview = self.repo.get_item(video.item_id) if video.item_id else None
+            warnings = ()
         if preview and preview.state == _AWAITING:
             try:
                 if regen and type(message_id) is int:
                     self.api.edit_message_text(
                         chat,
                         message_id,
-                        "Regenerated" if item else "Previous draft kept",
+                        "Regenerated" if generated else "Previous draft kept",
                     )
             finally:
-                self._preview(video, preview)
+                self._preview(video, preview, warnings)
 
     def _answer(self, callback_id: str, text: str | None = None) -> None:
         # Polling every few minutes means the callback query may already have
@@ -178,7 +185,7 @@ class OwnVideoInbox:
         except TelegramError:
             _LOG.warning("Telegram callback reply failed")
 
-    def _generate(self, video: OwnVideo) -> Item | None:
+    def _generate(self, video: OwnVideo) -> tuple[Item, tuple[str, ...]] | None:
         chat = video.chat_id
         if not video.interview:
             self.api.send_message(chat, "Add the interview text first.")
@@ -207,8 +214,14 @@ class OwnVideoInbox:
                 de, ua = draft["de"].strip(), draft["ua"].strip()
                 self._check_lengths(de, ua)
                 step = "humanizer"
-                de, ua = humanize_pair(
-                    self.model, de, ua, {"interview": video.interview}
+                de_result, ua_result = humanize_pair(
+                    self.model, de, ua, {"interview": video.interview}, soft=True
+                )
+                de, ua = de_result.text, ua_result.text
+                warnings = tuple(
+                    f"Humanizer {lang}: not passed (score {result.soft_score}), check the text"
+                    for lang, result in (("DE", de_result), ("UA", ua_result))
+                    if result.soft_score is not None
                 )
                 step = "length"
                 self._check_lengths(de, ua)
@@ -226,7 +239,7 @@ class OwnVideoInbox:
                     self.repo.add_variant(item_id, "ua", ua)
                     self.repo.add_variant(item_id, "de", de)
                     self.store.finish(video.id, item_id)
-                return self.repo.transition(item_id, _AWAITING)
+                return self.repo.transition(item_id, _AWAITING), warnings
         except IllegalTransition:
             self.api.send_message(chat, "Already handled")
             return None
@@ -249,7 +262,9 @@ class OwnVideoInbox:
         if video:
             self._preview(video, item)
 
-    def _preview(self, video: OwnVideo, item: Item) -> None:
+    def _preview(
+        self, video: OwnVideo, item: Item, warnings: tuple[str, ...] = ()
+    ) -> None:
         label = "yes" if video.ai_generated else "no"
         details = f"Own video · AI label: {label}"
         if not video.reels_eligible:
@@ -262,6 +277,6 @@ class OwnVideoInbox:
         Notifier(self.api, video.chat_id).send_preview(
             item,
             self.repo.get_variants(item.id),
-            source_details=details,
+            source_details="\n".join((details, *warnings)),
             reels=video.reels_eligible,
         )
