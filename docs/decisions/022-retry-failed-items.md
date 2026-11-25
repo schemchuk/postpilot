@@ -1,6 +1,6 @@
 # 022. Retry failed items from Telegram
 
-Status: PROPOSED (Claude Code, 2026-11-25; Volodymyr chose the Retry button 2026-11-25)
+Status: ACCEPTED (Volodymyr, 2026-11-25)
 
 ## Context
 
