@@ -52,6 +52,11 @@ def request(
             raise ChannelHeld(f"{channel} token is invalid")
         if error.get("is_transient") is True or code in (1, 2, 4, 17, 32, 341, 613):
             raise retry(f"{channel} temporarily unavailable")
+    debug = result.get("debug_info") if isinstance(result, dict) else None
+    if isinstance(debug, dict) and debug.get("type") == "ProcessingFailedError":
+        # rupload answers this intermittently for a valid file despite
+        # retriable=false; the same upload succeeds on a later attempt.
+        raise retry(f"{channel} upload processing failed")
     if response.status_code >= 500:
         raise retry(f"{channel} service unavailable")
     if response.status_code == 429:
