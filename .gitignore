@@ -13,3 +13,4 @@ uv.lock
 
 # Vercel CLI project link
 .vercel/
+.env.local
