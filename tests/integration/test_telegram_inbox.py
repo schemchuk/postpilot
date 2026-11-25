@@ -81,8 +81,13 @@ def test_inbox_edit_updates_only_german_and_can_retry_oversize_edit(repo):
     }
     handler.handle_update({"callback_query": {**callback, "data": f"regen:{item.id}"}})
     assert repo.get_item(item.id).state == ItemState.AWAITING_APPROVAL
+    api.send_message.assert_called_once_with(
+        12, "Regeneration is unavailable", reply_to_message_id=11
+    )
+    api.send_message.reset_mock()
     handler.handle_update({"callback_query": {**callback, "data": f"edit:{item.id}"}})
     api.send_message.assert_called_once_with(12, "Send the new DE text.")
+    api.answer_callback_query.assert_not_called()
     message = {"from": {"id": 12}, "chat": {"id": 12}}
     handler.handle_update(
         {

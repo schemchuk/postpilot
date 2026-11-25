@@ -46,6 +46,9 @@ class RecordingApi:
     def answer_callback_query(self, callback_id, text=None):
         self.record("answer", callback_id, text)
 
+    def send_message(self, chat_id, text, *, reply_to_message_id=None):
+        self.record("send", chat_id, reply_to_message_id, text)
+
     def edit_message_text(self, chat_id, message_id, text):
         self.record("edit", chat_id, message_id, text)
 
@@ -75,20 +78,19 @@ def test_foreign_sender_is_ignored_before_any_calls():
     assert repo.calls == api.calls == []
 
 
-@pytest.mark.parametrize("fail_on", [None, "answer", "edit"])
+@pytest.mark.parametrize("fail_on", [None, "edit"])
 def test_approve_records_sender(fail_on, caplog):
     repo = MemoryRepo(ItemState.AWAITING_APPROVAL)
     api = RecordingApi(fail_on)
     ApprovalHandler(repo, api, USER).handle_update(callback(f"approve:{repo.item.id}"))
     assert repo.item.state == ItemState.APPROVED
     assert repo.item.approved_by == USER
-    assert api.calls == [("answer", "button", None), ("edit", CHAT, 12, "Approved")]
+    assert api.calls == [("edit", CHAT, 12, "Approved")]
     if fail_on:
         assert caplog.messages == ["Telegram callback reply failed"]
 
 
-@pytest.mark.parametrize("fail_on", ["answer", "caption"])
-def test_video_approval_persists_when_reply_fails(fail_on):
+def test_video_approval_persists_when_reply_fails():
     class MemoryVideoStore:
         approved_by = None
 
@@ -100,7 +102,7 @@ def test_video_approval_persists_when_reply_fails(fail_on):
     repo = MemoryRepo(ItemState.APPROVED)
     item_id = repo.item.id
     store = MemoryVideoStore()
-    api = RecordingApi(fail_on)
+    api = RecordingApi("caption")
     data = f"vapprove:{item_id}"
     update = callback(data)
     update["callback_query"]["message"].update(
@@ -112,19 +114,18 @@ def test_video_approval_persists_when_reply_fails(fail_on):
 
     assert store.approved_by == USER
     assert api.calls == [
-        ("answer", "button", None),
         ("caption", CHAT, 12, "Video approved"),
     ]
 
 
 @pytest.mark.parametrize("state", set(ItemState) - {ItemState.AWAITING_APPROVAL})
 @pytest.mark.parametrize("action", ["approve", "edit", "skip", "regen"])
-def test_stale_button_only_answers(state, action):
+def test_stale_button_sends_refusal(state, action):
     repo = MemoryRepo(state)
     api = RecordingApi()
     ApprovalHandler(repo, api, USER).handle_update(callback(f"{action}:{repo.item.id}"))
     assert repo.calls == [("get_item", repo.item.id)]
-    assert api.calls == [("answer", "button", "Already handled")]
+    assert api.calls == [("send", CHAT, 12, "Already handled")]
 
 
 @pytest.mark.parametrize(
@@ -241,12 +242,12 @@ def test_profile_commands_preserve_text_and_only_reply_with_length(caplog):
 def test_unavailable_regeneration_keeps_current_state(source, has_callback):
     repo = MemoryRepo(ItemState.AWAITING_APPROVAL)
     repo.item = replace(repo.item, source=source)
-    api = RecordingApi(fail_on="answer")
+    api = RecordingApi(fail_on="send")
     regenerate = Mock() if has_callback else None
     ApprovalHandler(repo, api, USER, on_regenerate=regenerate).handle_update(
         callback(f"regen:{repo.item.id}")
     )
     assert repo.item.state == ItemState.AWAITING_APPROVAL
-    assert api.calls == [("answer", "button", "Regeneration is unavailable")]
+    assert api.calls == [("send", CHAT, 12, "Regeneration is unavailable")]
     if regenerate:
         regenerate.assert_not_called()

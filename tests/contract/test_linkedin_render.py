@@ -148,10 +148,10 @@ def test_long_render_commentary_fails_publication_and_alerts(limit, length):
         publish_one(store, renders, [channel], lambda _: token_source(), notify)
 
     store.mark_failed.assert_called_once_with(
-        claim, "Channel operation failed (ChannelError)"
+        claim, "ChannelError: Text exceeds the LinkedIn length limit"
     )
     notify.assert_called_once_with(
-        "linkedin-video: Channel operation failed (ChannelError)"
+        "linkedin-video: ChannelError: Text exceeds the LinkedIn length limit"
     )
     store.save_ref.assert_not_called()
     store.mark_published.assert_not_called()

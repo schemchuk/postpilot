@@ -6,6 +6,7 @@ from typing import Protocol, runtime_checkable
 
 from postpilot.channels.base import ChannelHeld, TransientChannelError
 from postpilot.store.repo import LostPublicationClaim
+from postpilot.trace import describe_error, trace
 from postpilot.video.label import AI_AVATAR_CAPTION_LABEL
 from postpilot.video.publications import VideoPublicationStore
 from postpilot.video.reel import ReelVideo
@@ -105,8 +106,15 @@ def publish_one(
         except (TransientChannelError, LostPublicationClaim):
             continue
         except Exception as error:  # noqa: BLE001 - isolate adapter failures
-            message = f"Channel operation failed ({type(error).__name__})"
+            message = describe_error(error)
             store.mark_failed(claim, message)
+            trace(
+                "publish",
+                "failed",
+                item=render.item_id,
+                channel=channel.name,
+                reason=message,
+            )
             alert(notify, f"{channel.name}: {message}")
         else:
             if remote_id is not None:

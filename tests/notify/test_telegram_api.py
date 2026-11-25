@@ -37,6 +37,7 @@ def test_request_shapes(caplog):
         api = TelegramApi(TOKEN, client=client)
         markup = approval_keyboard(uuid4())
         assert api.send_message(12, "<b>plain</b>", markup) == 42
+        api.send_message(12, "Already handled", reply_to_message_id=42)
         Notifier(api, 12).send_alert("x" * 4200)
         api.edit_message_text(12, 42, "Approved")
         api.answer_callback_query("callback")
@@ -47,6 +48,17 @@ def test_request_shapes(caplog):
         (
             "sendMessage",
             {"chat_id": 12, "text": "<b>plain</b>", "reply_markup": markup},
+        ),
+        (
+            "sendMessage",
+            {
+                "chat_id": 12,
+                "text": "Already handled",
+                "reply_parameters": {
+                    "message_id": 42,
+                    "allow_sending_without_reply": True,
+                },
+            },
         ),
         ("sendMessage", {"chat_id": 12, "text": "x" * 4095 + "…"}),
         ("editMessageText", {"chat_id": 12, "message_id": 42, "text": "Approved"}),

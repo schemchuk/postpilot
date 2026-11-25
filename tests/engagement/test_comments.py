@@ -350,7 +350,7 @@ def test_redraft_callback_requires_matching_sender_chat_and_message(
         assert store.get(comment.id).reply_draft == "<new>"
         assert "<code>&lt;new&gt;</code>" in api.edit_message_text.call_args.args[2]
         assert api.edit_message_text.call_args.kwargs["parse_mode"] == "HTML"
-        api.answer_callback_query.assert_called_once_with("query")
+        api.answer_callback_query.assert_not_called()
     else:
         assert store.get(comment.id) == comment
         api.edit_message_text.assert_not_called()
