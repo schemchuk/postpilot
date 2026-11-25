@@ -169,6 +169,7 @@ the UA text `UA (not published: LinkedIn UA paused)`. Accept: tests that an appr
 only `linkedin` + Threads and reaches PUBLISHED, an S3 item is not held on `linkedin-ua`, a render with
 `Also on LinkedIn: yes` publishes only `linkedin-video`, an item with an old FAILED `linkedin-ua` row is not
 retried, preview text; no workflow change; live: part 3 of handmake on 2026-11-27 appears on LinkedIn DE only.
+T22 DONE 2026-11-25 (PR #48).
 
 ## Order
 T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22.
