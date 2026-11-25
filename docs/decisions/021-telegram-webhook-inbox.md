@@ -1,6 +1,6 @@
 # 021. Telegram webhook inbox and a soft humanizer gate for own videos
 
-Status: PROPOSED (Claude Code, 2026-11-25)
+Status: ACCEPTED (Volodymyr, 2026-11-25; receiver host: Vercel Python function, the recommended option)
 
 ## Context
 
