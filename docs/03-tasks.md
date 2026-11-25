@@ -180,6 +180,7 @@ claims only; for S3, after 3 rounds with only the AI review failing, keep the lo
 `Humanizer: not passed (score N), check the text` to the preview; hard rule failures still fail. S1 unchanged.
 Accept: tests for S3 soft pass (AI review fails 3x, rules pass -> item + warning), S3 hard rule failure
 (no item), S1 still strict, best-candidate choice; live: reel 002 reaches the preview.
+T23a DONE 2026-11-25 (PR #49).
 **T23b** Webhook receiver + inbox (ADR 021 decisions 1-4): migration `telegram_inbox`; receiver function on
 the chosen host with secret check, allowed-user filter, insert, immediate `answerCallbackQuery`, dispatch;
 poll-telegram drains the inbox instead of `getUpdates` (pre-check removed), 7-day purge; runbook steps for
