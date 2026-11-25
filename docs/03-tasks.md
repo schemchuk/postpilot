@@ -205,6 +205,7 @@ sanitized error text (not only `ChannelError`); the Reels alert uses the same te
 `answerCallbackQuery` for inbox updates the receiver already answered (ADR 021 decision 2), user-facing
 outcomes that matter are sent as messages. Accept: tests for the log line (no token in it), no second
 answer for inbox callbacks; live: one job log shows a readable failure line.
+T24b DONE 2026-11-25 (PR #53).
 
 ## Order
 T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22 -> T23a -> T23b -> T24a -> T24b.
