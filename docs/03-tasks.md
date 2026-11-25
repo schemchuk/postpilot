@@ -207,6 +207,21 @@ outcomes that matter are sent as messages. Accept: tests for the log line (no to
 answer for inbox callbacks; live: one job log shows a readable failure line.
 T24b DONE 2026-11-25 (PR #53).
 
+**T25 Guided own-video intake (ADR 023).** Owner: Codex. Reviewer: Claude Code.
+**T25a** Guided `/work` with description: bare `/work` -> `Original`/`AI-generated`/`Cancel`; video step
+without caption or reply; `Upload description`/`No description`/`Cancel`; text messages and `.txt` joined
+without reply until `Done`, which generates right away; active intake takes plain texts before S2; 60-minute
+expiry; new `/work` replaces an unfinished intake; caption fast path unchanged. `No description` button is
+shown but answers `Coming soon` until T25b. Accept: tests for the full path (kind -> video -> text x2 -> Done
+-> preview with AI label), Cancel at each step, expiry (late button, text goes to S2 again), second `/work`,
+plain text during intake not created as S2, `Done` without text, fast path still works; live: one video
+through the guided flow to the preview.
+**T25b** No-description items (ADR 023 decision 5): item without texts, no AI call, Reels-only targets
+(IG + FB), empty caption plus AI label line when `ai`, preview with Approve/Skip only, refusal for videos
+outside 3-90 s. Accept: tests for item and targets (no LinkedIn/Threads publications), caption with and
+without label, preview buttons, duration refusal, Publisher and publish-reels handle empty text; live: one
+original video without description posted to IG and FB Reels.
+
 ## Order
-T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22 -> T23a -> T23b -> T24a -> T24b.
+T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22 -> T23a -> T23b -> T24a -> T24b -> T25a -> T25b.
 First useful vertical slice after T11: Telegram text to approval to LinkedIn.
