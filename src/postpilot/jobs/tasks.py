@@ -179,11 +179,16 @@ def _publisher(
     )
 
 
+class _ChannelPublishingFailed(RuntimeError):
+    pass
+
+
 def _publish_items(
     publisher: Publisher,
     item_ids: Iterable[UUID],
     *,
     on_result: Callable[[UUID, str, ChannelResult], None] | None = None,
+    notifier: Notifier | None = None,
 ) -> None:
     failed = False
     for item_id in item_ids:
@@ -194,12 +199,18 @@ def _publish_items(
             if item is None or item.state != ItemState.PUBLISHED:
                 raise
         else:
+            if notifier is not None and report.transitioned_to_failed:
+                item = publisher.repo.get_item(item_id)
+                if item is not None:
+                    notifier.send_publish_failure(
+                        item, publisher.repo.list_publications(item_id)
+                    )
             for name, result in report.channels.items():
                 failed |= result.outcome == "failed"
                 if on_result is not None:
                     on_result(item_id, name, result)
     if failed:
-        raise RuntimeError("Channel publishing failed")
+        raise _ChannelPublishingFailed("Channel publishing failed")
 
 
 def poll_engagement(settings: Settings, conn: Connection[TupleRow]) -> None:
@@ -277,10 +288,23 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
     store = TokenStore(conn, TokenCipher(settings.token_encryption_key))
     api = TelegramApi(settings.telegram_bot_token)
 
-    def release_held_items(provider: str) -> None:
+    notifier = Notifier(api, settings.telegram_chat_id)
+
+    def publish(item_ids: Iterable[UUID]) -> None:
         publisher = _publisher(settings, repo, client)
         if publisher is not None:
-            _publish_items(publisher, repo.list_unfinished_item_ids())
+            _publish_items(publisher, item_ids, notifier=notifier)
+
+    def release_held_items(provider: str) -> None:
+        publish(repo.list_unfinished_item_ids())
+
+    def retry_item(item_id: UUID) -> None:
+        try:
+            publish([item_id])
+        except _ChannelPublishingFailed:
+            logger.warning(
+                "Channel publishing failed after Telegram retry (item %s)", item_id
+            )
 
     with httpx.Client() as client:
         renewal = RenewalHandler(
@@ -302,7 +326,6 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
             return ThreadsReplyClient(client, token) if token else None
 
         weekly = WeeklyStore(conn)
-        notifier = Notifier(api, settings.telegram_chat_id)
         recovered = set()
         for interrupted in weekly.list_interrupted():
             assert interrupted.item_id is not None
@@ -329,6 +352,7 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
             on_regenerate=partial(
                 _regenerate_weekly, settings, repo, weekly, notifier, model
             ),
+            on_retry=retry_item,
             recovered_regenerations=recovered,
             series=SeriesStore(conn),
             github_factory=partial(
@@ -358,7 +382,7 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
                 item_ids
                 and (publisher := _publisher(settings, repo, client)) is not None
             ):
-                _publish_items(publisher, item_ids)
+                _publish_items(publisher, item_ids, notifier=notifier)
         finally:
             if handler.advice_chat_id is not None:
                 _send_profile_advice(
@@ -475,7 +499,8 @@ def publish_reels(
                 if not is_paused(name)
             )
         api = TelegramApi(settings.telegram_bot_token, client=client)
-        notify = Notifier(api, settings.telegram_chat_id).send_alert
+        notifier = Notifier(api, settings.telegram_chat_id)
+        notify = notifier.send_alert
         publish_one(
             VideoPublicationStore(conn),
             VideoStore(conn),
@@ -509,9 +534,7 @@ def publish_reels(
         )
 
         def notify_result(item_id: UUID, name: str, result: ChannelResult) -> None:
-            if result.outcome == "failed":
-                alert(notify, f"{name}: {result.error}")
-            elif result.outcome == "published":
+            if result.outcome == "published":
                 for publication in repo.list_publications(item_id):
                     if (
                         publication.channel == name
@@ -525,7 +548,12 @@ def publish_reels(
 
         item_ids = repo.list_approved_item_ids(source="own_video")
         item_ids += repo.list_unfinished_item_ids(source="own_video")
-        _publish_items(publisher, dict.fromkeys(item_ids), on_result=notify_result)
+        _publish_items(
+            publisher,
+            dict.fromkeys(item_ids),
+            on_result=notify_result,
+            notifier=notifier,
+        )
 
 
 def check_tokens(settings: Settings, conn: Connection[TupleRow]) -> None:
@@ -1109,6 +1137,10 @@ def publish_due(settings: Settings, conn: Connection[TupleRow]) -> None:
                 _publish_items(
                     publisher,
                     repo.list_unfinished_item_ids() + repo.list_approved_item_ids(),
+                    notifier=Notifier(
+                        TelegramApi(settings.telegram_bot_token, client=client),
+                        settings.telegram_chat_id,
+                    ),
                 )
     finally:
         _record_weekly_publications(conn, repo)

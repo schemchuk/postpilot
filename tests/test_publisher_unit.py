@@ -74,7 +74,9 @@ def test_publisher_recovers_a_send_after_a_crash_without_sending_again() -> None
     repo.mark_published.assert_called_once_with(
         item.id, channel.name, next(iter(channel.posts)), claim=recovered
     )
-    repo.finish_publishing.assert_called_once_with(item.id, {channel.name})
+    repo.finish_publishing.assert_called_once_with(
+        item.id, {channel.name}, held=frozenset()
+    )
 
 
 def test_lost_claim_during_ref_save_leaves_publication_pending() -> None:
@@ -188,7 +190,7 @@ def test_selects_adapters_for_item_source(source):
     def mark_published(item_id, name, remote_id, *, claim):
         statuses[name] = remote_id
 
-    def finish(item_id, channels):
+    def finish(item_id, channels, *, held):
         if channels <= statuses.keys():
             transition(item_id, ItemState.PUBLISHED)
 
@@ -218,7 +220,13 @@ def test_selects_adapters_for_item_source(source):
         assert all(channel.posts for channel in base)
         assert not any(channel.posts for channel in video)
     expected = set(names) | (set(reels) if source == "own_video" else set())
-    repo.finish_publishing.assert_called_once_with(item.id, expected)
+    repo.finish_publishing.assert_called_once_with(
+        item.id,
+        expected,
+        held=frozenset(
+            name for name, result in report.channels.items() if result.outcome == "held"
+        ),
+    )
 
 
 def test_own_video_without_adapters_is_held_before_transition():

@@ -9,10 +9,11 @@ import pytest
 from cryptography.fernet import Fernet
 
 from postpilot.config import ImapSettings, LinkedInSettings, Settings
-from postpilot.core.models import Item
-from postpilot.core.publisher import Publisher
+from postpilot.core.models import Item, PublicationStatus
+from postpilot.core.publisher import ChannelResult, Publisher, PublishReport
 from postpilot.core.states import ItemState
 from postpilot.jobs import tasks
+from postpilot.notify.telegram import Notifier, TelegramError
 from postpilot.tokens.oauth_state import make_state
 
 
@@ -147,7 +148,7 @@ def test_renewal_releases_held_items_with_current_token(
     monkeypatch.setattr(tasks, "build_channels", lambda *_: [channel])
 
     publisher = Mock()
-    publisher.publish_item.return_value.channels = {}
+    publisher.publish_item.return_value = PublishReport({})
     build_publisher = Mock(return_value=publisher)
     monkeypatch.setattr(tasks, "Publisher", build_publisher)
 
@@ -185,7 +186,7 @@ def test_publish_due_processes_unfinished_and_approved_items(
     repo.list_unfinished_item_ids.return_value = [unfinished_id]
     repo.list_approved_item_ids.return_value = [approved_id]
     publisher = Mock()
-    publisher.publish_item.return_value.channels = {}
+    publisher.publish_item.return_value = PublishReport({})
     monkeypatch.setattr(tasks, "_publisher", Mock(return_value=publisher))
 
     tasks.publish_due(settings, None)
@@ -235,7 +236,7 @@ def test_poll_publishes_immediate_approval_after_marking_update_processed(
             expected_state=tasks.ItemState.AWAITING_APPROVAL,
             approved_by=settings.telegram_chat_id,
         )
-        return SimpleNamespace(channels={"test": SimpleNamespace(outcome=outcome)})
+        return PublishReport({"test": ChannelResult(outcome)})
 
     publisher = Mock(publish_item=Mock(side_effect=publish))
     monkeypatch.setattr(tasks, "_publisher", Mock(return_value=publisher))
@@ -570,7 +571,7 @@ def test_poll_advice_after_approval_and_publish(
         [item_id] if repo.transition.called and _.get("source") == "telegram" else []
     )
     publisher = Mock()
-    publisher.publish_item.return_value.channels = {}
+    publisher.publish_item.return_value = PublishReport({})
     monkeypatch.setattr(tasks, "_publisher", Mock(return_value=publisher))
 
     chat = {"id": settings.telegram_chat_id}
@@ -670,3 +671,124 @@ def test_snapshot_traffic_skips_inaccessible_repos(settings, monkeypatch, capsys
     assert "repo-not-accessible repo=gone" in out
     assert "repo-not-accessible repo=private" in out
     assert "summary repos=2 links=0 saved=False" in out
+
+
+@pytest.mark.parametrize("telegram_error", [False, True])
+def test_publish_failure_notification(telegram_error, caplog):
+    item_id = uuid4()
+    repo = Mock()
+    repo.get_item.return_value = SimpleNamespace(id=item_id, source="telegram")
+    repo.list_publications.return_value = [
+        SimpleNamespace(channel=channel, error=error, status=status)
+        for channel, error, status in [
+            ("linkedin", "<error>" + "x" * 300, PublicationStatus.FAILED),
+            ("threads", "unavailable", PublicationStatus.FAILED),
+            ("linkedin-ua", "paused error", PublicationStatus.FAILED),
+            ("facebook-reels", None, PublicationStatus.PUBLISHED),
+        ]
+    ]
+    publisher = Mock(repo=repo)
+    failure = PublishReport(
+        {"linkedin": ChannelResult("failed")}, transitioned_to_failed=True
+    )
+    untouched = PublishReport({"linkedin": ChannelResult("held")})
+    publisher.publish_item.side_effect = [failure, untouched, failure]
+    api = Mock()
+    if telegram_error:
+        api.send_message.side_effect = TelegramError("private request details")
+    notifier = Notifier(api, 123)
+
+    with pytest.raises(RuntimeError, match="^Channel publishing failed$"):
+        tasks._publish_items(publisher, [item_id, item_id], notifier=notifier)
+    expected = call(
+        123,
+        f"Publishing failed · {str(item_id)[:8]} · telegram\n"
+        f"linkedin: <error>{'x' * 293}\nthreads: unavailable",
+        {
+            "inline_keyboard": [
+                [
+                    {"text": "Retry", "callback_data": f"retry:{item_id}"},
+                    {"text": "Skip", "callback_data": f"skipfail:{item_id}"},
+                ]
+            ]
+        },
+    )
+    assert api.send_message.call_args_list == [expected]
+
+    with pytest.raises(RuntimeError, match="^Channel publishing failed$"):
+        tasks._publish_items(publisher, [item_id], notifier=notifier)
+    assert api.send_message.call_args_list == [expected, expected]
+    assert ("Telegram publishing failure notification failed" in caplog.text) == (
+        telegram_error
+    )
+    assert "private request details" not in caplog.text
+
+
+def test_poll_processes_failed_retry_and_next_update(
+    settings, repo, inbox, api, monkeypatch, caplog
+):
+    item_id, next_item_id = uuid4(), uuid4()
+    publisher = Mock(repo=repo)
+    failure = PublishReport(
+        {"linkedin": ChannelResult("failed")}, transitioned_to_failed=True
+    )
+    repo.get_item.return_value = SimpleNamespace(id=item_id, source="telegram")
+    repo.list_publications.return_value = [
+        SimpleNamespace(
+            channel="linkedin", status=PublicationStatus.FAILED, error="rejected"
+        )
+    ]
+    monkeypatch.setattr(tasks, "_publisher", Mock(return_value=publisher))
+    inbox.pending.return_value = [
+        (
+            41,
+            {
+                "update_id": 41,
+                "callback_query": {
+                    "from": {"id": settings.telegram_chat_id},
+                    "id": "retry-button",
+                    "data": f"retry:{item_id}",
+                    "message": {
+                        "chat": {"id": settings.telegram_chat_id},
+                        "message_id": 11,
+                    },
+                },
+            },
+        ),
+        (
+            42,
+            {
+                "update_id": 42,
+                "callback_query": {
+                    "from": {"id": settings.telegram_chat_id},
+                    "id": "skip-button",
+                    "data": f"skipfail:{next_item_id}",
+                    "message": {
+                        "chat": {"id": settings.telegram_chat_id},
+                        "message_id": 12,
+                    },
+                },
+            },
+        ),
+    ]
+
+    def publish(id):
+        repo.resolve_failed_item.assert_called_once_with(id, ItemState.PUBLISHING, 11)
+        api.answer_callback_query.assert_called_once_with("retry-button", "Retrying")
+        return failure
+
+    publisher.publish_item.side_effect = publish
+
+    tasks.poll_telegram(settings, None)
+
+    inbox.record_failure.assert_not_called()
+    assert inbox.mark_processed.call_args_list == [call(41), call(42)]
+    repo.resolve_failed_item.assert_called_with(next_item_id, ItemState.SKIPPED, 12)
+    api.answer_callback_query.assert_called_with("skip-button", "Skipped")
+    assert caplog.messages == [
+        f"Channel publishing failed after Telegram retry (item {item_id})"
+    ]
+
+    publisher.publish_item.assert_called_once_with(item_id)
+    assert api.send_message.call_count == 1
+    assert api.send_message.call_args.args[1].endswith("\nlinkedin: rejected")

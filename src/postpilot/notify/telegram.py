@@ -8,7 +8,13 @@ import httpx
 
 from postpilot.channels.linkedin import LINKEDIN_TEXT_CHANNELS
 from postpilot.channels.paused import is_paused
-from postpilot.core.models import Item, Language, Variant
+from postpilot.core.models import (
+    Item,
+    Language,
+    Publication,
+    PublicationStatus,
+    Variant,
+)
 from postpilot.video.publications import LINKEDIN_VIDEO_CHANNELS
 from postpilot.video.store import VideoRender
 
@@ -320,6 +326,32 @@ class Notifier:
         else:
             preview = render_preview(item, variants, source_details=source_details)
         return self.api.send_message(self.chat_id, preview, markup)
+
+    def send_publish_failure(
+        self, item: Item, publications: Iterable[Publication]
+    ) -> None:
+        lines = [
+            f"{row.channel}: {(row.error or '')[:300]}"
+            for row in publications
+            if row.status == PublicationStatus.FAILED and not is_paused(row.channel)
+        ]
+        if not lines:
+            return
+        heading = f"Publishing failed · {str(item.id)[:8]} · {item.source}"
+        markup = {
+            "inline_keyboard": [
+                [
+                    {"text": "Retry", "callback_data": f"retry:{item.id}"},
+                    {"text": "Skip", "callback_data": f"skipfail:{item.id}"},
+                ]
+            ]
+        }
+        try:
+            self.api.send_message(self.chat_id, "\n".join([heading, *lines]), markup)
+        except TelegramError:
+            logging.getLogger(__name__).warning(
+                "Telegram publishing failure notification failed"
+            )
 
     def send_video_preview(self, render: VideoRender, video: bytes) -> None:
         if len(video) > _VIDEO_LIMIT:

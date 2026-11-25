@@ -30,6 +30,7 @@ class ChannelResult:
 @dataclass(frozen=True)
 class PublishReport:
     channels: Mapping[str, ChannelResult]
+    transitioned_to_failed: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "channels", MappingProxyType(dict(self.channels)))
@@ -139,10 +140,16 @@ class Publisher:
                 outcome=result.outcome,
                 error=result.error,
             )
-        self.repo.finish_publishing(item_id, set(results))
+        transitioned_to_failed = self.repo.finish_publishing(
+            item_id,
+            set(results),
+            held=frozenset(
+                name for name, result in results.items() if result.outcome == "held"
+            ),
+        )
         finished = self.repo.get_item(item_id)
         trace("publish", "finished", item=item_id, state=finished and finished.state)
-        return PublishReport(results)
+        return PublishReport(results, transitioned_to_failed)
 
     def _publish_channel(
         self, channel: Channel, item: Item, variants: list[Variant]

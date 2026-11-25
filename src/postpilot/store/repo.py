@@ -282,6 +282,24 @@ class ItemRepo:
             assert row is not None
             return _item(row)
 
+    def resolve_failed_item(
+        self, item_id: UUID, state: ItemState, message_id: int
+    ) -> None:
+        with self.conn.transaction():
+            self.transition(item_id, state, expected_state=ItemState.FAILED)
+            # Keep the last handled button message so a queued duplicate cannot
+            # act on a later failure of the same item.
+            handled = self.conn.execute(
+                """
+                INSERT INTO bot_state (key, value) VALUES (%s, %s)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+                WHERE bot_state.value::bigint < EXCLUDED.value::bigint
+                """,
+                (f"failed_item_message:{item_id}", str(message_id)),
+            )
+            if not handled.rowcount:
+                raise IllegalTransition("Failure message already handled")
+
     def list_publications(self, item_id: UUID) -> list[Publication]:
         with self.conn.transaction():
             rows = self.conn.execute(
@@ -377,22 +395,30 @@ class ItemRepo:
                 (publication.item_id, publication.channel, publication.updated_at),
             )
 
-    def finish_publishing(self, item_id: UUID, channels: set[str]) -> None:
+    def finish_publishing(
+        self, item_id: UUID, channels: set[str], *, held: frozenset[str] = frozenset()
+    ) -> bool:
+        """Return whether this call transitioned the item to FAILED."""
         with self.conn.transaction():
             if self._lock_state(item_id) != ItemState.PUBLISHING:
-                return
+                return False
             statuses = {
                 publication.channel: publication.status
                 for publication in self.list_publications(item_id)
                 if not is_paused(publication.channel)
             }
-            if PublicationStatus.FAILED in statuses.values():
+            if any(
+                status == PublicationStatus.FAILED and channel not in held
+                for channel, status in statuses.items()
+            ):
                 self.transition(item_id, ItemState.FAILED)
-            elif all(
+                return True
+            if all(
                 statuses.get(channel) == PublicationStatus.PUBLISHED
                 for channel in channels - PAUSED_CHANNELS
             ):
                 self.transition(item_id, ItemState.PUBLISHED)
+            return False
 
     def mark_published(
         self, item_id: UUID, channel: str, remote_id: str, *, claim: Claim | None = None
