@@ -191,6 +191,20 @@ still 200, inbox drained in order, failed row retried, processed rows purged aft
 button presses in a row each answered within seconds and handled by the next run.
 T23b DONE 2026-11-25 (PR #51).
 
+**T24 Reliability follow-ups after reel 002 and T23b.** Owner: Codex. Reviewer: Claude Code.
+**T24a** Retry failed items from Telegram (ADR 022): failure message with per-channel errors and
+`Retry`/`Skip` buttons when an item ends in FAILED (poll-telegram, publish-due, publish-reels);
+`retry:<id>` FAILED -> PUBLISHING + publish in the same run, `skipfail:<id>` FAILED -> SKIPPED, duplicate
+or stale press -> `Already handled`. No migration, no workflow change. Accept: tests for the message
+(channels, errors cut to 300 chars, sent once per FAILED), retry publishes only failed channels and reaches
+PUBLISHED, own video retry leaves Reels for publish-reels, second press, skip, Telegram send failure does not
+fail the job; live: one forced or real failure retried from Telegram.
+**T24b** Logs and callback answers: when a channel fails, the job log line names item, channel and the
+sanitized error text (not only `ChannelError`); the Reels alert uses the same text; handlers stop calling
+`answerCallbackQuery` for inbox updates the receiver already answered (ADR 021 decision 2), user-facing
+outcomes that matter are sent as messages. Accept: tests for the log line (no token in it), no second
+answer for inbox callbacks; live: one job log shows a readable failure line.
+
 ## Order
-T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22 -> T23a -> T23b.
+T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22 -> T23a -> T23b -> T24a -> T24b.
 First useful vertical slice after T11: Telegram text to approval to LinkedIn.
