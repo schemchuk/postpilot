@@ -86,7 +86,7 @@ def test_publish_due_records_weekly_rows_once_even_when_publishing_fails(
         repo.transition(item.id, ItemState.PUBLISHING)
         repo.transition(item.id, state)
 
-    def publish(*_):
+    def publish(*_, **kwargs):
         finish(items["series"], ItemState.PUBLISHED)
         finish(items["plain"], ItemState.PUBLISHED)
         finish(items["failed"], ItemState.FAILED)

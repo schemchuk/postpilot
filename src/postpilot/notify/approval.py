@@ -62,6 +62,10 @@ def _parts_label(parts: int | None) -> str:
     return f"{parts} parts" if parts else "open-ended"
 
 
+_FAILURE_ACTIONS = {
+    "retry": (ItemState.PUBLISHING, "Retrying"),
+    "skipfail": (ItemState.SKIPPED, "Skipped"),
+}
 _VIDEO_ACTIONS = {"vapprove", "vreject", "vlinkedin"}
 _AWAITING = ItemState.AWAITING_APPROVAL
 _ACTIONS = {
@@ -90,6 +94,7 @@ class ApprovalHandler:
         allowed_user_id: int,
         *,
         on_regenerate: Callable[[UUID], None] | None = None,
+        on_retry: Callable[[UUID], None] | None = None,
         recovered_regenerations: set[UUID] | None = None,
         series: SeriesStore | None = None,
         github_factory: Callable[[], GitHubClient] | None = None,
@@ -120,6 +125,7 @@ class ApprovalHandler:
         self.api = api
         self.allowed_user_id = allowed_user_id
         self.on_regenerate = on_regenerate
+        self.on_retry = on_retry
 
     def handle_update(self, update: dict[str, Any]) -> None:
         is_callback = "callback_query" in update
@@ -348,6 +354,7 @@ class ApprovalHandler:
             return
         action, _, raw_id = data.rpartition(":")
         if action not in _ACTIONS and action not in {
+            *_FAILURE_ACTIONS,
             "edit",
             "own:gen",
             "own:skip",
@@ -364,6 +371,28 @@ class ApprovalHandler:
         message = _object(event.get("message"))
         chat_id = _object(message.get("chat")).get("id")
         message_id = message.get("message_id")
+        if action in _FAILURE_ACTIONS:
+            if type(chat_id) is not int or type(message_id) is not int:
+                return
+            if action == "retry" and self.on_retry is None:
+                _reply(self.api.answer_callback_query, callback_id, "Retry unavailable")
+                return
+            state, label = _FAILURE_ACTIONS[action]
+            try:
+                self.repo.resolve_failed_item(item_id, state, message_id)
+            except (IllegalTransition, KeyError):
+                _reply(self.api.answer_callback_query, callback_id, "Already handled")
+                return
+            _reply(self.api.answer_callback_query, callback_id, label)
+            _reply(
+                self.api.edit_message_reply_markup,
+                chat_id,
+                message_id,
+                {"inline_keyboard": []},
+            )
+            if action == "retry" and self.on_retry is not None:
+                self.on_retry(item_id)
+            return
         own = self.own_video
         if action in {"own:gen", "own:skip"}:
             if own and type(chat_id) is int and type(update_id) is int:

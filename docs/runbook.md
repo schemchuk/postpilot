@@ -23,6 +23,17 @@ gh secret list
 Coordinate a token encryption key change with re-encryption of stored tokens
 or renew those tokens with the new key. A key change also invalidates pending renewal links.
 
+## Retry or skip a failed item
+
+Open the Telegram **Publishing failed** message to see the errors for active
+channels. After addressing the error, press **Retry**. The bot resumes publishing
+in the same run and leaves any remaining own-video Reels for the next
+`publish-reels` run. Channels that already published are preserved. If the item
+fails again, use the buttons on the new failure message.
+
+Press **Skip** to close the item and keep any posts already published. Both
+buttons handle the state transition without a manual database update.
+
 ## Import and renew a Threads access token
 
 Use the one-time import with a newly generated long-lived Threads access token.
