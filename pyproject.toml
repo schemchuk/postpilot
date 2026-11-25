@@ -36,4 +36,4 @@ testpaths = ["tests"]
 markers = ["integration: requires a real PostgreSQL database"]
 
 [tool.vercel]
-entrypoint = "postpilot.webhook:app"
+entrypoint = "vercel_app:app"
