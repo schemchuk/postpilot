@@ -45,7 +45,7 @@ class Scenario:
         assert request.url.path == path
         self.calls.append(path)
         if request.url.host == "rupload.facebook.com":
-            assert self.calls[-2] == "saved:new"
+            assert self.calls[-2] in ("saved:new", request.url.path)
             assert request.method == "POST"
             assert request.headers["offset"] == "0"
             assert request.headers["file_size"] == "5"
@@ -101,6 +101,10 @@ CREATE_UPLOAD = [
     ("/v27.0/123/media", {"id": "new"}),
     ("/ig-api-upload/v27.0/new", {"success": True}),
 ]
+PROCESSING_FAILED = (
+    400,
+    {"debug_info": {"retriable": False, "type": "ProcessingFailedError"}},
+)
 PUBLISH = ("/v27.0/123/media_publish", {"id": "media-id"})
 PERMALINK = ("/v27.0/media-id", {"permalink": LINK})
 
@@ -122,6 +126,24 @@ def test_create_upload_poll_publish_and_cache_link(render):
     )
     assert scenario.run() == ("media-id", LINK)
     assert scenario.elapsed == 10
+
+
+def test_processing_failed_upload_is_retried_in_same_container(render):
+    scenario = Scenario(
+        render,
+        [
+            CREATE_UPLOAD[0],
+            ("/ig-api-upload/v27.0/new", PROCESSING_FAILED),
+            ("/ig-api-upload/v27.0/new", PROCESSING_FAILED),
+            CREATE_UPLOAD[1],
+            status("new", "FINISHED"),
+            PUBLISH,
+            PERMALINK,
+        ],
+    )
+    assert scenario.run() == ("media-id", LINK)
+    assert scenario.elapsed == 10
+    assert scenario.calls.count("/v27.0/123/media") == 1
 
 
 def test_finished_republishes_same_container_and_link_is_best_effort(render):
@@ -212,7 +234,11 @@ def test_abandoned_container_replaced_once(render, code, age, new_status):
         ([("/v27.0/123/media", (400, {"error": {"code": 4}}))], TransientChannelError),
         ([("/v27.0/123/media", (400, {}))], ChannelError),
         (
-            [CREATE_UPLOAD[0], ("/ig-api-upload/v27.0/new", {"success": False})],
+            [CREATE_UPLOAD[0], *[("/ig-api-upload/v27.0/new", {"success": False})] * 5],
+            TransientChannelError,
+        ),
+        (
+            [CREATE_UPLOAD[0], *[("/ig-api-upload/v27.0/new", PROCESSING_FAILED)] * 5],
             TransientChannelError,
         ),
         (

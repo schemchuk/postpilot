@@ -16,6 +16,9 @@ from postpilot.channels.meta_reels import request
 from postpilot.config import InstagramSettings
 from postpilot.video.reel import ReelVideo
 
+UPLOAD_ATTEMPTS = 5
+UPLOAD_RETRY_SECONDS = 5
+
 
 class InstagramReelsChannel:
     name = "instagram-reels"
@@ -83,15 +86,28 @@ class InstagramReelsChannel:
             "https://rupload.facebook.com/ig-api-upload/"
             f"{self._settings.graph_version}/{quote(container, safe='')}"
         )
-        if (
-            self._request("POST", upload, token, video=reel.video).get("success")
-            is not True
-        ):
-            raise TransientChannelError("Instagram Reels upload was not confirmed")
+        self._upload(upload, token, reel.video)
         status = self._poll(container, token, deadline)
         if status in ("FINISHED", "PUBLISHED"):
             return self._finish(status, container, caption, token, claimed_at, save_ref)
         return None
+
+    def _upload(self, url: str, token: str, video: bytes) -> None:
+        # The same container accepts a repeated upload from offset 0.
+        for attempt in range(UPLOAD_ATTEMPTS):
+            try:
+                result = self._request("POST", url, token, video=video)
+            except TransientChannelError:
+                if attempt == UPLOAD_ATTEMPTS - 1:
+                    raise
+            else:
+                if result.get("success") is True:
+                    return
+                if attempt == UPLOAD_ATTEMPTS - 1:
+                    raise TransientChannelError(
+                        "Instagram Reels upload was not confirmed"
+                    )
+            self._sleep(UPLOAD_RETRY_SECONDS)
 
     def _poll(
         self,
