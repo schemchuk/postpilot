@@ -24,9 +24,10 @@ from postpilot.ai.prompts import (
 from postpilot.channels.base import ChannelError, TransientChannelError
 from postpilot.channels.facebook_reels import FacebookReelsChannel
 from postpilot.channels.instagram_reels import InstagramReelsChannel
-from postpilot.channels.linkedin import LinkedInChannel
+from postpilot.channels.linkedin import LINKEDIN_TEXT_CHANNELS, LinkedInChannel
 from postpilot.channels.linkedin_video import LinkedInRenderChannel
 from postpilot.channels.own_video_reels import OwnVideoReelsChannel
+from postpilot.channels.paused import is_paused
 from postpilot.channels.registry import build_channels, build_own_video_channels
 from postpilot.channels.threads import ThreadsChannel
 from postpilot.config import ConfigError, HeyGenSettings, Settings
@@ -121,7 +122,11 @@ def _read_token(
     return token.access_token
 
 
-_TEXT_TARGETS = ("linkedin", "linkedin-ua", ThreadsChannel.name)
+_TEXT_TARGETS = tuple(
+    name
+    for name in (*LINKEDIN_TEXT_CHANNELS, ThreadsChannel.name)
+    if not is_paused(name)
+)
 _INSTAGRAM_TARGET = InstagramReelsChannel.name
 _REELS_TARGETS = (_INSTAGRAM_TARGET, FacebookReelsChannel.name)
 
@@ -466,6 +471,7 @@ def publish_reels(
                     repo,
                 )
                 for name, lang in LINKEDIN_VIDEO_CHANNELS.items()
+                if not is_paused(name)
             )
         api = TelegramApi(settings.telegram_bot_token, client=client)
         notify = Notifier(api, settings.telegram_chat_id).send_alert

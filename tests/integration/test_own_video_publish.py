@@ -160,7 +160,7 @@ def test_own_video_jobs_share_targets_and_resume_saved_ref(
     steps[1]()
     assert repo.get_item(item.id).state == ItemState.PUBLISHED
     rows = repo.list_publications(item.id)
-    targets = {"linkedin", "linkedin-ua", "threads"}
+    targets = {"linkedin", "threads"}
     if duration == 30:
         targets.update(("instagram-reels", "facebook-reels"))
         alerts.assert_any_call(

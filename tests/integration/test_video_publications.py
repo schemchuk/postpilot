@@ -111,8 +111,8 @@ def test_linkedin_claim_requires_opt_in_and_approval(conn):
     assert publications.claim(on, "linkedin-video", STALE_AFTER) is None
     assert renders.approve(on, 1, datetime.now(UTC))
     assert publications.oldest_eligible(channels, STALE_AFTER) == on
-    for channel in channels:
-        claim = publications.claim(on, channel, STALE_AFTER)
-        assert claim is not None
-        publications.mark_published(claim, f"post:{channel}")
-    assert publications.oldest_eligible(channels, STALE_AFTER) is None
+    assert publications.claim(on, "linkedin-ua-video", STALE_AFTER, retry=True) is None
+    claim = publications.claim(on, "linkedin-video", STALE_AFTER)
+    assert claim is not None
+    publications.mark_published(claim, "post:linkedin-video")
+    assert publications.oldest_eligible(channels, STALE_AFTER, retry=True) is None

@@ -165,10 +165,10 @@ def test_selects_adapters_for_item_source(source):
     repo.get_item.return_value = item
     repo.get_variants.return_value = variants
     repo.list_publications.return_value = []
-    names = ["linkedin", "linkedin-ua", "threads"]
+    names = ["linkedin", "threads"]
     reels = ("instagram-reels", "facebook-reels")
     base = [FakeChannel(name) for name in names]
-    video = [FakeChannel(name) for name in names[:2]]
+    video = [FakeChannel(name) for name in names[:1]]
     statuses = {}
 
     def transition(item_id, state):
@@ -203,13 +203,12 @@ def test_selects_adapters_for_item_source(source):
     if source == "own_video":
         assert [result.outcome for result in report.channels.values()] == [
             "published",
-            "published",
             "held",
             "held",
             "held",
         ]
-        assert set(statuses) == set(names[:2])
-        assert repo.claim_publication.call_count == 2
+        assert set(statuses) == set(names[:1])
+        assert repo.claim_publication.call_count == 1
         assert repo.get_item.return_value.state == ItemState.PUBLISHING
         assert all(channel.posts for channel in video)
         assert not any(channel.posts for channel in base)

@@ -166,10 +166,8 @@ def test_generation_regeneration_and_approval(bot, conn, repo, media, monkeypatc
     assert [v.text for v in repo.get_variants(item_id)] == ["Deutsch", "Українська"]
     api.send_video.assert_called_once_with(12, "file")
     preview = api.send_message.call_args.args[1]
-    assert (
-        "Own video · AI label: yes · Channels: LinkedIn DE+UA, Threads, Instagram, Facebook"
-        in preview
-    )
+    assert "Channels: LinkedIn DE, Threads\nOwn video · AI label: yes" in preview
+    assert "UA (not published: LinkedIn UA paused)\nУкраїнська" in preview
     assert "Reels skipped: video is 91 s (3-90 s allowed)" in preview
 
     humanizer.return_value = ("Aktualisiert", "Оновлено")

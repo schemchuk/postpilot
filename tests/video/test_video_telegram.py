@@ -48,7 +48,7 @@ def test_notifier_preview_and_oversized_alert(monkeypatch):
                 ],
                 [
                     {
-                        "text": "Also on LinkedIn: no",
+                        "text": "Also on LinkedIn DE: no",
                         "callback_data": f"vlinkedin:{render.id}",
                     }
                 ],
@@ -181,7 +181,7 @@ def test_video_linkedin_toggle_callback(user, value):
         )
         label = api.edit_message_reply_markup.call_args.args[2]["inline_keyboard"][1][0]
         assert label["text"] == (
-            "Also on LinkedIn: yes" if value else "Also on LinkedIn: no"
+            "Also on LinkedIn DE: yes" if value else "Also on LinkedIn DE: no"
         )
 
 

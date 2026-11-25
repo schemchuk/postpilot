@@ -5,6 +5,7 @@ from uuid import UUID
 from psycopg import Connection
 from psycopg.rows import TupleRow
 
+from postpilot.channels.paused import PAUSED_CHANNELS, is_paused
 from postpilot.core.models import Language
 from postpilot.store.repo import LostPublicationClaim
 
@@ -50,7 +51,12 @@ class VideoPublicationStore:
                 )
                 ORDER BY requested_at, id LIMIT 1
                 """,
-                (sorted(channels), list(LINKEDIN_VIDEO_CHANNELS), retry, stale_after),
+                (
+                    sorted(channels - PAUSED_CHANNELS),
+                    list(LINKEDIN_VIDEO_CHANNELS),
+                    retry,
+                    stale_after,
+                ),
             ).fetchone()
         return UUID(str(row[0])) if row else None
 
@@ -62,6 +68,8 @@ class VideoPublicationStore:
         *,
         retry: bool = False,
     ) -> VideoClaim | None:
+        if is_paused(channel):
+            return None
         with self.conn.transaction():
             render = self.conn.execute(
                 "SELECT status, linkedin FROM video_renders WHERE id = %s FOR UPDATE",

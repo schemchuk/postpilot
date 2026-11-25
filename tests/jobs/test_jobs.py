@@ -326,11 +326,14 @@ def test_poll_only_creates_translation_client_with_key(
         repo.create_inbox_item.assert_called_once_with(50, "Мій текст", "Mein Text")
 
 
+@pytest.mark.parametrize("source", ["telegram", "own_video"])
 @pytest.mark.parametrize("expired", [True, False])
-def test_linkedin_provider_and_expiry_guard(settings, repo, monkeypatch, expired):
+def test_linkedin_provider_and_expiry_guard(
+    settings, repo, monkeypatch, expired, source
+):
     now = datetime.now(UTC)
     monkeypatch.setattr(tasks, "_now", lambda: now)
-    item = Item(uuid4(), "telegram", ItemState.PUBLISHING, now, now, 1, now)
+    item = Item(uuid4(), source, ItemState.PUBLISHING, now, now, 1, now)
     repo.get_item.return_value = item
     repo.list_publications.return_value = []
     repo.get_variants.return_value = []
@@ -342,6 +345,15 @@ def test_linkedin_provider_and_expiry_guard(settings, repo, monkeypatch, expired
         else None
     )
     monkeypatch.setattr(tasks, "TokenStore", Mock(return_value=store))
+    monkeypatch.setattr(
+        tasks,
+        "OwnVideoStore",
+        Mock(
+            return_value=Mock(
+                get_by_item=Mock(return_value=SimpleNamespace(reels_eligible=False))
+            )
+        ),
+    )
 
     def reject_http(request):
         pytest.fail("A held publication must not make an HTTP request")
@@ -350,12 +362,13 @@ def test_linkedin_provider_and_expiry_guard(settings, repo, monkeypatch, expired
         publisher = tasks._publisher(settings, repo, client)
         report = publisher.publish_item(item.id)
 
-    assert {name: result.outcome for name, result in report.channels.items()} == {
-        "linkedin": "held",
-        "linkedin-ua": "held",
-    }
+    expected = {"linkedin": "held"}
+    if source == "own_video":
+        expected["threads"] = "held"
+    assert {
+        name: result.outcome for name, result in report.channels.items()
+    } == expected
     assert [call.args for call in store.get.call_args_list] == [
-        ("linkedin",),
         ("linkedin",),
     ]
     repo.claim_publication.assert_not_called()
