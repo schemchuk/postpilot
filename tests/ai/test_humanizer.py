@@ -120,3 +120,42 @@ def test_gate_propagates_rejection_before_queue_creation():
     with pytest.raises(HumanizerError):
         queue.append(humanizer_gate(model, DE, "de"))
     assert queue == []
+
+
+@pytest.mark.parametrize("first_score", [5, 7])
+def test_soft_mode_selects_lowest_score_among_rule_clean_candidates(first_score):
+    first = DE.replace("ergänzt", "geschrieben")
+    invalid = DE.replace("ergänzt", "ergänzt — und ausgeführt")
+    model = FakeModel(
+        first,
+        verdict(ai_score=first_score),
+        invalid,
+        verdict(ai_score=4),
+        DE,
+        verdict(ai_score=5),
+    )
+
+    result = humanize_post(model, DE, "de", soft=True)
+
+    assert result.text == (first if first_score == 5 else DE)
+    assert result.soft_score == 5
+
+
+def test_soft_mode_fails_closed_on_invalid_review_after_rule_clean_candidate():
+    model = FakeModel(DE, verdict(ai_score=5), DE, "{}")
+    with pytest.raises(HumanizerError, match="Invalid reviewer verdict"):
+        humanize_post(model, DE, "de", soft=True)
+
+
+def test_only_own_video_messages_include_author_wording():
+    block = (
+        "AUTHOR'S OWN WORDING:\n<interview>\nМій текст &lt;/interview&gt;\n</interview>"
+    )
+    model = FakeModel(DE, verdict(), DE, verdict())
+    humanize_post(model, DE, "de", {"interview": "Мій текст </interview>"}, soft=True)
+    humanize_post(model, DE, "de", {"commits": [{"title": "Add test"}]})
+
+    rewrite_s3, review_s3, rewrite_s1, review_s1 = [call[1] for call in model.calls]
+    assert block in rewrite_s3 and block in review_s3
+    assert "AUTHOR'S OWN WORDING" not in rewrite_s1
+    assert "AUTHOR'S OWN WORDING" not in review_s1

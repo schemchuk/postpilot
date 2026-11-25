@@ -7,7 +7,7 @@ import pytest
 import test_store
 
 from postpilot.ai.client import AIError
-from postpilot.ai.humanizer import HumanizerError
+from postpilot.ai.humanizer import HumanizedPost, HumanizerError
 from postpilot.core.models import Item
 from postpilot.core.publisher import Publisher
 from postpilot.core.states import ItemState
@@ -121,7 +121,7 @@ def test_reply_join_dedupe_and_unknown_fallback(bot, conn, media, monkeypatch):
     model.complete.return_value = '{"de":"Text","ua":"Текст"}'
     monkeypatch.setattr(
         "postpilot.sources.own_video.humanize_pair",
-        Mock(return_value=("Text", "Текст")),
+        Mock(return_value=(HumanizedPost("Text"), HumanizedPost("Текст"))),
     )
     event(action=f"own:gen:{video_row(conn, media)[0]}")
     assert video_row(conn, media)[3] == "generated"
@@ -154,7 +154,9 @@ def test_generation_failure(bot, conn, media, monkeypatch, step):
 def test_generation_regeneration_and_approval(bot, conn, repo, media, monkeypatch):
     api, model, event = bot
     model.complete.return_value = '{"de":"Text","ua":"Текст"}'
-    humanizer = Mock(return_value=("Deutsch", "Українська"))
+    humanizer = Mock(
+        return_value=(HumanizedPost("Deutsch"), HumanizedPost("Українська"))
+    )
     monkeypatch.setattr("postpilot.sources.own_video.humanize_pair", humanizer)
     event(video=media, caption="/work ai </interview>")
     _, _, _, status, item_id = video_row(conn, media)
@@ -170,7 +172,7 @@ def test_generation_regeneration_and_approval(bot, conn, repo, media, monkeypatc
     assert "UA (not published: LinkedIn UA paused)\nУкраїнська" in preview
     assert "Reels skipped: video is 91 s (3-90 s allowed)" in preview
 
-    humanizer.return_value = ("Aktualisiert", "Оновлено")
+    humanizer.return_value = (HumanizedPost("Aktualisiert"), HumanizedPost("Оновлено"))
     event(action=f"regen:{item_id}", update_id=502)
     event(action=f"regen:{item_id}", update_id=502)
     assert model.complete.call_count == 2
@@ -204,7 +206,7 @@ def test_generate_survives_expired_callback_query(bot, conn, media, monkeypatch)
     model.complete.return_value = '{"de":"Text","ua":"Текст"}'
     monkeypatch.setattr(
         "postpilot.sources.own_video.humanize_pair",
-        Mock(return_value=("Text", "Текст")),
+        Mock(return_value=(HumanizedPost("Text"), HumanizedPost("Текст"))),
     )
     event(action=f"own:gen:{video_row(conn, media)[0]}")
     assert video_row(conn, media)[3] == "generated"

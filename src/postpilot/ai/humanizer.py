@@ -2,7 +2,8 @@ import json
 import re
 from collections import Counter
 from collections.abc import Mapping
-from typing import TypedDict
+from dataclasses import dataclass
+from typing import Literal, TypedDict, overload
 
 from .client import AIError, TextModel
 from .prompts import (
@@ -41,7 +42,7 @@ _MARKDOWN = re.compile(
 
 
 class HumanizerError(RuntimeError):
-    """An S1 draft could not be approved."""
+    """A draft could not be verified."""
 
 
 class Verdict(TypedDict):
@@ -123,13 +124,47 @@ def ai_check(
     }
 
 
+@dataclass(frozen=True)
+class HumanizedPost:
+    text: str
+    soft_score: int | None = None
+
+
+@overload
 def humanize_post(
-    model: TextModel, text: str, lang: str, facts: Mapping[str, object] | None = None
-) -> str:
-    """Rewrite and verify one S1 draft, or raise without returning a candidate."""
+    model: TextModel,
+    text: str,
+    lang: str,
+    facts: Mapping[str, object] | None = None,
+    *,
+    soft: Literal[False] = False,
+) -> str: ...
+
+
+@overload
+def humanize_post(
+    model: TextModel,
+    text: str,
+    lang: str,
+    facts: Mapping[str, object] | None = None,
+    *,
+    soft: Literal[True],
+) -> HumanizedPost: ...
+
+
+def humanize_post(
+    model: TextModel,
+    text: str,
+    lang: str,
+    facts: Mapping[str, object] | None = None,
+    *,
+    soft: bool = False,
+) -> str | HumanizedPost:
+    """Rewrite a draft and verify it, allowing AI review failures only in soft mode."""
     language = _language_name(lang)
     candidate = text
     notes: list[str] = []
+    best: tuple[int, str] | None = None
     for _ in range(MAX_ROUNDS):
         user = rewrite_message(language, candidate, facts, notes)
         try:
@@ -138,8 +173,12 @@ def humanize_post(
             raise HumanizerError("The rewrite request failed.") from None
         notes = rule_check(text, candidate, lang)
         verdict = ai_check(model, candidate, lang, facts)
-        if not notes and verdict["passed"]:
-            return candidate
+        if not notes:
+            if verdict["passed"]:
+                return HumanizedPost(candidate) if soft else candidate
+            score = verdict["ai_score"]
+            if soft and (best is None or score < best[0]):
+                best = score, candidate
         notes.extend(verdict["issues"])
         notes.extend(
             f"Unsupported by source facts, remove or soften: {fact}"
@@ -148,15 +187,52 @@ def humanize_post(
         if not notes:
             notes.append("The reviewer rejected the draft. Reduce AI tells.")
 
+    if best is not None:
+        score, candidate = best
+        return HumanizedPost(candidate, score)
+
     raise HumanizerError(
         f"{language} post failed the humanizer after {MAX_ROUNDS} rounds."
     )
 
 
+@overload
 def humanize_pair(
-    model: TextModel, de: str, uk: str, facts: Mapping[str, object] | None = None
-) -> tuple[str, str]:
+    model: TextModel,
+    de: str,
+    uk: str,
+    facts: Mapping[str, object] | None = None,
+    *,
+    soft: Literal[False] = False,
+) -> tuple[str, str]: ...
+
+
+@overload
+def humanize_pair(
+    model: TextModel,
+    de: str,
+    uk: str,
+    facts: Mapping[str, object] | None = None,
+    *,
+    soft: Literal[True],
+) -> tuple[HumanizedPost, HumanizedPost]: ...
+
+
+def humanize_pair(
+    model: TextModel,
+    de: str,
+    uk: str,
+    facts: Mapping[str, object] | None = None,
+    *,
+    soft: bool = False,
+) -> tuple[str, str] | tuple[HumanizedPost, HumanizedPost]:
     """Verify German and optional Ukrainian variants."""
-    return humanize_post(model, de, "de", facts), humanize_post(
-        model, uk, "uk", facts
-    ) if uk else uk
+    if soft:
+        return humanize_post(model, de, "de", facts, soft=True), (
+            humanize_post(model, uk, "uk", facts, soft=True)
+            if uk
+            else HumanizedPost(uk)
+        )
+    return humanize_post(model, de, "de", facts), (
+        humanize_post(model, uk, "uk", facts) if uk else uk
+    )
