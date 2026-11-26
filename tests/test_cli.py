@@ -33,6 +33,7 @@ def test_unknown_command_exits_nonzero():
         "publish-due",
         "check-tokens",
         "threads-import-token",
+        "youtube-import-token",
         "facebook-import-token",
         "instagram-import-token",
     ],

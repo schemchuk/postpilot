@@ -20,6 +20,12 @@ class LinkedInSettings:
 
 
 @dataclass(frozen=True)
+class YouTubeSettings:
+    client_id: str = field(repr=False)
+    client_secret: str = field(repr=False)
+
+
+@dataclass(frozen=True)
 class ThreadsSettings:
     app_id: str = field(repr=False)
     app_secret: str = field(repr=False)
@@ -90,6 +96,7 @@ class Settings:
     instagram: InstagramSettings | None = None
     imap: ImapSettings | None = None
     factory_repo: str = DEFAULT_FACTORY_REPO
+    youtube: YouTubeSettings | None = None
 
     @classmethod
     def from_env(
@@ -120,6 +127,8 @@ class Settings:
             if client_id and client_secret and redirect_uri and scopes
             else None
         )
+        youtube_id = values.get("YOUTUBE_CLIENT_ID")
+        youtube_secret = values.get("YOUTUBE_CLIENT_SECRET")
         app_id = values.get("THREADS_APP_ID")
         app_secret = values.get("THREADS_APP_SECRET")
         threads_redirect = values.get("THREADS_REDIRECT_URI") or redirect_uri
@@ -180,6 +189,9 @@ class Settings:
             if imap_user and imap_password
             else None,
             values.get("FACTORY_REPO") or DEFAULT_FACTORY_REPO,
+            YouTubeSettings(youtube_id, youtube_secret)
+            if youtube_id and youtube_secret
+            else None,
         )
 
     def secret_values(self) -> tuple[str, ...]:
@@ -195,6 +207,8 @@ class Settings:
                 self.linkedin.client_secret,
                 self.linkedin.redirect_uri,
             )
+        if self.youtube is not None:
+            values += (self.youtube.client_id, self.youtube.client_secret)
         if self.threads is not None:
             values += (
                 self.threads.app_id,

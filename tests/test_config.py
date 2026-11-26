@@ -23,6 +23,9 @@ def clean_env(monkeypatch):
     for name in (
         *REQUIRED,
         *LINKEDIN,
+        "YOUTUBE_CLIENT_ID",
+        "YOUTUBE_CLIENT_SECRET",
+        "YOUTUBE_REFRESH_TOKEN",
         "THREADS_APP_ID",
         "THREADS_APP_SECRET",
         "THREADS_REDIRECT_URI",
@@ -201,3 +204,21 @@ def test_imap_config_is_optional_and_credentials_are_redacted(monkeypatch):
         assert secret in settings.secret_values()
     monkeypatch.setenv("IMAP_HOST", "imap.example.test")
     assert Settings.from_env().imap.host == "imap.example.test"
+
+
+@pytest.mark.parametrize("complete", [False, True])
+def test_youtube_settings_optional_and_redacted(monkeypatch, complete):
+    for name, value in REQUIRED.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("YOUTUBE_CLIENT_ID", "youtube-client-value")
+    if complete:
+        monkeypatch.setenv("YOUTUBE_CLIENT_SECRET", "youtube-secret-value")
+    settings = Settings.from_env()
+    if complete:
+        assert settings.youtube.client_id == "youtube-client-value"
+        assert settings.youtube.client_secret == "youtube-secret-value"
+        for value in ("youtube-client-value", "youtube-secret-value"):
+            assert value not in repr(settings)
+            assert value in settings.secret_values()
+    else:
+        assert settings.youtube is None

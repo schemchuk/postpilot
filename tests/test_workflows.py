@@ -145,7 +145,14 @@ def test_scheduled_workflow(name, cron):
         else:
             expected.update(channel_credentials)
         if name == "check-tokens":
-            expected.update({"FACEBOOK_PAGE_ID", "INSTAGRAM_BUSINESS_ACCOUNT_ID"})
+            expected.update(
+                {
+                    "FACEBOOK_PAGE_ID",
+                    "INSTAGRAM_BUSINESS_ACCOUNT_ID",
+                    "YOUTUBE_CLIENT_ID",
+                    "YOUTUBE_CLIENT_SECRET",
+                }
+            )
         if name == "poll-telegram":
             expected.update({"ANTHROPIC_API_KEY", "GITHUB_TOKEN", "GITHUB_OWNER"})
             expected.update({"SHORTIO_API_KEY", "SHORTIO_DOMAIN"})

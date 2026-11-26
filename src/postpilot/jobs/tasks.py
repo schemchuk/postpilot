@@ -84,6 +84,11 @@ from postpilot.tokens.instagram import token_expiry
 from postpilot.tokens.linkedin import LinkedInTokenManager
 from postpilot.tokens.store import TokenStore
 from postpilot.tokens.threads import TOKEN_LIFETIME, ThreadsTokenManager
+from postpilot.tokens.youtube import (
+    REFRESH_TOKEN_STORAGE_EXPIRY,
+    YouTubeRefreshError,
+    YouTubeTokenManager,
+)
 from postpilot.trace import error_fields, trace
 from postpilot.video.heygen import HeyGenClient
 from postpilot.video.pipeline import render_one
@@ -641,6 +646,7 @@ def check_tokens(settings: Settings, conn: Connection[TupleRow]) -> None:
         and settings.threads is None
         and settings.facebook is None
         and settings.instagram is None
+        and settings.youtube is None
     ):
         return
     state = ItemRepo(conn).bot_state
@@ -682,6 +688,20 @@ def check_tokens(settings: Settings, conn: Connection[TupleRow]) -> None:
                     provider,
                     now.date(),
                     partial(notifier.send_alert, f"{provider}: {message}"),
+                )
+        if settings.youtube is not None:
+            try:
+                YouTubeTokenManager(settings.youtube, store, client).access_token()
+            except YouTubeRefreshError:
+                state.send_token_alert_once(
+                    "youtube",
+                    now.date(),
+                    partial(
+                        notifier.send_alert,
+                        "youtube: token missing or refresh failed; re-run local consent "
+                        'from docs/runbook.md ("YouTube Shorts setup"), then run '
+                        "postpilot youtube-import-token",
+                    ),
                 )
         managers = _managers(settings, store, client)
         report = service.check_tokens(
@@ -1223,6 +1243,15 @@ def publish_due(settings: Settings, conn: Connection[TupleRow]) -> None:
                 )
     finally:
         _record_weekly_publications(conn, repo)
+
+
+def youtube_import_token(settings: Settings, conn: Connection[TupleRow]) -> None:
+    token = os.getenv("YOUTUBE_REFRESH_TOKEN")
+    if not token or not token.strip():
+        raise ValueError("YOUTUBE_REFRESH_TOKEN is required")
+    TokenStore(conn, TokenCipher(settings.token_encryption_key)).save(
+        "youtube", "", REFRESH_TOKEN_STORAGE_EXPIRY, token
+    )
 
 
 def threads_import_token(settings: Settings, conn: Connection[TupleRow]) -> None:
