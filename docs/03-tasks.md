@@ -216,6 +216,7 @@ shown but answers `Coming soon` until T25b. Accept: tests for the full path (kin
 -> preview with AI label), Cancel at each step, expiry (late button, text goes to S2 again), second `/work`,
 plain text during intake not created as S2, `Done` without text, fast path still works; live: one video
 through the guided flow to the preview.
+T25a DONE 2026-11-26 (PR #54).
 **T25b** No-description items (ADR 023 decision 5): item without texts, no AI call, Reels-only targets
 (IG + FB), empty caption plus AI label line when `ai`, preview with Approve/Skip only, refusal for videos
 outside 3-90 s. Accept: tests for item and targets (no LinkedIn/Threads publications), caption with and
