@@ -294,3 +294,46 @@ def test_graph_retryable_errors_and_invalid_token_precedence(
         run(render, route)
     assert type(caught.value) is expected
     assert TOKEN not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "unconfirmed", "permissions", "server", "timeout"]
+)
+def test_thumbnail_is_uploaded_after_finish_and_is_best_effort(render, caplog, failure):
+    png = b"\x89PNG\r\n\x1a\nimage"
+    calls = []
+
+    def route(request):
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "status": {
+                        "uploading_phase": {"status": "complete"},
+                        "publishing_phase": {"status": "not_started"},
+                    }
+                },
+            )
+        if request.url.path.endswith("/video_reels"):
+            assert parse_qs(request.content.decode())["upload_phase"] == ["finish"]
+            calls.append("finish")
+            return httpx.Response(200, json={"success": True})
+        assert request.method == "POST"
+        assert request.url.path == "/v27.0/old/thumbnails"
+        assert request.headers["Content-Type"].startswith("multipart/form-data;")
+        assert b'name="is_preferred"\r\n\r\ntrue' in request.content
+        assert b'name="source"; filename="cover_de.png"' in request.content
+        assert b"Content-Type: image/png\r\n\r\n" + png in request.content
+        calls.append("thumbnail")
+        if failure == "permissions":
+            return httpx.Response(403, json={"error": {"message": TOKEN}})
+        if failure == "server":
+            return httpx.Response(503)
+        if failure == "timeout":
+            raise httpx.ReadTimeout(TOKEN, request=request)
+        return httpx.Response(200, json={"success": failure is None})
+
+    assert run(replace(render, cover=lambda: png), route, ref="old") == "old"
+    assert calls == ["finish", "thumbnail"]
+    assert ("thumbnail upload failed" in caplog.text) == (failure is not None)
+    assert TOKEN not in caplog.text

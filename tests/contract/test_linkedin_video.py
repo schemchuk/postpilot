@@ -1,5 +1,6 @@
 import json
 from datetime import UTC, datetime
+from unittest.mock import Mock
 from uuid import uuid4
 
 import httpx
@@ -11,6 +12,7 @@ from postpilot.channels.base import (
     UncertainPublication,
     marker,
 )
+from postpilot.channels.factory import FactoryLinkedInChannel
 from postpilot.channels.linkedin import LinkedInChannel
 from postpilot.channels.linkedin_video import LinkedInVideoChannel
 from postpilot.core.models import Item, Variant
@@ -19,6 +21,8 @@ from postpilot.notify.telegram import TelegramApi
 
 URN = "urn:li:video:test"
 POST_ID = "urn:li:share:1"
+PNG = b"\x89PNG\r\n\x1a\ncover"
+THUMBNAIL_URL = "https://upload.test/thumbnail?signed=private"
 LABEL = "KI-generiertes Video / AI-generated video"
 
 
@@ -35,6 +39,9 @@ class VideoServer:
         self.events = []
         self.sleeps = []
         self.fail_parts = 0
+        self.fail_thumbnail = False
+        self.factory = False
+        self.thumbnail_url = THUMBNAIL_URL
         self.status = "AVAILABLE"
         self.posts = []
         self.lose_id = False
@@ -49,9 +56,18 @@ class VideoServer:
         if path == "/v2/userinfo":
             return httpx.Response(200, json={"sub": "person"})
         if request.method == "PUT":
-            part = int(path.rsplit("/", 1)[-1])
             assert "authorization" not in request.headers
             assert request.headers["content-type"] == "application/octet-stream"
+            if path == "/thumbnail":
+                assert self.factory
+                assert request.headers["media-type-family"] == "STILLIMAGE"
+                assert request.content == PNG
+                self.events.append("thumbnail")
+                if self.fail_thumbnail:
+                    self.fail_thumbnail = False
+                    return httpx.Response(503)
+                return httpx.Response(201)
+            part = int(path.rsplit("/", 1)[-1])
             first, last = self.bounds[part]
             assert request.content == self.data[first : last + 1]
             self.events.append(f"part-{part}")
@@ -73,7 +89,7 @@ class VideoServer:
                         "owner": "urn:li:person:person",
                         "fileSizeBytes": len(self.data),
                         "uploadCaptions": False,
-                        "uploadThumbnail": False,
+                        "uploadThumbnail": self.factory,
                     }
                 }
                 return httpx.Response(
@@ -82,6 +98,11 @@ class VideoServer:
                         "value": {
                             "video": URN,
                             "uploadToken": "upload-token",
+                            **(
+                                {"thumbnailUploadUrl": self.thumbnail_url}
+                                if self.factory and self.thumbnail_url is not None
+                                else {}
+                            ),
                             "uploadInstructions": [
                                 {
                                     "uploadUrl": f"https://upload.test/{i}?signed=private",
@@ -258,3 +279,55 @@ def test_telegram_fetch_error_is_permanent(failure_method):
             server.publish(fetch=lambda _: api.download_file(api.get_file("file-id")))
     assert not isinstance(error.value, TransientChannelError)
     assert server.events == []
+
+
+@pytest.mark.parametrize("mode", ["success", "missing-url", "retry"])
+def test_factory_thumbnail_upload(mode, caplog):
+    server = VideoServer()
+    server.factory = True
+    server.fail_thumbnail = mode == "retry"
+    if mode == "missing-url":
+        server.thumbnail_url = None
+    assets = Mock()
+    assets.reel.return_value.post_de = "Deutsch"
+    assets.reel.return_value.ai = False
+    assets.video.side_effect = server.fetch
+    assets.cover.return_value = PNG
+    with httpx.Client(
+        transport=httpx.MockTransport(server),
+        headers={"Authorization": "default-token"},
+    ) as client:
+        channel = FactoryLinkedInChannel(
+            LinkedInChannel("linkedin", "de", lambda: "token", client, "202611"), assets
+        )
+        channel._sleep = server.sleeps.append
+        with caplog.at_level("INFO", logger="httpx"):
+
+            def publish():
+                return channel.publish_with_ref(
+                    server.item,
+                    [],
+                    ref=None,
+                    claimed_at=server.item.updated_at,
+                    save_ref=server.events.append,
+                )
+
+            if mode == "missing-url":
+                with pytest.raises(
+                    ChannelError, match="did not return a thumbnail URL"
+                ):
+                    publish()
+                assert "part-0" not in server.events
+                assert "finalizeUpload" not in server.events
+                return
+            assert publish() == POST_ID
+    assets.cover.assert_called_once_with(server.item.id)
+    start = server.events.index("part-0")
+    end = server.events.index("finalizeUpload")
+    attempts = 2 if mode == "retry" else 1
+    assert (
+        server.events[start:end]
+        == ["part-0", "part-1", "part-2"] + ["thumbnail"] * attempts
+    )
+    assert server.sleeps == ([1.0] if mode == "retry" else [])
+    assert THUMBNAIL_URL not in caplog.text

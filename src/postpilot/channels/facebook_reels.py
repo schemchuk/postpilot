@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Callable
 from datetime import datetime
 from functools import partial
@@ -6,13 +7,18 @@ from urllib.parse import quote
 import httpx
 
 from postpilot.channels.base import (
+    ChannelError,
+    ChannelHeld,
     TransientChannelError,
     UncertainPublication,
 )
 from postpilot.channels.meta_reels import request
 from postpilot.config import FacebookSettings
 from postpilot.core.limits import REELS_MAX_DURATION
+from postpilot.trace import describe_error
 from postpilot.video.reel import ReelVideo
+
+_logger = logging.getLogger(__name__)
 
 
 class FacebookReelsChannel:
@@ -93,6 +99,7 @@ class FacebookReelsChannel:
             else:
                 return None
         video = reel.video_bytes()
+        cover = reel.cover() if reel.cover is not None else None
         if ref is None:
             new_ref = self._request(
                 "POST",
@@ -123,4 +130,22 @@ class FacebookReelsChannel:
         )
         if result.get("success") is not True:
             raise UncertainPublication("Facebook Reels did not confirm publishing")
+        if cover is not None:
+            self._upload_thumbnail(ref, token, cover)
         return ref
+
+    def _upload_thumbnail(self, ref: str, token: str, cover: bytes) -> None:
+        try:
+            result = self._request(
+                "POST",
+                f"{self._settings.graph_url}/{quote(ref, safe='')}/thumbnails",
+                token,
+                data={"is_preferred": "true"},
+                files={"source": ("cover_de.png", cover, "image/png")},
+            )
+            if result.get("success") is not True:
+                raise ChannelError("Facebook Reels did not confirm the thumbnail")
+        except (ChannelError, ChannelHeld, httpx.HTTPError, httpx.InvalidURL) as error:
+            _logger.warning(
+                "Facebook Reels thumbnail upload failed: %s", describe_error(error)
+            )

@@ -56,6 +56,11 @@ class Scenario:
                 "upload_type": ["resumable"],
                 "caption": [CAPTION],
                 "is_ai_generated": ["true"],
+                **(
+                    {"cover_url": [self.render.cover_url], "thumb_offset": ["0"]}
+                    if self.render.cover_url is not None
+                    else {}
+                ),
             }
         elif path.endswith("/media_publish"):
             assert request.method == "POST"
@@ -113,7 +118,12 @@ def status(ref, code):
     return f"/v27.0/{ref}", {"status_code": code}
 
 
-def test_create_upload_poll_publish_and_cache_link(render):
+@pytest.mark.parametrize(
+    "cover_url",
+    [None, "https://github.com/owner/repo/releases/download/reel/cover_de.png"],
+)
+def test_create_upload_poll_publish_and_cache_link(render, cover_url):
+    render = replace(render, cover_url=cover_url)
     scenario = Scenario(
         render,
         [

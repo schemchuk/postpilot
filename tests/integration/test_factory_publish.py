@@ -30,6 +30,7 @@ repo = test_store.repo
 
 NOW = datetime(2026, 12, 1, 7, tzinfo=UTC)
 VIDEO = b"factory mp4"
+COVER = b"\x89PNG\r\n\x1a\ncover"
 POST = "  Die Biene.\n\nZweite Zeile.  \n"
 THREAD = "  Ein eigener Text.\n"
 
@@ -41,7 +42,10 @@ def add_reel(conn, *, release_at=NOW - timedelta(seconds=1), ai=True, threads=TH
         ai,
         POST,
         threads,
-        {"reel_de.mp4": {"sha256": sha256(VIDEO).hexdigest(), "size": len(VIDEO)}},
+        {
+            "reel_de.mp4": {"sha256": sha256(VIDEO).hexdigest(), "size": len(VIDEO)},
+            "cover_de.png": {"sha256": sha256(COVER).hexdigest(), "size": len(COVER)},
+        },
         30,
     )
     assert FactoryReelStore(conn).create_factory_item(reel) == "new"
@@ -67,12 +71,20 @@ def job(monkeypatch, conn):
     )
     asset_url = f"https://github.com/{state.settings.factory_repo}/releases/download/clip/reel_de.mp4"
 
+    cover_url = asset_url.replace("reel_de.mp4", "cover_de.png")
+
     def post(channel, text):
         state.posts.setdefault(channel, []).append(text)
 
     def route(request):
         path = request.url.path
         host = request.url.host
+        if path.endswith("/fb-reel/thumbnails"):
+            assert request.method == "POST"
+            assert "facebook-reels" in state.posts
+            assert b'name="source"; filename="cover_de.png"' in request.content
+            assert COVER in request.content
+            return httpx.Response(200, json={"success": True})
         form = parse_qs(request.content.decode()) if host.startswith("graph.") else {}
         if host == "api.github.com":
             assert "/releases/tags/reel%2F002-" in request.url.raw_path.decode()
@@ -82,14 +94,17 @@ def job(monkeypatch, conn):
             return httpx.Response(
                 200,
                 json={
-                    "assets": []
-                    if state.failure == "asset"
-                    else [
+                    "assets": [
                         {
-                            "name": "reel_de.mp4",
-                            "size": len(VIDEO),
-                            "browser_download_url": asset_url,
+                            "name": name,
+                            "size": len(content),
+                            "browser_download_url": url,
                         }
+                        for name, content, url, missing in [
+                            ("reel_de.mp4", VIDEO, asset_url, "asset"),
+                            ("cover_de.png", COVER, cover_url, "cover-asset"),
+                        ]
+                        if state.failure != missing
                     ]
                 },
             )
@@ -98,18 +113,24 @@ def job(monkeypatch, conn):
             return httpx.Response(
                 200, content=b"X" + VIDEO[1:] if state.failure == "hash" else VIDEO
             )
+        if str(request.url) == cover_url:
+            return httpx.Response(
+                200,
+                content=COVER[:-1] + b"X" if state.failure == "cover-hash" else COVER,
+            )
         if path.endswith("/userinfo"):
             return httpx.Response(200, json={"sub": "person"})
         if host == "api.linkedin.com" and path.endswith("/videos"):
             payload = json.loads(request.content)
             if request.url.params["action"] == "initializeUpload":
-                assert payload["initializeUploadRequest"]["uploadThumbnail"] is False
+                assert payload["initializeUploadRequest"]["uploadThumbnail"] is True
                 return httpx.Response(
                     200,
                     json={
                         "value": {
                             "video": "urn:li:video:1",
                             "uploadToken": "upload-token",
+                            "thumbnailUploadUrl": "https://upload.example/thumbnail",
                             "uploadInstructions": [
                                 {
                                     "uploadUrl": "https://upload.example/video",
@@ -123,7 +144,11 @@ def job(monkeypatch, conn):
             assert payload["finalizeUploadRequest"]["uploadedPartIds"] == ["etag"]
             return httpx.Response(200, json={})
         if host == "upload.example":
-            assert request.method == "PUT" and request.content == VIDEO
+            assert request.method == "PUT"
+            if path == "/thumbnail":
+                assert request.content == COVER
+                return httpx.Response(201)
+            assert request.content == VIDEO
             return httpx.Response(200, headers={"ETag": "etag"})
         if path.endswith("/videos/urn:li:video:1"):
             return httpx.Response(200, json={"status": "AVAILABLE"})
@@ -145,7 +170,8 @@ def job(monkeypatch, conn):
                 return httpx.Response(
                     400, json={"error": {"message": "test rejection"}}
                 )
-            assert "cover_url" not in form
+            assert form["cover_url"] == [cover_url]
+            assert form["thumb_offset"] == ["0"]
             post("instagram-reels", form["caption"][0])
             return httpx.Response(200, json={"id": "ig-container"})
         if path.endswith("/fb/video_reels"):
@@ -225,11 +251,13 @@ def test_due_factory_reels_preserve_text_and_skip_threads(repo, conn, job, ai, t
     [
         ("hash", "Factory asset reel_de.mp4 changed since intake"),
         ("asset", "is missing reel_de.mp4"),
+        ("cover-hash", "Factory asset cover_de.png changed since intake"),
+        ("cover-asset", "is missing cover_de.png"),
         ("release", "is unavailable"),
     ],
 )
 def test_factory_asset_failure_sends_retry_skip(repo, conn, job, failure, reason):
-    item_id = add_reel(conn)
+    item_id = add_reel(conn, threads=None if failure.startswith("cover-") else THREAD)
     job.failure = failure
     with pytest.raises(tasks._ChannelPublishingFailed):
         job.run()
