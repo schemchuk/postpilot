@@ -10,7 +10,7 @@ from postpilot.core.states import ItemState
 from postpilot.notify.approval import ApprovalHandler
 from postpilot.notify.telegram import TelegramError
 from postpilot.sources.own_video import WORK, OwnVideoInbox
-from postpilot.store.own_videos import OwnVideo
+from postpilot.store.own_videos import OwnVideo, OwnVideoIntake
 
 
 @pytest.mark.parametrize(
@@ -154,3 +154,74 @@ def test_regen_attempts_preview_after_edit_failure(preview_fails, caplog):
 
     inbox._preview.assert_called_once_with(video, item, ())
     assert caplog.messages == ["Telegram callback reply failed"]
+
+
+def test_guided_intake_takes_plain_reply_before_engagement_and_s2(monkeypatch):
+    repo, api = MagicMock(), Mock()
+    clock = Mock(return_value=1000.0)
+    own = OwnVideoInbox(repo, api, None, clock=clock)
+    own.store = Mock()
+    own.store.has_update.return_value = False
+    own.store.get.return_value = None
+    own.store.get_intake.return_value = OwnVideoIntake(uuid4().hex, "kind", 1000.0)
+    inbox = Mock()
+    handler = ApprovalHandler(repo, api, 12, inbox=inbox, own_video=own)
+    engagement_edit = Mock(return_value=False)
+    monkeypatch.setattr(handler, "_edit_engagement_reply", engagement_edit)
+    repo.has_inbox_update.return_value = False
+    repo.apply_pending_edit.return_value = None
+
+    update = {
+        "update_id": 1,
+        "message": {
+            "from": {"id": 12},
+            "chat": {"id": 12},
+            "reply_to_message": {"message_id": 42},
+            "text": "Plain reply",
+        },
+    }
+    handler.handle_update(update)
+    api.send_message.assert_called_once_with(12, "What kind of video?")
+    own.store.claim_update.assert_called_once_with(1)
+    engagement_edit.assert_not_called()
+    inbox.handle_text.assert_not_called()
+
+    clock.return_value += 3600
+    handler.handle_update({**update, "update_id": 2})
+    engagement_edit.assert_called_once_with(12, 42, "Plain reply")
+    inbox.handle_text.assert_called_once_with(2, 12, "Plain reply")
+
+
+def test_guided_intake_leaves_commands_available(monkeypatch):
+    repo, api = MagicMock(), Mock()
+    own = OwnVideoInbox(repo, api, None, clock=lambda: 0.0)
+    own.store = Mock()
+    own.store.get_intake.return_value = OwnVideoIntake(uuid4().hex, "text", 0.0)
+    stats, renewal = Mock(), Mock()
+    handler = ApprovalHandler(
+        repo, api, 12, own_video=own, stats=stats, renewal=renewal
+    )
+    profile, series = Mock(), Mock()
+    monkeypatch.setattr(handler, "_handle_profile_command", profile)
+    monkeypatch.setattr(handler, "_handle_series_command", series)
+    monkeypatch.setattr("postpilot.notify.approval.format_stats", lambda _: "Stats")
+
+    for update_id, command in enumerate(("/stats", "/profile", "/series", "/renew"), 1):
+        handler.handle_update(
+            {
+                "update_id": update_id,
+                "message": {
+                    "from": {"id": 12},
+                    "chat": {"id": 12},
+                    "message_id": update_id,
+                    "reply_to_message": {"message_id": 42},
+                    "text": command,
+                },
+            }
+        )
+
+    stats.read.assert_called_once()
+    profile.assert_called_once_with(12, "profile", "")
+    series.assert_called_once_with(12, "series", [])
+    renewal.handle_message.assert_called_once_with(12, 4, "/renew")
+    own.store.claim_update.assert_not_called()

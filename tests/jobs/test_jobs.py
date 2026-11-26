@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -259,6 +260,8 @@ def test_poll_only_creates_translation_client_with_key(
     read_token = Mock()
     monkeypatch.setattr(tasks, "_read_token", read_token)
     settings = replace(settings, anthropic_api_key=key)
+    repo.conn.transaction.side_effect = nullcontext
+    repo.conn.execute.return_value.fetchone.return_value = None
     repo.apply_pending_edit.return_value = None
     repo.create_inbox_item.return_value = None
     client = Mock()
