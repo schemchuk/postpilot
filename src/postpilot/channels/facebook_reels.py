@@ -11,6 +11,7 @@ from postpilot.channels.base import (
 )
 from postpilot.channels.meta_reels import request
 from postpilot.config import FacebookSettings
+from postpilot.core.limits import REELS_MAX_DURATION
 from postpilot.video.reel import ReelVideo
 
 
@@ -29,7 +30,7 @@ class FacebookReelsChannel:
         return f"https://www.facebook.com/reel/{quote(remote_id, safe='')}"
 
     def validate(self, reel: ReelVideo) -> None:
-        reel.validate("Facebook Reels", 90)
+        reel.validate("Facebook Reels", REELS_MAX_DURATION)
 
     def publish_with_ref(
         self,
@@ -114,7 +115,7 @@ class FacebookReelsChannel:
                 "upload_phase": "finish",
                 "video_id": ref,
                 "video_state": "PUBLISHED",
-                "description": reel.caption,
+                **({"description": reel.caption} if reel.caption else {}),
             },
         )
         if result.get("success") is not True:

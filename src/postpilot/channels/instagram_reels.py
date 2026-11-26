@@ -75,7 +75,7 @@ class InstagramReelsChannel:
             data={
                 "media_type": "REELS",
                 "upload_type": "resumable",
-                "caption": caption,
+                **({"caption": caption} if caption else {}),
                 **({"is_ai_generated": "true"} if reel.ai_generated else {}),
             },
         ).get("id")
@@ -180,7 +180,7 @@ class InstagramReelsChannel:
             if not isinstance(posts, list):
                 break
             for post in posts:
-                if not isinstance(post, dict) or post.get("caption") != caption:
+                if not isinstance(post, dict) or (post.get("caption") or "") != caption:
                     continue
                 try:
                     posted_at = datetime.fromisoformat(post["timestamp"])

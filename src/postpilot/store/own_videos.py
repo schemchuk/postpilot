@@ -6,6 +6,8 @@ from uuid import UUID, uuid4
 from psycopg import Connection, sql
 from psycopg.rows import TupleRow
 
+from postpilot.core.limits import REELS_MAX_DURATION, REELS_MIN_DURATION
+
 
 @dataclass
 class OwnVideo:
@@ -22,7 +24,15 @@ class OwnVideo:
 
     @property
     def reels_eligible(self) -> bool:
-        return self.duration is None or 3 <= self.duration <= 90
+        return (
+            self.duration is None
+            or REELS_MIN_DURATION <= self.duration <= REELS_MAX_DURATION
+        )
+
+    @property
+    def has_description(self) -> bool:
+        # Both described intake paths require a nonempty interview to create an item.
+        return bool(self.interview)
 
 
 IntakeStep = Literal["kind", "video", "description", "text", "closed"]

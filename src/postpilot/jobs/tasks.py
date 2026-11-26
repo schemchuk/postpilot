@@ -134,9 +134,11 @@ _REELS_TARGETS = (_INSTAGRAM_TARGET, FacebookReelsChannel.name)
 
 def _excluded_own_video_channels(store: OwnVideoStore, item_id: UUID) -> set[str]:
     video = store.get_by_item(item_id)
-    return (
-        set(_REELS_TARGETS) if video is not None and not video.reels_eligible else set()
-    )
+    if video is None:
+        return set()
+    if not video.has_description:
+        return {*LINKEDIN_TEXT_CHANNELS, ThreadsChannel.name}
+    return set() if video.reels_eligible else set(_REELS_TARGETS)
 
 
 def _publisher(
@@ -458,6 +460,40 @@ def render_video(
         heygen.close()
 
 
+def _reel_channels(settings: Settings, client: httpx.Client) -> list[VideoChannel]:
+    channels: list[VideoChannel] = []
+    if settings.facebook is not None:
+        channels.append(FacebookReelsChannel(settings.facebook, client))
+    if settings.instagram is not None:
+        channels.append(InstagramReelsChannel(settings.instagram, client))
+    return channels
+
+
+def _own_video_reel_publisher(
+    repo: ItemRepo,
+    channels: list[VideoChannel],
+    api: TelegramApi,
+    read_token: Callable[[str], str | None],
+) -> Publisher:
+    store = OwnVideoStore(repo.conn)
+    return Publisher(
+        repo,
+        [],
+        own_video_channels=[
+            OwnVideoReelsChannel(
+                channel,
+                store.get_by_item,
+                api,
+                read_token,
+                caption_limit=2200 if channel.name == _INSTAGRAM_TARGET else None,
+            )
+            for channel in channels
+        ],
+        own_video_held_channels=(*_TEXT_TARGETS, *_REELS_TARGETS),
+        own_video_excluded_channels=partial(_excluded_own_video_channels, store),
+    )
+
+
 def publish_reels(
     settings: Settings, conn: Connection[TupleRow], *, retry: bool = False
 ) -> None:
@@ -474,11 +510,7 @@ def publish_reels(
         return token.access_token if token and token.expires_at > _now() else None
 
     with httpx.Client() as client:
-        reel_channels: list[VideoChannel] = []
-        if settings.facebook is not None:
-            reel_channels.append(FacebookReelsChannel(settings.facebook, client))
-        if settings.instagram is not None:
-            reel_channels.append(InstagramReelsChannel(settings.instagram, client))
+        reel_channels = _reel_channels(settings, client)
         repo = ItemRepo(conn)
         channels: list[VideoChannel | RenderChannel] = list(reel_channels)
         if settings.linkedin is not None:
@@ -512,26 +544,8 @@ def publish_reels(
 
         if not reel_channels:
             return
-        own_videos = OwnVideoStore(conn)
         reels = {channel.name: channel for channel in reel_channels}
-        publisher = Publisher(
-            repo,
-            [],
-            own_video_channels=[
-                OwnVideoReelsChannel(
-                    channel,
-                    own_videos.get_by_item,
-                    api,
-                    read_token,
-                    caption_limit=2200 if channel.name == _INSTAGRAM_TARGET else None,
-                )
-                for channel in reel_channels
-            ],
-            own_video_held_channels=(*_TEXT_TARGETS, *_REELS_TARGETS),
-            own_video_excluded_channels=partial(
-                _excluded_own_video_channels, own_videos
-            ),
-        )
+        publisher = _own_video_reel_publisher(repo, reel_channels, api, read_token)
 
         def notify_result(item_id: UUID, name: str, result: ChannelResult) -> None:
             if result.outcome == "published":

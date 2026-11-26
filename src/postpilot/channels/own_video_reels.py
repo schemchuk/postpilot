@@ -74,7 +74,10 @@ class OwnVideoReelsChannel:
         self._read_token = read_token
         self._caption_limit = caption_limit
 
-    def _text(self, item: Item, variants: list[Variant]) -> str:
+    @staticmethod
+    def _text(item: Item, variants: list[Variant], video: OwnVideo | None) -> str:
+        if video is not None and not video.has_description:
+            return ""
         for variant in variants:
             if (
                 variant.item_id == item.id
@@ -85,7 +88,7 @@ class OwnVideoReelsChannel:
         raise ChannelError("A German caption is required")
 
     def validate(self, item: Item, variants: list[Variant]) -> None:
-        self._text(item, variants)
+        self._text(item, variants, self._get_video(item.id))
 
     def publish_with_ref(
         self,
@@ -102,8 +105,10 @@ class OwnVideoReelsChannel:
         video = self._get_video(item.id)
         if video is None:
             raise ChannelError("Own video is unavailable")
-        text = self._text(item, variants)
-        label = f"\n\n{AI_VIDEO_CAPTION_LABEL}" if video.ai_generated else ""
+        text = self._text(item, variants, video)
+        label = AI_VIDEO_CAPTION_LABEL if video.ai_generated else ""
+        if text and label:
+            label = f"\n\n{label}"
         if self._caption_limit is not None:
             text = shorten_text(text, self._caption_limit - len(label))
         try:

@@ -283,7 +283,7 @@ def render_preview(
 
 
 def approval_keyboard(
-    item_id: UUID, *, regenerate: bool = True
+    item_id: UUID, *, regenerate: bool = True, edit: bool = True
 ) -> dict[str, list[list[dict[str, str]]]]:
     return {
         "inline_keyboard": [
@@ -295,7 +295,7 @@ def approval_keyboard(
                     ("Regenerate", "regen"),
                     ("Skip", "skip"),
                 )
-                if regenerate or action != "regen"
+                if (regenerate or action != "regen") and (edit or action != "edit")
             ]
         ]
     }

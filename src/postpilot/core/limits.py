@@ -1,6 +1,8 @@
 import re
 
 LINKEDIN_TEXT_LIMIT = 3000
+REELS_MIN_DURATION = 3
+REELS_MAX_DURATION = 90
 
 _SENTENCE_END = re.compile(r"""[.!?…]+["'”’»“‘)\]]*(?=\s|$)""")
 

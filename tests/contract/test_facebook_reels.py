@@ -15,6 +15,7 @@ from postpilot.channels.base import (
 from postpilot.channels.facebook_reels import FacebookReelsChannel
 from postpilot.config import FacebookSettings
 from postpilot.tokens.facebook import token_is_valid
+from postpilot.video.label import AI_VIDEO_CAPTION_LABEL
 from postpilot.video.reel import ReelVideo
 
 TOKEN = "example-test-token"
@@ -39,6 +40,33 @@ def run(render, route, *, ref=None, save=lambda ref: None):
         return FacebookReelsChannel(SETTINGS, client).publish_with_ref(
             render, TOKEN, ref, save, claimed_at=datetime.now(UTC)
         )
+
+
+@pytest.mark.parametrize("ai", [False, True])
+def test_no_description_reel(ai):
+    caption = AI_VIDEO_CAPTION_LABEL if ai else ""
+    reel = ReelVideo(b"video", caption, 25, ai)
+    requests = []
+
+    def route(request):
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "status": {
+                        "uploading_phase": {"status": "complete"},
+                        "publishing_phase": {"status": "not_started"},
+                    }
+                },
+            )
+        form = parse_qs(request.content.decode(), keep_blank_values=True)
+        assert form["upload_phase"] == ["finish"]
+        assert form.get("description") == ([caption] if ai else None)
+        return httpx.Response(200, json={"success": True})
+
+    assert run(reel, route, ref="old") == "old"
+    assert len(requests) == 2
 
 
 def test_start_checkpoints_before_upload_and_publishes_labelled_caption(render):

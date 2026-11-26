@@ -20,6 +20,7 @@ from postpilot.core.models import PublicationStatus
 from postpilot.core.states import ItemState
 from postpilot.jobs import tasks
 from postpilot.store.own_videos import OwnVideoStore
+from postpilot.video.label import AI_VIDEO_CAPTION_LABEL
 
 pytestmark = test_store.pytestmark
 database_schema = test_store.database_schema
@@ -28,17 +29,26 @@ repo = test_store.repo
 
 
 @pytest.mark.parametrize("first", ["text", "reels"])
-@pytest.mark.parametrize("duration", [30, 2, 91])
+@pytest.mark.parametrize(
+    "duration, described, ai_generated",
+    [
+        (30, True, False),
+        (2, True, False),
+        (91, True, False),
+        (30, False, False),
+        (30, False, True),
+    ],
+)
 def test_own_video_jobs_share_targets_and_resume_saved_ref(
-    repo, conn, monkeypatch, first, duration
+    repo, conn, monkeypatch, first, duration, described, ai_generated
 ):
     # The payload is not a real MP4; ffmpeg normalisation is covered elsewhere.
     monkeypatch.setattr(
         "postpilot.channels.own_video_reels._fit_video", lambda video, scale: video
     )
     item = repo.create_item("own_video")
-    text = "Ein Satz. " + "Wort " * 550
-    repo.add_variant(item.id, "ua", "Український текст.")
+    text = "Ein Satz. " + "Wort " * 550 if described else ""
+    repo.add_variant(item.id, "ua", "Український текст." if described else "")
     repo.add_variant(item.id, "de", text)
     repo.transition(item.id, ItemState.AWAITING_APPROVAL)
     repo.transition(item.id, ItemState.APPROVED, approved_by=1)
@@ -53,8 +63,8 @@ def test_own_video_jobs_share_targets_and_resume_saved_ref(
                 "width": 1080,
                 "height": 1920,
             },
-            False,
-            "interview",
+            ai_generated,
+            "interview" if described else "",
         )
         store.finish(video_id, item.id)
     assert (video := store.get_by_item(item.id)).width == 1080
@@ -70,7 +80,8 @@ def test_own_video_jobs_share_targets_and_resume_saved_ref(
         facebook=FacebookSettings("fb"),
         instagram=InstagramSettings("ig"),
     )
-    monkeypatch.setattr(LinkedInVideoChannel, "validate", lambda *args: None)
+    linkedin_validate = Mock()
+    monkeypatch.setattr(LinkedInVideoChannel, "validate", linkedin_validate)
     monkeypatch.setattr(
         LinkedInVideoChannel, "publish_with_ref", lambda *args, **kwargs: "linkedin"
     )
@@ -110,8 +121,21 @@ def test_own_video_jobs_share_targets_and_resume_saved_ref(
                 200, json={"status": {"publishing_phase": {"status": "complete"}}}
             )
         if path.endswith("/ig/media"):
-            assert len(form["caption"][0]) <= 2200
+            if described:
+                assert len(form["caption"][0]) <= 2200
+            else:
+                assert form.get("caption") == (
+                    [AI_VIDEO_CAPTION_LABEL] if ai_generated else None
+                )
             return httpx.Response(200, json={"id": "ig-container"})
+        if path.endswith("/fb/video_reels"):
+            if form == {"upload_phase": ["start"]}:
+                return httpx.Response(200, json={"video_id": "new-fb"})
+            assert form["upload_phase"] == ["finish"]
+            assert form.get("description") == (
+                [AI_VIDEO_CAPTION_LABEL] if ai_generated else None
+            )
+            return httpx.Response(200, json={"success": True})
         if request.url.host == "rupload.facebook.com":
             return httpx.Response(200, json={"success": True})
         if path.endswith("/ig-container"):
@@ -140,7 +164,7 @@ def test_own_video_jobs_share_targets_and_resume_saved_ref(
         if first == "text"
         else (run_reels_job, run_text_job)
     )
-    if duration == 30:
+    if duration == 30 and described:
         repo.transition(item.id, ItemState.PUBLISHING)
         claim = repo.claim_publication(item.id, "facebook-reels")
         repo.save_publication_ref(claim, "saved-fb")
@@ -152,7 +176,7 @@ def test_own_video_jobs_share_targets_and_resume_saved_ref(
     steps[0]()
     expected = (
         ItemState.PUBLISHED
-        if first == "text" and duration != 30
+        if (first == "text" and duration != 30) or (first == "reels" and not described)
         else ItemState.PUBLISHING
     )
     assert repo.get_item(item.id).state == expected
@@ -160,18 +184,22 @@ def test_own_video_jobs_share_targets_and_resume_saved_ref(
     steps[1]()
     assert repo.get_item(item.id).state == ItemState.PUBLISHED
     rows = repo.list_publications(item.id)
-    targets = {"linkedin", "threads"}
+    targets = {"linkedin", "threads"} if described else set()
     if duration == 30:
         targets.update(("instagram-reels", "facebook-reels"))
         alerts.assert_any_call(
             "instagram-reels: published https://www.instagram.com/reel/test"
         )
         alerts.assert_any_call(
-            "facebook-reels: published https://www.facebook.com/reel/saved-fb"
+            "facebook-reels: published https://www.facebook.com/reel/"
+            + ("saved-fb" if described else "new-fb")
         )
     else:
         assert not reel_calls
         alerts.assert_not_called()
     assert {row.channel for row in rows} == targets
     assert all(row.status == PublicationStatus.PUBLISHED for row in rows)
-    assert threads_calls == ["/v1.0/me/threads", "/v1.0/me/threads_publish"]
+    expected_threads = ["/v1.0/me/threads", "/v1.0/me/threads_publish"]
+    assert threads_calls == (expected_threads if described else [])
+    if not described:
+        linkedin_validate.assert_not_called()
