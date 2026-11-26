@@ -335,3 +335,35 @@ The Telegram notice reports whether intake stored, replaced, or refused the
 episode, or found it unchanged. Once scheduled publishing is available, cancel
 a reel by deleting its GitHub release before `release_at`. The next publish
 attempt will report the missing release.
+
+## YouTube Shorts setup (connector, in progress)
+
+One-time setup for the YouTube Shorts channel. No code uses it yet; the channel
+adapter follows its own ADR and task. A vertical video up to 3 minutes is
+classified as a Short by YouTube automatically; the API has no Shorts flag.
+
+1. Channel: Google account that owns the YouTube channel `shemchuk`
+   (https://www.youtube.com/account).
+2. Intermediate features (custom thumbnails, needed for factory covers):
+   YouTube Studio -> Settings -> Channel -> Feature eligibility ->
+   "Intermediate features" -> verify by phone. Advanced features are not needed.
+3. Google Cloud project `postpilot` under the same account
+   (https://console.cloud.google.com/projectcreate, no organization).
+4. Enable "YouTube Data API v3" in that project
+   (https://console.cloud.google.com/apis/library/youtube.googleapis.com).
+5. OAuth consent screen (Google Auth Platform): External, app name `postpilot`,
+   scope `youtube.upload` only (it covers `videos.insert` and `thumbnails.set`;
+   for a Short set the thumbnail after processing has succeeded).
+   Publish the app to "In production": in "Testing" refresh tokens expire after
+   7 days. The app stays unverified; the owner clicks through the
+   "unverified app" warning once. Google verification is not needed for one user.
+6. OAuth client: type "Desktop app"; Volodymyr puts the client ID and secret in
+   `.env` as `YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET`.
+7. Refresh token: one local consent run, stored as `YOUTUBE_REFRESH_TOKEN`
+   (command added with the channel task).
+
+Quota (checked 2026-11-26): `videos.insert` has its own bucket of 100 calls per
+day; other calls share 10,000 units per day. Uploads from unverified API
+projects are not restricted to private, so no YouTube API audit is needed; the
+audit form (https://support.google.com/youtube/contact/yt_api_form) is only for
+more quota.
