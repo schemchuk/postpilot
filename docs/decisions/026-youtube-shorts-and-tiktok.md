@@ -1,7 +1,8 @@
 # 026. YouTube Shorts and TikTok video channels
 
-Status: PROPOSED (Claude Code, 2026-11-26; awaiting Volodymyr's review. Would amend the spec outputs and the
-video channel set of ADRs 014, 019 and 024)
+Status: PROPOSED (Claude Code, 2026-11-26; Volodymyr's answers of 2026-11-26 included: factory reels go to
+TikTok and YouTube, category Science & Technology for all, YouTube skipped without a description, HeyGen
+renders stay off both. Would amend the spec outputs and the video channel sets of ADRs 019, 023 and 024)
 
 ## Context
 
@@ -42,19 +43,24 @@ remote status (ADR 014).
    idempotency table. The core stays network-agnostic.
 
 2. **Which items go where.**
-   - S1 HeyGen renders and S3 own videos: Instagram, Facebook, YouTube, TikTok.
+   - S3 own videos: Instagram, Facebook, YouTube, TikTok.
    - S3 videos without a description (ADR 023): Instagram, Facebook, TikTok (empty caption). YouTube is
-     skipped because it needs a title; the preview says so.
-   - S4 factory reels: unchanged (LinkedIn DE, Threads, IG, FB). YouTube or TikTok only when the factory asks
-     and its allowlist entry (ADR 025) lists them.
-   - The Telegram preview lists every target channel, so a new channel is never a surprise.
+     skipped because it needs a title; the preview says so (Volodymyr, 2026-11-26).
+   - S4 factory reels (Volodymyr, 2026-11-26): LinkedIn DE, Threads, IG, FB as in ADR 024, plus YouTube and
+     TikTok, with the verbatim text and the cover. Under ADR 025 these become the factory's allowlisted
+     channels.
+   - S1 HeyGen renders: unchanged, no YouTube and no TikTok (Volodymyr, 2026-11-26).
+   - The Telegram preview or the factory intake notice lists every target channel.
 
 3. **YouTube text.** Title = the first line of the German text if it fits 100 characters, else the first
    sentence if it fits, else YouTube is skipped for that item with a note in the preview (no truncation, as
    for Threads in ADR 024). Description = the full German text plus the AI label line when the item is AI
    generated. `<` and `>` are replaced by `‹` `›` because YouTube rejects them. `privacyStatus=public`,
-   `selfDeclaredMadeForKids=false`, `categoryId=28` (Science & Technology), `containsSyntheticMedia` from
-   the item's AI flag.
+   `selfDeclaredMadeForKids=false`, `categoryId=28` (Science & Technology, also for the factory cartoons),
+   `containsSyntheticMedia` from the item's AI flag.
+   Factory reels: `post_de.txt` gives title and description by the same rule, so the text stays verbatim. An
+   optional release asset `title_de.txt` (at most 100 characters), if the factory adds it, is used as the
+   title instead; without a fitting title YouTube is skipped and the intake notice says so.
 
 4. **YouTube upload and idempotency.** Resumable upload of the bytes. The session URI is stored in
    `remote_ref` before the first byte is sent. Recovery queries the session: `308` resumes at the reported
@@ -73,8 +79,12 @@ remote status (ADR 014).
      AI flag; `video_cover_timestamp_ms=0` (frame 0 is the factory cover). To meet TikTok's UX rules the
      Telegram preview gets a TikTok row: privacy buttons built from `creator_info.privacy_level_options` and
      comment, duet and stitch toggles, none preselected. Approve waits until a privacy level is chosen. The
-     choice is stored per item. Items approved without a tap (factory, ADR 024) cannot carry that choice, so
-     they never use `direct`.
+     choice is stored per item.
+   - Factory reels (approved without a tap, ADR 024) in `direct` mode: the intake notice gets the same TikTok
+     row. A choice made before `release_at` posts TikTok directly at release time with the other channels. No
+     choice by `release_at` sends the reel to the TikTok inbox as a draft instead (and says so), so the other
+     channels are never held. In `draft` mode factory reels always go to the inbox, and the release-time
+     notice carries the caption to copy.
    - Idempotency for both: `publish_id` is stored before the upload. Recovery reads `status/fetch`:
      `PUBLISH_COMPLETE` done, processing states pending, `FAILED` or an expired upload URL (1 h) starts again.
 
@@ -100,7 +110,10 @@ remote status (ADR 014).
 
 ## Consequences
 
-- Spec outputs gain YouTube Shorts and TikTok; the video channel set in ADRs 014, 019 and 023 grows by two.
+- Spec outputs gain YouTube Shorts and TikTok; the video channel sets of S3 (ADRs 019, 023) and S4 (ADR 024)
+  grow by two. Factory reels' YouTube and TikTok posts follow the factory's release time; only the TikTok
+  privacy choice may need a tap, and missing it never delays the other channels.
+- The factory is told (via its requests doc) about the new channels and the optional `title_de.txt`.
 - One migration: per-item TikTok settings (privacy, comment, duet, stitch) for `direct` mode.
 - New secrets: `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET` (and the
   sandbox pair while testing); refresh tokens live only in the encrypted `tokens` table.
@@ -108,10 +121,12 @@ remote status (ADR 014).
 - YouTube custom covers depend on intermediate channel features; without them YouTube picks a frame.
 - Proposed tasks, each one PR, after acceptance:
   - T28a `youtube` token provider and import, `check-tokens`.
-  - T28b `youtube` channel: title rules, resumable upload with session recovery, AI disclosure, wiring into S1/S3.
+  - T28b `youtube` channel: title rules, resumable upload with session recovery, AI disclosure, wiring into S3
+    and factory reels (`title_de.txt`).
   - T28c YouTube cover via `thumbnails.set`, best effort.
   - T29a `tiktok` token provider (rotation, `/renew`), `TIKTOK_ENV`, sandbox check of the inbox flow on a public
     account.
-  - T29b `tiktok` channel, `draft` mode, wiring into S1/S3.
-  - T29c `direct` mode: Telegram TikTok row, per-item settings, Direct Post; then the demo recording and the audit
-    submission (Volodymyr submits).
+  - T29b `tiktok` channel, `draft` mode, wiring into S3 and factory reels.
+  - T29c `direct` mode: Telegram TikTok row (preview and factory intake notice), per-item settings, Direct Post,
+    inbox fallback for factory reels without a choice; then the demo recording and the audit submission
+    (Volodymyr submits).
