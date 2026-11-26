@@ -70,6 +70,9 @@ remote status (ADR 014).
    (factory `cover.png`, else none) after `processingDetails.processingStatus=succeeded`, best effort like
    the Facebook cover (ADR 024 decision 7): a failure is a warning, the Short stays published.
 
+   Implementation (2026-11-26): poll at most 8 times, 15 s apart; covers over 2 MB are skipped;
+   every failure logs a warning and leaves the Short published.
+
 5. **TikTok has two modes, chosen by one config value `TIKTOK_MODE`.**
    - `draft` (default until the audit passes): the inbox flow (`video.upload`). The video lands in Volodymyr's
      TikTok inbox; the Telegram result line carries the caption to copy and says "finish in the TikTok app".

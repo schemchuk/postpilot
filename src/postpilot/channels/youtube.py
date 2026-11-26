@@ -1,4 +1,6 @@
+import logging
 import re
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from urllib.parse import quote
@@ -8,9 +10,16 @@ import httpx
 
 from postpilot.channels.base import ChannelError, ChannelHeld, UncertainPublication
 from postpilot.core.limits import REELS_MAX_DURATION, first_sentence
+from postpilot.trace import describe_error
 from postpilot.video.label import AI_VIDEO_CAPTION_LABEL
 from postpilot.video.reel import ReelVideo
 
+_logger = logging.getLogger(__name__)
+_PROCESSING_POLLS = 8
+_PROCESSING_INTERVAL = 15
+_MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024
+_VIDEOS = httpx.URL("https://www.googleapis.com/youtube/v3/videos")
+_THUMBNAILS = httpx.URL("https://www.googleapis.com/upload/youtube/v3/thumbnails/set")
 _UPLOAD = httpx.URL("https://www.googleapis.com/upload/youtube/v3/videos")
 _VIDEO_ID = re.compile(r"[A-Za-z0-9_-]+")
 _QUOTA_REASONS = ("quotaExceeded", "rateLimitExceeded", "userRateLimitExceeded")
@@ -35,10 +44,12 @@ class YouTubeChannel:
         self,
         client: httpx.Client,
         *,
+        sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._client = client
         self._clock = clock
+        self._sleep = sleep
         self._attempted = False
 
     def permalink(self, remote_id: str) -> str:
@@ -74,7 +85,7 @@ class YouTubeChannel:
                 headers={"Content-Range": f"bytes */{size}", "Content-Length": "0"},
             )
             if response.status_code in (200, 201):
-                return self._complete(response, save_ref)
+                return self._complete(response, save_ref, token, reel)
             if response.status_code == 308:
                 received = response.headers.get("Range")
                 if received is not None:
@@ -136,7 +147,7 @@ class YouTubeChannel:
         if response.status_code == 308:
             return None
         if response.status_code in (200, 201):
-            return self._complete(response, save_ref)
+            return self._complete(response, save_ref, token, reel)
         self._check_error(response)
         return None
 
@@ -182,8 +193,13 @@ class YouTubeChannel:
         except (httpx.RequestError, httpx.InvalidURL):
             raise UncertainPublication("YouTube request failed") from None
 
-    @staticmethod
-    def _complete(response: httpx.Response, save_ref: Callable[[str], None]) -> str:
+    def _complete(
+        self,
+        response: httpx.Response,
+        save_ref: Callable[[str], None],
+        token: str,
+        reel: ReelVideo,
+    ) -> str:
         try:
             payload = response.json()
         except ValueError:
@@ -192,7 +208,57 @@ class YouTubeChannel:
         if not isinstance(video_id, str) or not _VIDEO_ID.fullmatch(video_id):
             raise UncertainPublication("YouTube did not return a video ID")
         save_ref(video_id)
+        if reel.cover is not None:
+            self._set_thumbnail(video_id, token, reel.cover)
         return video_id
+
+    def _set_thumbnail(
+        self, video_id: str, token: str, load_cover: Callable[[], bytes]
+    ) -> None:
+        try:
+            cover = load_cover()
+            if len(cover) > _MAX_THUMBNAIL_BYTES:
+                _logger.warning("YouTube thumbnail exceeds 2 MB")
+                return
+            for attempt in range(_PROCESSING_POLLS):
+                if attempt:
+                    self._sleep(_PROCESSING_INTERVAL)
+                response = self._request(
+                    "GET",
+                    _VIDEOS,
+                    token,
+                    headers={},
+                    params={"part": "processingDetails", "id": video_id},
+                )
+                if not response.is_success:
+                    self._check_error(response)
+                items = response.json().get("items", [])
+                status = (
+                    items[0].get("processingDetails", {}).get("processingStatus")
+                    if items
+                    else None
+                )
+                if status == "succeeded":
+                    break
+                if status in ("failed", "terminated"):
+                    _logger.warning("YouTube thumbnail processing %s", status)
+                    return
+            else:
+                _logger.warning("YouTube thumbnail processing not finished")
+                return
+            response = self._request(
+                "POST",
+                _THUMBNAILS,
+                token,
+                headers={"Content-Type": "image/png"},
+                params={"videoId": video_id, "uploadType": "media"},
+                content=cover,
+            )
+            if not response.is_success:
+                self._check_error(response)
+        # A cover loader can raise any exception; the video is already published.
+        except Exception as error:  # noqa: BLE001
+            _logger.warning("YouTube thumbnail failed: %s", describe_error(error))
 
     @staticmethod
     def _check_error(response: httpx.Response) -> None:

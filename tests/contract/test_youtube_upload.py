@@ -166,3 +166,156 @@ def test_description_limit_counts_escaped_utf8_bytes():
             reel, "token", None, Mock(), claimed_at=NOW
         )
     route.assert_not_called()
+
+
+@pytest.mark.parametrize("ref", [None, SESSION])
+def test_thumbnail_wait_and_upload(ref):
+    saved = []
+    events = []
+    statuses = iter(["processing", "processing", "succeeded"])
+    cover = b"\x89PNG\r\n\x1a\ncover"
+
+    def route(request):
+        assert request.headers["Authorization"] == "Bearer token"
+        if request.url.path.endswith("/thumbnails/set"):
+            events.append("thumbnail")
+            assert saved[-1] == "video-id"
+            assert request.method == "POST"
+            assert dict(request.url.params) == {
+                "videoId": "video-id",
+                "uploadType": "media",
+            }
+            assert request.headers["Content-Type"] == "image/png"
+            assert request.content == cover
+            return httpx.Response(200)
+        if request.method == "GET":
+            events.append("poll")
+            assert saved[-1] == "video-id"
+            assert str(request.url).startswith(
+                "https://www.googleapis.com/youtube/v3/videos?"
+            )
+            assert dict(request.url.params) == {
+                "part": "processingDetails",
+                "id": "video-id",
+            }
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {"processingDetails": {"processingStatus": next(statuses)}}
+                    ]
+                },
+            )
+        if request.method == "POST":
+            return httpx.Response(200, headers={"Location": SESSION})
+        return httpx.Response(201, json={"id": "video-id"})
+
+    def sleep(seconds):
+        assert seconds == 15
+        events.append("sleep")
+
+    with httpx.Client(transport=httpx.MockTransport(route)) as client:
+        reel = ReelVideo(
+            VIDEO, "Factory\n\n" + AI_VIDEO_CAPTION_LABEL, 20, True, cover=lambda: cover
+        )
+        assert (
+            YouTubeChannel(client, sleep=sleep).publish_with_ref(
+                reel, "token", ref, saved.append, claimed_at=NOW
+            )
+            == "video-id"
+        )
+    assert events == ["poll", "sleep", "poll", "sleep", "poll", "thumbnail"]
+    assert saved == ([SESSION, "video-id"] if ref is None else ["video-id"])
+
+
+@pytest.mark.parametrize(
+    "outcome, polls, uploads, warning",
+    [
+        ("failed", 1, 0, "processing failed"),
+        ("terminated", 1, 0, "processing terminated"),
+        ("processing", 8, 0, "processing not finished"),
+        ("missing_item", 8, 0, "processing not finished"),
+        ("missing_status", 8, 0, "processing not finished"),
+        ("forbidden", 1, 1, "HTTP 403"),
+        ("transport", 1, 1, "UncertainPublication"),
+        ("oversize", 0, 0, "exceeds 2 MB"),
+        ("loader", 0, 0, "RuntimeError"),
+        ("invalid_json", 1, 0, "JSONDecodeError"),
+        ("poll_transport", 1, 0, "UncertainPublication"),
+        ("poll_quota", 1, 0, "quota or rate limit"),
+    ],
+)
+def test_thumbnail_failure_keeps_published_id(outcome, polls, uploads, warning, caplog):
+    saved = []
+    calls = []
+    sleep = Mock()
+
+    def route(request):
+        if request.method == "PUT":
+            return httpx.Response(201, json={"id": "video-id"})
+        calls.append(request.method)
+        assert saved == ["video-id"]
+        if request.method == "POST":
+            if outcome == "transport":
+                raise httpx.ConnectError("private transport detail", request=request)
+            return httpx.Response(403)
+        if outcome == "poll_transport":
+            raise httpx.ConnectError("private transport detail", request=request)
+        if outcome == "poll_quota":
+            return httpx.Response(429)
+        if outcome == "invalid_json":
+            return httpx.Response(200, content=b"not json")
+        if outcome == "missing_item":
+            return httpx.Response(200, json={"items": []})
+        if outcome == "missing_status":
+            return httpx.Response(200, json={"items": [{}]})
+        status = (
+            outcome
+            if outcome in {"failed", "terminated", "processing"}
+            else "succeeded"
+        )
+        return httpx.Response(
+            200, json={"items": [{"processingDetails": {"processingStatus": status}}]}
+        )
+
+    def cover():
+        if outcome == "loader":
+            raise RuntimeError("private loader detail")
+        return b"x" * (2 * 1024 * 1024 + 1) if outcome == "oversize" else b"png"
+
+    with httpx.Client(transport=httpx.MockTransport(route)) as client:
+        reel = ReelVideo(
+            VIDEO, "Factory\n\n" + AI_VIDEO_CAPTION_LABEL, 20, True, cover=cover
+        )
+        assert (
+            YouTubeChannel(client, sleep=sleep).publish_with_ref(
+                reel, "token", SESSION, saved.append, claimed_at=NOW
+            )
+            == "video-id"
+        )
+    assert calls.count("GET") == polls
+    assert calls.count("POST") == uploads
+    assert sleep.call_count == max(polls - 1, 0)
+    assert "YouTube thumbnail" in caplog.text
+    assert warning in caplog.text
+    assert "private" not in caplog.text
+    assert saved == ["video-id"]
+
+
+def test_completed_video_id_skips_thumbnail():
+    route = Mock(side_effect=AssertionError("Completed video made a request"))
+    cover = Mock(side_effect=AssertionError("Completed video loaded a cover"))
+    save = Mock()
+    with httpx.Client(transport=httpx.MockTransport(route)) as client:
+        reel = ReelVideo(
+            VIDEO, "Factory\n\n" + AI_VIDEO_CAPTION_LABEL, 20, True, cover=cover
+        )
+        assert (
+            YouTubeChannel(client).publish_with_ref(
+                reel, "token", "video-id", save, claimed_at=NOW
+            )
+            == "video-id"
+        )
+    route.assert_not_called()
+    cover.assert_not_called()
+    save.assert_not_called()
