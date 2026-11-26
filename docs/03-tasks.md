@@ -222,6 +222,7 @@ T25a DONE 2026-11-26 (PR #54).
 outside 3-90 s. Accept: tests for item and targets (no LinkedIn/Threads publications), caption with and
 without label, preview buttons, duration refusal, Publisher and publish-reels handle empty text; live: one
 original video without description posted to IG and FB Reels.
+T25b DONE 2026-11-26 (PR #55).
 
 ## Order
 T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22 -> T23a -> T23b -> T24a -> T24b -> T25a -> T25b.
