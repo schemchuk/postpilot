@@ -1,8 +1,10 @@
 import json
 import logging
 import re
+from collections.abc import Callable
+from time import time
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from postpilot.ai.client import TextModel
 from postpilot.ai.humanizer import humanize_pair
@@ -16,7 +18,7 @@ from postpilot.notify.telegram import (
     TelegramError,
     send_callback_result,
 )
-from postpilot.store.own_videos import OwnVideo, OwnVideoStore
+from postpilot.store.own_videos import OwnVideo, OwnVideoIntake, OwnVideoStore
 from postpilot.store.repo import ItemRepo
 
 _LOG = logging.getLogger(__name__)
@@ -27,6 +29,20 @@ WORK = re.compile(
 )
 _INTERVIEW_LIMIT = 20_000
 _FILE_LIMIT = 20_000_000
+_INTAKE_TTL = 60 * 60
+_INTAKE_PROMPTS = {
+    "kind": ("What kind of video?", (("Original", "original"), ("AI-generated", "ai"))),
+    "video": ("Send the video (MP4 up to 20 MB; Reels need 3-90 s).", ()),
+    "description": (
+        "Video received.",
+        (("Upload description", "upload"), ("No description", "none")),
+    ),
+    "text": (
+        "Send the text as messages or a .txt file, then press Done.",
+        (("Done", "done"),),
+    ),
+}
+_INTAKE_HINTS = {"description": "Choose Upload description, No description, or Cancel."}
 _AWAITING = ItemState.AWAITING_APPROVAL
 _SCHEMA: dict[str, object] = {
     "type": "object",
@@ -36,12 +52,25 @@ _SCHEMA: dict[str, object] = {
 }
 
 
+def _is_text_file(doc: dict[str, Any]) -> bool:
+    return bool(
+        doc.get("mime_type") == "text/plain"
+        or doc.get("file_name", "").lower().endswith(".txt")
+    )
+
+
 class OwnVideoInbox:
     def __init__(
-        self, repo: ItemRepo, api: TelegramApi, model: TextModel | None
+        self,
+        repo: ItemRepo,
+        api: TelegramApi,
+        model: TextModel | None,
+        *,
+        clock: Callable[[], float] = time,
     ) -> None:
         self.repo, self.api, self.model = repo, api, model
         self.store = OwnVideoStore(repo.conn)
+        self.clock = clock
 
     def message(self, update_id: int, chat: int, message: dict[str, Any]) -> bool:
         text = message.get("text", "")
@@ -51,8 +80,12 @@ class OwnVideoInbox:
             doc if doc.get("mime_type") == "video/mp4" else None
         )
         reply_id = (message.get("reply_to_message") or {}).get("message_id")
-        command = caption or WORK.fullmatch(text)
-        if command is None and type(reply_id) is not int:
+        work = WORK.fullmatch(text.rstrip())
+        command = caption or work
+        bare = work is not None and not (work["ai"] or work["text"])
+        plain = bool(text) and not text.lstrip().startswith("/")
+        uncaptioned = not message.get("caption")
+        if not (command or plain or (uncaptioned and (media or doc))):
             return False
         generated = None
         video = None
@@ -67,25 +100,68 @@ class OwnVideoInbox:
                     )
                     if video and video.interview:
                         generated = self._generate(video, message.get("message_id"))
+            elif bare:
+                self.store.lock_intake(chat)
+                if self.store.claim_update(update_id):
+                    previous = self.store.get_intake(chat)
+                    if previous and previous.step != "closed":
+                        self._close_intake(chat, previous)
+                    self._show_step(
+                        chat, OwnVideoIntake(uuid4().hex, "kind", self.clock())
+                    )
             elif command:
                 if self.store.claim_update(update_id):
                     self.api.send_message(
                         chat, "Send a video with caption: /work [ai] [interview text]"
                     )
-            elif type(reply_id) is int and (
-                video := self.store.get(chat, prompt_message_id=reply_id)
+            elif (
+                (plain or doc)
+                and type(reply_id) is int
+                and (video := self.store.get(chat, prompt_message_id=reply_id))
             ):
                 if video.status == "collecting" and self.store.claim_update(update_id):
                     self._append(video, text, doc)
             else:
-                return False
+                self.store.lock_intake(chat)
+                # A replay must stay consumed even after the intake closes or expires.
+                if self.store.has_update(update_id):
+                    return True
+                intake = self.store.get_intake(chat)
+                if intake is None or intake.step == "closed" or self._expired(intake):
+                    return False
+                take_video = (
+                    intake.step == "video"
+                    and media
+                    and uncaptioned
+                    and reply_id is None
+                )
+                take_file = intake.step == "text" and uncaptioned and _is_text_file(doc)
+                if not (plain or take_video or take_file):
+                    return False
+                if self.store.claim_update(update_id):
+                    if take_video:
+                        assert media is not None
+                        id = self._store_video(chat, media, intake.ai_generated, "")
+                        if id is not None:
+                            intake.video_id = str(id)
+                            intake.step = "description"
+                            self._show_step(chat, intake)
+                    elif intake.step == "text":
+                        video = self._intake_video(chat, intake)
+                        if self._append(video, text, doc):
+                            self._save_step(chat, intake)
+                    else:
+                        hint = _INTAKE_HINTS.get(
+                            intake.step, _INTAKE_PROMPTS[intake.step][0]
+                        )
+                        self.api.send_message(chat, hint)
         if generated and video:
             self._preview(video, *generated)
         return True
 
-    def _add(
+    def _store_video(
         self, chat: int, media: dict[str, Any], ai: bool, text: str
-    ) -> OwnVideo | None:
+    ) -> UUID | None:
         if (media.get("file_size") or 0) > _FILE_LIMIT:
             self.api.send_message(
                 chat, "Video over 20 MB: send it as video, not as file, or shorten it."
@@ -94,6 +170,14 @@ class OwnVideoInbox:
         id = self.store.add(chat, media, ai, text)
         if id is None:
             self.api.send_message(chat, "This video was already added.")
+            return None
+        return id
+
+    def _add(
+        self, chat: int, media: dict[str, Any], ai: bool, text: str
+    ) -> OwnVideo | None:
+        id = self._store_video(chat, media, ai, text)
+        if id is None:
             return None
         prompt = self.api.send_message(
             chat,
@@ -110,11 +194,9 @@ class OwnVideoInbox:
         self.store.set_prompt(id, prompt)
         return self.store.get(chat, id=id)
 
-    def _append(self, video: OwnVideo, text: str, doc: dict[str, Any]) -> None:
+    def _append(self, video: OwnVideo, text: str, doc: dict[str, Any]) -> bool:
         chat = video.chat_id
-        if doc.get("mime_type") == "text/plain" or doc.get(
-            "file_name", ""
-        ).lower().endswith(".txt"):
+        if _is_text_file(doc):
             try:
                 text = self.api.download_file(self.api.get_file(doc["file_id"])).decode(
                     "utf-8-sig"
@@ -123,15 +205,110 @@ class OwnVideoInbox:
                 self.api.send_message(
                     chat, "Could not read the file. Send a UTF-8 .txt file."
                 )
-                return
+                return False
         if not text.strip():
-            return
+            return False
         joined = "\n\n".join(part for part in (video.interview, text.strip()) if part)
         if len(joined) > _INTERVIEW_LIMIT:
             self.api.send_message(chat, "Interview exceeds 20,000 characters.")
-            return
+            return False
         self.store.set_interview(video.id, joined)
         self.api.send_message(chat, f"Text added ({len(joined)} chars).")
+        return True
+
+    def _expired(self, intake: OwnVideoIntake) -> bool:
+        return self.clock() - intake.updated_at >= _INTAKE_TTL
+
+    def _save_step(self, chat: int, intake: OwnVideoIntake) -> None:
+        intake.updated_at = self.clock()
+        self.store.save_intake(chat, intake)
+
+    def _show_step(self, chat: int, intake: OwnVideoIntake) -> None:
+        prompt, buttons = _INTAKE_PROMPTS[intake.step]
+        buttons = (*buttons, ("Cancel", f"cancel-{intake.step}"))
+        self._save_step(chat, intake)
+        self.api.send_message(
+            chat,
+            prompt,
+            {
+                "inline_keyboard": [
+                    [
+                        {
+                            "text": label,
+                            "callback_data": f"own:intake:{action}:{intake.token}",
+                        }
+                        for label, action in buttons
+                    ]
+                ]
+            },
+        )
+
+    def _intake_video(self, chat: int, intake: OwnVideoIntake) -> OwnVideo:
+        assert intake.video_id is not None
+        video = self.store.get(chat, id=UUID(intake.video_id))
+        assert video is not None
+        return video
+
+    def _close_intake(self, chat: int, intake: OwnVideoIntake) -> None:
+        if intake.video_id:
+            self.store.finish(UUID(intake.video_id))
+        intake.step = "closed"
+        self._save_step(chat, intake)
+
+    def intake_callback(
+        self, update_id: int, chat: int, message_id: object, action: str, token: UUID
+    ) -> None:
+        preview = None
+        with self.repo.conn.transaction():
+            self.store.lock_intake(chat)
+            intake = self.store.get_intake(chat)
+            if (
+                not self.store.claim_update(update_id)
+                or intake is None
+                or intake.token != token.hex
+                or intake.step == "closed"
+            ):
+                result = "Already handled"
+            elif self._expired(intake):
+                result = "Expired, send /work again."
+            elif action == f"cancel-{intake.step}":
+                self._close_intake(chat, intake)
+                if type(message_id) is int:
+                    try:
+                        self.api.edit_message_text(chat, message_id, "Cancelled")
+                        return
+                    except TelegramError:
+                        _LOG.warning("Telegram callback edit failed")
+                result = "Cancelled"
+            elif intake.step == "kind" and action in {"original", "ai"}:
+                intake.ai_generated = action == "ai"
+                intake.step = "video"
+                self._show_step(chat, intake)
+                return
+            elif intake.step == "description" and action == "upload":
+                intake.step = "text"
+                self._show_step(chat, intake)
+                return
+            elif intake.step == "description" and action == "none":
+                result = "Coming soon"
+            elif intake.step == "text" and action == "done":
+                video = self._intake_video(chat, intake)
+                if video.interview:
+                    generated = self._generate(video, message_id, retry_button="Done")
+                    if generated is None:
+                        return
+                    intake.step = "closed"
+                    self._save_step(chat, intake)
+                    preview = (video, *generated)
+                    result = None
+                else:
+                    result = "Add the text first."
+            else:
+                result = "Already handled"
+        if result is not None:
+            send_callback_result(self.api, chat, message_id, result)
+        elif preview is not None:
+            self._preview(*preview)
 
     def callback(
         self,
@@ -186,7 +363,7 @@ class OwnVideoInbox:
             self._preview(video, preview, warnings)
 
     def _generate(
-        self, video: OwnVideo, message_id: object
+        self, video: OwnVideo, message_id: object, *, retry_button: str = "Generate"
     ) -> tuple[Item, tuple[str, ...]] | None:
         chat = video.chat_id
         if not video.interview:
@@ -252,7 +429,7 @@ class OwnVideoInbox:
                 self.api,
                 chat,
                 message_id,
-                f"Generation failed ({step}), press Generate again.",
+                f"Generation failed ({step}), press {retry_button} again.",
             )
             return None
 

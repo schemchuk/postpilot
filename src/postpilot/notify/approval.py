@@ -356,15 +356,25 @@ class ApprovalHandler:
         if not isinstance(data, str) or not isinstance(callback_id, str):
             return
         action, _, raw_id = data.rpartition(":")
-        if action not in _ACTIONS and action not in {
-            *_FAILURE_ACTIONS,
-            "edit",
-            "own:gen",
-            "own:skip",
-            *_VIDEO_ACTIONS,
-            "eng:redraft",
-            "eng:send",
-        }:
+        intake_action = (
+            action.removeprefix("own:intake:")
+            if action.startswith("own:intake:")
+            else ""
+        )
+        if (
+            not intake_action
+            and action not in _ACTIONS
+            and action
+            not in {
+                *_FAILURE_ACTIONS,
+                "edit",
+                "own:gen",
+                "own:skip",
+                *_VIDEO_ACTIONS,
+                "eng:redraft",
+                "eng:send",
+            }
+        ):
             return
         try:
             item_id = UUID(raw_id)
@@ -374,6 +384,12 @@ class ApprovalHandler:
         message = _object(event.get("message"))
         chat_id = _object(message.get("chat")).get("id")
         message_id = message.get("message_id")
+        if intake_action:
+            if self.own_video and type(chat_id) is int and type(update_id) is int:
+                self.own_video.intake_callback(
+                    update_id, chat_id, message_id, intake_action, item_id
+                )
+            return
         if action in _FAILURE_ACTIONS:
             if type(chat_id) is not int or type(message_id) is not int:
                 return

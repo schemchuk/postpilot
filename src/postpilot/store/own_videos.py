@@ -1,5 +1,6 @@
-from dataclasses import dataclass
-from typing import Any
+import json
+from dataclasses import asdict, dataclass
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from psycopg import Connection, sql
@@ -24,11 +25,53 @@ class OwnVideo:
         return self.duration is None or 3 <= self.duration <= 90
 
 
+IntakeStep = Literal["kind", "video", "description", "text", "closed"]
+
+
+@dataclass
+class OwnVideoIntake:
+    token: str
+    step: IntakeStep
+    updated_at: float
+    ai_generated: bool = False
+    video_id: str | None = None
+
+
 class OwnVideoStore:
     """Operations for use inside the caller's transaction."""
 
     def __init__(self, conn: Connection[TupleRow]) -> None:
         self.conn = conn
+
+    def lock_intake(self, chat_id: int) -> None:
+        # Lock even when the chat has no state row yet.
+        self.conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(current_schema()), hashtext(%s))",
+            (f"own_intake:{chat_id}",),
+        )
+
+    def get_intake(self, chat_id: int) -> OwnVideoIntake | None:
+        row = self.conn.execute(
+            "SELECT value FROM bot_state WHERE key = %s", (f"own_intake:{chat_id}",)
+        ).fetchone()
+        return OwnVideoIntake(**json.loads(row[0])) if row else None
+
+    def save_intake(self, chat_id: int, intake: OwnVideoIntake) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO bot_state (key, value) VALUES (%s, %s)
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            """,
+            (f"own_intake:{chat_id}", json.dumps(asdict(intake))),
+        )
+
+    def has_update(self, update_id: int) -> bool:
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM own_video_updates WHERE update_id = %s", (update_id,)
+            ).fetchone()
+            is not None
+        )
 
     def claim_update(self, update_id: int) -> bool:
         return bool(
@@ -47,7 +90,15 @@ class OwnVideoStore:
             INSERT INTO own_videos (id, chat_id, file_id, file_unique_id, size_bytes,
                 duration, width, height, ai_generated, interview, status)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'collecting')
-            ON CONFLICT (file_unique_id) DO NOTHING
+            ON CONFLICT (file_unique_id) DO UPDATE SET
+                id = EXCLUDED.id, item_id = NULL, chat_id = EXCLUDED.chat_id,
+                prompt_message_id = NULL, file_id = EXCLUDED.file_id,
+                size_bytes = EXCLUDED.size_bytes, duration = EXCLUDED.duration,
+                width = EXCLUDED.width, height = EXCLUDED.height,
+                ai_generated = EXCLUDED.ai_generated, interview = EXCLUDED.interview,
+                status = 'collecting', created_at = now()
+            -- A skipped or cancelled video was never posted, so it may be sent again.
+            WHERE own_videos.status = 'skipped'
             """,
             (
                 id,

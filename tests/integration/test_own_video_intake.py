@@ -23,7 +23,12 @@ ids = itertools.count(1)
 
 
 @pytest.fixture
-def bot(repo):
+def clock():
+    return Mock(return_value=1_000.0)
+
+
+@pytest.fixture
+def bot(repo, clock):
     api, model = Mock(), Mock()
     api.send_message.side_effect = lambda *args, **kwargs: next(ids)
     handler = ApprovalHandler(
@@ -31,7 +36,7 @@ def bot(repo):
         api,
         12,
         inbox=TelegramInbox(repo, api, model),
-        own_video=OwnVideoInbox(repo, api, model),
+        own_video=OwnVideoInbox(repo, api, model, clock=clock),
     )
 
     def event(update_id=None, action=None, **body):
@@ -75,7 +80,7 @@ def test_rejected_size_duplicate_and_skip(bot, conn, media):
     event(video={**media, "file_size": 20_000_001}, caption="/work")
     assert video_row(conn, media) is None
     assert api.send_message.call_args.args[1].startswith("Video over 20 MB:")
-    event(text="/work")
+    event(text="/work ai")
     assert (
         api.send_message.call_args.args[1]
         == "Send a video with caption: /work [ai] [interview text]"
@@ -98,6 +103,13 @@ def test_rejected_size_duplicate_and_skip(bot, conn, media):
     event(action=f"own:skip:{video_id}")
     event(text="Closed", reply_to_message={"message_id": prompt})
     assert video_row(conn, media)[2:] == ("", "skipped", None)
+    # A skipped video gets a new ID, so the old buttons stay stale.
+    event(video=media, caption="/work")
+    assert video_row(conn, media)[2:] == ("", "collecting", None)
+    message_id = event(action=f"own:gen:{video_id}")
+    api.send_message.assert_called_with(
+        12, "Already handled", reply_to_message_id=message_id
+    )
     model.complete.assert_not_called()
 
 
@@ -212,3 +224,157 @@ def test_generate_does_not_answer_callback_query(bot, conn, media, monkeypatch):
     assert video_row(conn, media)[3] == "generated"
     api.answer_callback_query.assert_not_called()
     assert "Own video · AI label: no" in api.send_message.call_args.args[1]
+
+
+def buttons(api, prompt):
+    args = api.send_message.call_args.args
+    assert args[1] == prompt
+    keyboard = args[2]["inline_keyboard"]
+    result = {
+        button["text"]: button["callback_data"] for row in keyboard for button in row
+    }
+    assert all(len(data.encode()) <= 64 for data in result.values())
+    return result
+
+
+_KIND = "What kind of video?"
+_VIDEO = "Send the video (MP4 up to 20 MB; Reels need 3-90 s)."
+_DESCRIPTION = "Video received."
+_TEXT = "Send the text as messages or a .txt file, then press Done."
+
+
+def test_guided_video_generates_preview(bot, conn, media, monkeypatch):
+    api, model, event = bot
+    model.complete.return_value = '{"de":"Text","ua":"Текст"}'
+    humanizer = Mock(return_value=(HumanizedPost("Text"), HumanizedPost("Текст")))
+    monkeypatch.setattr("postpilot.sources.own_video.humanize_pair", humanizer)
+
+    event(text="/work@bot")
+    kind = buttons(api, _KIND)
+    event(text="Before choosing kind")
+    api.send_message.assert_called_with(12, _KIND)
+    event(action=kind["AI-generated"])
+    buttons(api, _VIDEO)
+    event(text="Before uploading video", reply_to_message={"message_id": -1})
+    api.send_message.assert_called_with(12, _VIDEO)
+    event(video=media, caption="Other caption")
+    event(video=media, reply_to_message={"message_id": -1})
+    assert video_row(conn, media) is None
+    event(video=media)
+    description = buttons(api, _DESCRIPTION)
+    event(text="Before choosing description")
+    api.send_message.assert_called_with(
+        12, "Choose Upload description, No description, or Cancel."
+    )
+    message_id = event(action=description["No description"])
+    api.send_message.assert_called_with(
+        12, "Coming soon", reply_to_message_id=message_id
+    )
+    model.complete.assert_not_called()
+    assert video_row(conn, media)[3:] == ("collecting", None)
+    event(action=description["Upload description"])
+    text = buttons(api, _TEXT)
+    message_id = event(action=text["Done"])
+    api.send_message.assert_called_with(
+        12, "Add the text first.", reply_to_message_id=message_id
+    )
+    model.complete.assert_not_called()
+    event(text="Питання", update_id=700)
+    api.send_message.assert_called_with(12, "Text added (7 chars).")
+    event(text="Питання", update_id=700)
+    api.get_file.return_value = "files/answer.txt"
+    api.download_file.return_value = "Відповідь".encode()
+    event(document={"file_id": "description", "file_name": "answer.TXT"})
+    api.send_message.assert_called_with(12, "Text added (18 chars).")
+    event(action=text["Done"])
+    _, _, interview, status, item_id = video_row(conn, media)
+    assert (interview, status) == ("Питання\n\nВідповідь", "generated")
+    assert item_id is not None
+    assert "Own video · AI label: yes" in api.send_message.call_args.args[1]
+    assert "Reels skipped: video is 91 s" in api.send_message.call_args.args[1]
+    assert humanizer.call_args.kwargs["soft"] is True
+    api.send_video.assert_called_once_with(12, "file")
+    event(text="Питання", update_id=700)
+    message_id = event(action=text["Done"])
+    api.send_message.assert_called_with(
+        12, "Already handled", reply_to_message_id=message_id
+    )
+    model.complete.assert_called_once()
+    api.answer_callback_query.assert_not_called()
+
+
+@pytest.mark.parametrize("step", [_KIND, _VIDEO, _DESCRIPTION, _TEXT])
+def test_cancel_guided_intake_at_each_step(bot, conn, media, step):
+    api, model, event = bot
+    event(text="/work")
+    current = buttons(api, _KIND)
+    if step != _KIND:
+        event(action=current["Original"])
+        current = buttons(api, _VIDEO)
+    if step in {_DESCRIPTION, _TEXT}:
+        event(document={**media, "mime_type": "video/mp4"})
+        current = buttons(api, _DESCRIPTION)
+    if step == _TEXT:
+        event(action=current["Upload description"])
+        current = buttons(api, _TEXT)
+    message_id = event(action=current["Cancel"])
+    api.edit_message_text.assert_called_once_with(12, message_id, "Cancelled")
+    message_id = event(action=current["Cancel"])
+    api.send_message.assert_called_with(
+        12, "Already handled", reply_to_message_id=message_id
+    )
+    row = video_row(conn, media)
+    if step in {_KIND, _VIDEO}:
+        assert row is None
+    else:
+        assert row[3:] == ("skipped", None)
+    model.complete.return_value = "Übersetzt"
+    event(text="Окремий допис")
+    assert " · telegram" in api.send_message.call_args.args[1]
+
+
+def test_guided_expiry_uses_last_step_and_releases_text_to_s2(bot, media, clock):
+    api, model, event = bot
+    event(text="/work")
+    kind = buttons(api, _KIND)
+    event(action=kind["Original"])
+    event(video=media)
+    event(action=buttons(api, _DESCRIPTION)["Upload description"])
+    text = buttons(api, _TEXT)
+    clock.return_value += 3599
+    event(text="Ще активно")
+    api.send_message.assert_called_with(12, "Text added (10 chars).")
+    clock.return_value += 3599
+    model.complete.assert_not_called()
+    clock.return_value += 1
+    message_id = event(action=text["Done"])
+    api.send_message.assert_called_with(
+        12, "Expired, send /work again.", reply_to_message_id=message_id
+    )
+    model.complete.return_value = "Übersetzt"
+    event(text="Окремий допис")
+    assert " · telegram" in api.send_message.call_args.args[1]
+
+
+def test_new_work_replaces_guided_intake(bot, conn, media):
+    api, model, event = bot
+    event(text="/work")
+    event(action=buttons(api, _KIND)["Original"])
+    event(video=media)
+    description = buttons(api, _DESCRIPTION)
+    event(text="/work", update_id=701)
+    current = buttons(api, _KIND)
+    event(text="/work", update_id=701)
+    assert buttons(api, _KIND) == current
+    assert video_row(conn, media)[3:] == ("skipped", None)
+    message_id = event(action=description["Upload description"])
+    api.send_message.assert_called_with(
+        12, "Already handled", reply_to_message_id=message_id
+    )
+    event(action=current["AI-generated"])
+    buttons(api, _VIDEO)
+    # The replaced intake's video was never posted, so the same file is taken again.
+    event(video=media)
+    buttons(api, _DESCRIPTION)
+    assert video_row(conn, media)[3:] == ("collecting", None)
+    model.complete.assert_not_called()
