@@ -16,8 +16,15 @@ from postpilot.channels.base import (
     UncertainPublication,
 )
 from postpilot.channels.paused import PAUSED_CHANNELS
+from postpilot.core.approval import (
+    ProjectApprovalError,
+    auto_approved_project,
+    enabled_project,
+)
 from postpilot.core.models import Item, PublicationStatus, Variant
 from postpilot.core.states import IllegalTransition, ItemState
+from postpilot.projects import CHANNEL_NAMES, Projects
+from postpilot.store.project_items import ProjectItem
 from postpilot.store.repo import Claim, ItemRepo, LostPublicationClaim
 from postpilot.trace import describe_error, error_fields, trace
 
@@ -51,16 +58,18 @@ class Publisher:
         own_video_channels: list[Channel] | None = None,
         own_video_held_channels: tuple[str, ...] = (),
         own_video_excluded_channels: Callable[[UUID], set[str]] | None = None,
-        factory_channels: list[Channel] | None = None,
-        factory_release_at: Callable[[UUID], datetime | None] | None = None,
-        factory_excluded_channels: Callable[[UUID], set[str]] | None = None,
-        factory_lock: Callable[[UUID], AbstractContextManager[None]] | None = None,
+        project_channels: list[Channel] | None = None,
+        project_item: Callable[[UUID], ProjectItem | None] | None = None,
+        projects: Projects | None = None,
+        project_exclusions: Callable[[ProjectItem], set[str]] | None = None,
+        project_lock: Callable[[UUID], AbstractContextManager[None]] | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
-        self.factory_channels = factory_channels
-        self.factory_release_at = factory_release_at
-        self.factory_excluded_channels = factory_excluded_channels
-        self.factory_lock = factory_lock
+        self.project_channels = project_channels
+        self.project_item = project_item
+        self.projects = projects
+        self.project_exclusions = project_exclusions
+        self.project_lock = project_lock
         self.now = now
         self.repo = repo
         self.channels = channels
@@ -72,36 +81,66 @@ class Publisher:
         self.own_video_excluded_channels = own_video_excluded_channels
 
     def publish_item(self, item_id: UUID) -> PublishReport:
-        if not (self.channels or self.own_video_channels or self.factory_channels):
+        if (
+            not (self.channels or self.own_video_channels)
+            and self.project_channels is None
+        ):
             raise ValueError("No channels configured")
         item = self.repo.get_item(item_id)
         if item is None:
             raise KeyError(item_id)
-        factory = item.source == "factory"
+        project = item.source == "project"
         own_video = item.source == "own_video"
         lock = (
-            partial(self.factory_lock, item_id)
-            if factory and self.factory_lock is not None
+            partial(self.project_lock, item_id)
+            if project and self.project_lock is not None
             else nullcontext
         )
         with lock():
-            if factory:
-                if not self.factory_channels or self.factory_release_at is None:
+            scheduled = None
+            if project:
+                if (
+                    self.project_channels is None
+                    or self.project_item is None
+                    or self.projects is None
+                ):
                     raise IllegalTransition(
-                        "Factory reels require the factory publisher"
+                        "Project items require the project publisher"
                     )
                 item = self.repo.get_item(item_id)
                 if item is None:
                     raise KeyError(item_id)
-                release_at = self.factory_release_at(item_id)
-                if (
-                    release_at is None
-                    or release_at > self.now()
-                    or item.state in {ItemState.FAILED, ItemState.SKIPPED}
-                ):
+                scheduled = self.project_item(item_id)
+                if scheduled is None:
+                    raise IllegalTransition("Project item data is unavailable")
+                if scheduled.approval == "auto":
+                    policy = auto_approved_project(self.projects, scheduled.project)
+                else:
+                    policy = enabled_project(self.projects, scheduled.project)
+                    if item.approved_by is None:
+                        raise ProjectApprovalError(
+                            f"Project {policy.key!r} needs a tap"
+                        )
+                if scheduled.kind != "reel" or scheduled.kind not in policy.kinds:
+                    raise ProjectApprovalError(
+                        f"Project {policy.key!r} cannot publish {scheduled.kind}"
+                    )
+                if scheduled.release_at > self.now() or item.state in {
+                    ItemState.FAILED,
+                    ItemState.SKIPPED,
+                }:
                     return PublishReport({})
-                channels = self.factory_channels
-                excluded = self._factory_exclusions(item_id)
+                channels = self.project_channels
+                allowed = {
+                    name
+                    for logical in policy.channels
+                    for name in CHANNEL_NAMES[logical]
+                }
+                excluded = set(PAUSED_CHANNELS) | {
+                    channel.name for channel in channels if channel.name not in allowed
+                }
+                if self.project_exclusions is not None:
+                    excluded.update(self.project_exclusions(scheduled))
                 if all(channel.name in excluded for channel in channels):
                     return PublishReport({})
             elif own_video:
@@ -140,18 +179,13 @@ class Publisher:
         def claim_publication(name: str) -> Claim | None:
             with lock():
                 # Intake can replace an item until a channel holds a claim.
-                # Recheck the schedule under the same item lock as the claim.
+                # Recheck the project item under the same item lock as the claim.
                 if (
-                    factory
-                    and self.factory_release_at is not None
-                    and (
-                        self.factory_release_at(item_id) != release_at
-                        or self._factory_exclusions(item_id) != excluded
-                    )
+                    scheduled is not None
+                    and self.project_item is not None
+                    and self.project_item(item_id) != scheduled
                 ):
-                    raise IllegalTransition(
-                        "Factory schedule changed during publishing"
-                    )
+                    raise IllegalTransition("Project item changed during publishing")
                 return self.repo.claim_publication(
                     item_id, name, stale_after=self.stale_after
                 )
@@ -206,17 +240,11 @@ class Publisher:
             set(results),
             held=frozenset(
                 name for name, result in results.items() if result.outcome == "held"
-            ).union(excluded if factory else ()),
+            ).union(excluded if project else ()),
         )
         finished = self.repo.get_item(item_id)
         trace("publish", "finished", item=item_id, state=finished and finished.state)
         return PublishReport(results, transitioned_to_failed)
-
-    def _factory_exclusions(self, item_id: UUID) -> set[str]:
-        excluded = set(PAUSED_CHANNELS)
-        if self.factory_excluded_channels is not None:
-            excluded.update(self.factory_excluded_channels(item_id))
-        return excluded
 
     def _publish_channel(
         self,
@@ -232,7 +260,7 @@ class Publisher:
         try:
             claim = claim_publication(channel.name)
         except IllegalTransition:
-            # The item or its factory schedule changed before the claim.
+            # The item or its project schedule changed before the claim.
             return ChannelResult("pending")
         if claim is None:
             return ChannelResult("skipped")
@@ -317,7 +345,7 @@ class Publisher:
         def save_ref(new_ref: str) -> None:
             nonlocal ref
             self.repo.save_publication_ref(claim, new_ref)
-            if item.source in {"own_video", "factory"}:
+            if item.source in {"own_video", "project"}:
                 ref = new_ref
 
         recover = claim.recovered and not recover_only
@@ -338,7 +366,7 @@ class Publisher:
                         return existing
                 return channel.publish(item, variants)
             except ChannelHeld:
-                if item.source in {"own_video", "factory"} and ref is not None:
+                if item.source in {"own_video", "project"} and ref is not None:
                     return None
                 raise
             except UncertainPublication:

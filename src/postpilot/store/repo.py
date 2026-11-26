@@ -82,8 +82,8 @@ class ItemRepo:
         self.bot_state = BotState(conn)
 
     def create_item(self, source: Source) -> Item:
-        if source == "factory":
-            raise ValueError("Factory items must be created by factory intake")
+        if source == "project":
+            raise ValueError("Project items must be created by project intake")
         with self.conn.transaction():
             row = self.conn.execute(
                 f"INSERT INTO items (id, source, state) VALUES (%s, %s, %s) RETURNING {_ITEM_COLUMNS}",
@@ -136,7 +136,7 @@ class ItemRepo:
             rows = self.conn.execute(
                 """
                 SELECT i.id FROM items i
-                WHERE i.source <> 'factory' AND (%s::text IS NULL OR i.source = %s)
+                WHERE i.source <> 'project' AND (%s::text IS NULL OR i.source = %s)
                   AND (i.state = 'PUBLISHING' OR (
                     i.state = 'FAILED'
                     AND EXISTS (
@@ -159,7 +159,7 @@ class ItemRepo:
     ) -> list[UUID]:
         with self.conn.transaction():
             rows = self.conn.execute(
-                "SELECT id FROM items WHERE state = %s AND source <> 'factory' "
+                "SELECT id FROM items WHERE state = %s AND source <> 'project' "
                 "AND (%s::text IS NULL OR source = %s) "
                 "ORDER BY created_at, id",
                 (state.value, source, source),

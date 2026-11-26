@@ -16,15 +16,17 @@ from psycopg.rows import TupleRow
 
 from postpilot import __version__
 from postpilot.config import ConfigError, Settings
+from postpilot.core.approval import auto_approved_project
 from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
 from postpilot.jobs import tasks
 from postpilot.jobs.runner import run_job
 from postpilot.notify.telegram import Notifier, TelegramApi
+from postpilot.projects import FACTORY_PROJECT, Projects
 from postpilot.sources.factory import intake
 from postpilot.sources.series import ActiveSeriesExists, SeriesStore
 from postpilot.store import migrate
 from postpilot.store.db import connect
-from postpilot.store.factory_reels import FactoryReel, FactoryReelStore, IntakeStatus
+from postpilot.store.project_items import IntakeStatus, ProjectItem, ProjectItemStore
 
 _DATABASE_COMMANDS = {
     "draft-weekly": tasks.draft_weekly,
@@ -184,21 +186,23 @@ def _series_import(path: Path, settings: Settings) -> None:
 
 
 def _factory_intake(raw: str, settings: Settings) -> int:
+    projects = Projects.load()
+    project = auto_approved_project(projects, FACTORY_PROJECT)
     notifier = Notifier(
         TelegramApi(settings.telegram_bot_token), settings.telegram_chat_id
     )
 
-    def save(reel: FactoryReel) -> IntakeStatus:
+    def save(reel: ProjectItem) -> IntakeStatus:
         with connect(settings.database_url) as conn:
             migrate.up(conn)
-            return FactoryReelStore(conn).create_factory_item(reel)
+            return ProjectItemStore(conn).create_approved_reel(projects, reel)
 
     def notify(message: str) -> None:
         print(message, file=sys.stderr)
         notifier.send_alert(message)
 
     with httpx.Client(timeout=30) as client:
-        return intake(raw, settings.factory_repo, client, save, notify)
+        return intake(raw, project.repo, client, save, notify)
 
 
 def main(argv: list[str] | None = None) -> int:

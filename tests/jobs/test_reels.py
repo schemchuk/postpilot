@@ -459,7 +459,7 @@ def test_youtube_routes_only_own_and_factory_and_shares_token_and_budget(
     own, factory = [call.args[0] for call in tasks._publish_items.call_args_list]
     own_youtube = next(ch for ch in own.own_video_channels if ch.name == "youtube")
     factory_youtube = next(
-        ch for ch in factory.factory_channels if ch.name == "youtube"
+        ch for ch in factory.project_channels if ch.name == "youtube"
     )
     assert own_youtube._channel is factory_youtube._channel
     assert own_youtube._read_token("youtube") == "access"
@@ -502,12 +502,12 @@ def test_tiktok_routes_only_own_and_factory_and_caches_token(
         constructor.assert_not_called()
         manager.assert_not_called()
         assert all(ch.name != "tiktok" for ch in own.own_video_channels)
-        assert all(ch.name != "tiktok" for ch in factory.factory_channels)
+        assert all(ch.name != "tiktok" for ch in factory.project_channels)
         return
 
     constructor.assert_called_once()
     own_tiktok = next(ch for ch in own.own_video_channels if ch.name == "tiktok")
-    factory_tiktok = next(ch for ch in factory.factory_channels if ch.name == "tiktok")
+    factory_tiktok = next(ch for ch in factory.project_channels if ch.name == "tiktok")
     assert own_tiktok._channel is factory_tiktok._channel
     assert own_tiktok._caption_limit is None
     assert factory_tiktok._caption_limit is None
@@ -531,7 +531,7 @@ def test_tiktok_routes_only_own_and_factory_and_caches_token(
         ("own_video", True, True),
         ("own_video", False, True),
         ("own_video", False, False),
-        ("factory", True, True),
+        ("project", True, True),
     ],
 )
 def test_tiktok_workflow_reports_caption_from_own_and_factory_adapters(
@@ -588,12 +588,12 @@ def test_tiktok_workflow_reports_caption_from_own_and_factory_adapters(
     monkeypatch.setattr(tasks.httpx, "Client", lambda: client)
 
     def publish(publisher, ids, *, on_result, notifier):
-        if source == "factory" and not publisher.factory_channels:
+        if source == "project" and not publisher.project_channels:
             return
         if source == "own_video" and not publisher.own_video_channels:
             return
         assert item_id in ids
-        channels = publisher.factory_channels or publisher.own_video_channels
+        channels = publisher.project_channels or publisher.own_video_channels
         channel = next(ch for ch in channels if ch.name == "tiktok")
         save_ref = Mock()
         assert (

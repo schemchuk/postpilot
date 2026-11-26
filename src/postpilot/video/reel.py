@@ -8,7 +8,7 @@ from postpilot.video.label import AI_AVATAR_CAPTION_LABEL, AI_VIDEO_CAPTION_LABE
 
 @dataclass(frozen=True)
 class ReelVideo:
-    # A factory loader lets adapters recover published refs without the release bytes.
+    # A release asset loader lets adapters recover published refs without the release bytes.
     video: bytes | Callable[[], bytes]
     caption: str
     duration: float | None
