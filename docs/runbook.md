@@ -336,7 +336,7 @@ episode, or found it unchanged. Once scheduled publishing is available, cancel
 a reel by deleting its GitHub release before `release_at`. The next publish
 attempt will report the missing release.
 
-## YouTube Shorts setup (connector, in progress)
+## YouTube Shorts setup (connector)
 
 One-time setup for the YouTube Shorts channel. No code uses it yet; the channel
 adapter follows its own ADR and task. A vertical video up to 3 minutes is
@@ -356,11 +356,20 @@ classified as a Short by YouTube automatically; the API has no Shorts flag.
    for a Short set the thumbnail after processing has succeeded).
    Publish the app to "In production": in "Testing" refresh tokens expire after
    7 days. The app stays unverified; the owner clicks through the
-   "unverified app" warning once. Google verification is not needed for one user.
+   "unverified app" warning once. Google verification is not needed for one user;
+   ignore the "Your app requires verification" banner. Publishing needs Branding:
+   home page `https://schemchuk.github.io/postpilot/`, privacy policy
+   `https://schemchuk.github.io/postpilot/privacy/` (both in `site/`), authorized
+   domain `schemchuk.github.io`, no logo (a logo triggers verification).
 6. OAuth client: type "Desktop app"; Volodymyr puts the client ID and secret in
    `.env` as `YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET`.
-7. Refresh token: one local consent run, stored as `YOUTUBE_REFRESH_TOKEN`
-   (command added with the channel task).
+7. Refresh token: one local loopback consent run (PKCE, `access_type=offline`,
+   `prompt=consent`), stored in `.env` as `YOUTUBE_REFRESH_TOKEN`. A repo command
+   for re-consent comes with the channel task.
+
+Done 2026-11-26: project `postpilot-515916`, client `postpilot-desktop`, app in
+production, refresh token in `.env` (refresh checked). Intermediate channel
+features (step 2) still to confirm. Not yet in GitHub Secrets.
 
 Quota (checked 2026-11-26): `videos.insert` has its own bucket of 100 calls per
 day; other calls share 10,000 units per day. Uploads from unverified API
