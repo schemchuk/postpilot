@@ -13,6 +13,8 @@ class ReelVideo:
     caption: str
     duration: float | None
     ai_generated: bool
+    cover: Callable[[], bytes] | None = None
+    cover_url: str | None = None
 
     def video_bytes(self) -> bytes:
         video = self.video() if callable(self.video) else self.video

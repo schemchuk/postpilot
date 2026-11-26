@@ -12,6 +12,7 @@ from postpilot.channels.facebook_reels import FacebookReelsChannel
 from postpilot.channels.factory import (
     FactoryAssets,
     FactoryLinkedInChannel,
+    FactoryReelsChannel,
     FactoryThreadsChannel,
 )
 from postpilot.channels.linkedin import LinkedInChannel
@@ -20,12 +21,15 @@ from postpilot.core.models import Item
 from postpilot.core.publisher import Publisher
 from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.store.factory_reels import FactoryReel
-from postpilot.video.reel import ReelVideo
 
 NOW = datetime(2026, 12, 1, 7, tzinfo=UTC)
 VIDEO = b"video"
+COVER = b"\x89PNG\r\n\x1a\ncover"
 REPO = "owner/repo"
 URL = f"https://github.com/{REPO}/releases/download/reel/002-test/reel_de.mp4"
+
+
+COVER_URL = URL.replace("reel_de.mp4", "cover_de.png")
 
 
 def item(state, source="factory"):
@@ -69,14 +73,24 @@ def test_factory_opt_in_does_not_bypass_approval_for_other_sources():
     channel.validate.assert_not_called()
 
 
-def assets(client, *, text=' "Ein Post" [Test].\n ', thread=" Zweite Zeile.\n", size=5):
+def assets(
+    client,
+    *,
+    text=' "Ein Post" [Test].\n ',
+    thread=" Zweite Zeile.\n",
+    size=5,
+    cover=COVER,
+):
     reel = FactoryReel(
         "002-test",
         NOW,
         False,
         text,
         thread,
-        {"reel_de.mp4": {"sha256": sha256(VIDEO).hexdigest(), "size": size}},
+        {
+            "reel_de.mp4": {"sha256": sha256(VIDEO).hexdigest(), "size": size},
+            "cover_de.png": {"sha256": sha256(cover).hexdigest(), "size": len(cover)},
+        },
         30,
     )
     return FactoryAssets(Mock(**{"get_by_item.return_value": reel}), client, REPO)
@@ -240,10 +254,12 @@ def test_threads_only_checks_release_metadata_and_sends_stored_text():
 
 
 def test_facebook_recovers_a_published_reference_without_loading_release_bytes():
-    load = Mock(side_effect=ChannelError("Factory release is unavailable"))
-    reel = ReelVideo(load, "Caption", 30, False)
+    calls = []
 
     def route(request):
+        calls.append(request.url.host)
+        if request.url.host == "api.github.com":
+            return httpx.Response(404)
         assert request.method == "GET"
         assert request.url.path.endswith("/saved-video")
         return httpx.Response(
@@ -251,13 +267,70 @@ def test_facebook_recovers_a_published_reference_without_loading_release_bytes()
         )
 
     with httpx.Client(transport=httpx.MockTransport(route)) as client:
-        channel = FacebookReelsChannel(FacebookSettings("page"), client)
+        channel = FactoryReelsChannel(
+            FacebookReelsChannel(FacebookSettings("page"), client),
+            lambda _: "token",
+            assets(client),
+        )
         save_ref = Mock()
         assert (
             channel.publish_with_ref(
-                reel, "token", "saved-video", save_ref, claimed_at=NOW
+                item(ItemState.PUBLISHING),
+                [],
+                ref="saved-video",
+                claimed_at=NOW,
+                save_ref=save_ref,
             )
             == "saved-video"
         )
-    load.assert_not_called()
+    assert calls == ["api.github.com", "graph.facebook.com"]
     save_ref.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("mode", "content", "reason"),
+    [
+        ("ok", COVER, None),
+        ("hash", COVER[:-1] + b"X", "changed since intake"),
+        ("size", COVER + b"X", "changed since intake"),
+        ("missing", COVER, "is missing cover_de.png"),
+        ("signature", b"invalid", "PNG signature"),
+    ],
+)
+def test_factory_cover_checks_and_caches_release_asset(mode, content, reason):
+    requests = []
+
+    def route(request):
+        requests.append(str(request.url))
+        if request.url.host == "api.github.com":
+            files = [("reel_de.mp4", URL, VIDEO)]
+            if mode != "missing":
+                files.append(("cover_de.png", COVER_URL, content))
+            return httpx.Response(
+                200,
+                json={
+                    "assets": [
+                        {"name": name, "browser_download_url": url, "size": len(data)}
+                        for name, url, data in files
+                    ]
+                },
+            )
+        if str(request.url) == URL:
+            return httpx.Response(200, content=VIDEO)
+        assert str(request.url) == COVER_URL
+        return httpx.Response(200, content=content)
+
+    with httpx.Client(transport=httpx.MockTransport(route)) as client:
+        fetcher = assets(client, cover=content if mode == "signature" else COVER)
+        item_id = uuid4()
+        assert fetcher.video(item_id) == VIDEO
+        if mode != "missing":
+            assert fetcher.cover_url(item_id) == COVER_URL
+        for _ in range(2):
+            if reason:
+                with pytest.raises(ChannelError, match=reason):
+                    fetcher.cover(item_id)
+            else:
+                assert fetcher.cover(item_id) == COVER
+    assert len(requests) == (2 if mode == "missing" else 3)
+    assert requests[1:] == ([URL] if mode == "missing" else [URL, COVER_URL])

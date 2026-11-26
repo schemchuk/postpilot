@@ -10,6 +10,7 @@ import time
 from collections.abc import Callable
 from contextvars import ContextVar
 from datetime import datetime
+from functools import partial
 from urllib.parse import quote
 from uuid import UUID
 
@@ -60,7 +61,13 @@ class _LinkedInVideoPublisher:
     def permalink(self, remote_id: str) -> str:
         return f"https://www.linkedin.com/feed/update/{quote(remote_id, safe=':')}/"
 
-    def _upload_part(self, url: str, data: bytes) -> str:
+    def _put_upload(
+        self, url: str, data: bytes, *, thumbnail: bool = False
+    ) -> httpx.Response:
+        headers = {"Content-Type": "application/octet-stream"}
+        if thumbnail:
+            headers["media-type-family"] = "STILLIMAGE"
+        asset = "thumbnail" if thumbnail else "part"
         for attempt in range(_PART_ATTEMPTS):
             logging_context = _uploading_part.set(True)
             try:
@@ -69,7 +76,7 @@ class _LinkedInVideoPublisher:
                     "PUT",
                     url,
                     content=data,
-                    headers={"Content-Type": "application/octet-stream"},
+                    headers=headers,
                     timeout=30,
                 )
                 request.headers.pop("Authorization", None)
@@ -80,20 +87,28 @@ class _LinkedInVideoPublisher:
                 raise ChannelError("Invalid LinkedIn upload URL") from None
             else:
                 if response.is_success:
-                    etag = response.headers.get("ETag")
-                    if isinstance(etag, str) and etag:
-                        return etag
-                    raise ChannelError("LinkedIn upload part did not return an ETag")
+                    return response
                 if response.status_code < 500:
-                    raise ChannelError("LinkedIn upload part rejected")
+                    raise ChannelError(f"LinkedIn upload {asset} rejected")
             finally:
                 _uploading_part.reset(logging_context)
             if attempt + 1 < _PART_ATTEMPTS:
                 self._sleep(float(2**attempt))
-        raise TransientChannelError("LinkedIn upload part failed")
+        raise TransientChannelError(f"LinkedIn upload {asset} failed")
+
+    def _upload_part(self, url: str, data: bytes) -> str:
+        etag = self._put_upload(url, data).headers.get("ETag")
+        if not isinstance(etag, str) or not etag:
+            raise ChannelError("LinkedIn upload part did not return an ETag")
+        return etag
 
     def _upload(
-        self, data: bytes, author: str, token: str, save_ref: Callable[[str], None]
+        self,
+        data: bytes,
+        author: str,
+        token: str,
+        save_ref: Callable[[str], None],
+        thumbnail: bytes | None = None,
     ) -> str:
         if not data:
             raise ChannelError("An approved video is required")
@@ -108,7 +123,7 @@ class _LinkedInVideoPublisher:
                     "owner": author,
                     "fileSizeBytes": len(data),
                     "uploadCaptions": False,
-                    "uploadThumbnail": False,
+                    "uploadThumbnail": thumbnail is not None,
                 }
             },
         )
@@ -127,6 +142,14 @@ class _LinkedInVideoPublisher:
         ):
             raise ChannelError("Invalid LinkedIn upload instructions")
 
+        thumbnail_url = value.get("thumbnailUploadUrl")
+        if thumbnail is not None and (
+            not isinstance(thumbnail_url, str) or not thumbnail_url
+        ):
+            raise ChannelError(
+                "LinkedIn initializeUpload did not return a thumbnail URL"
+            )
+
         etags = []
         for part in parts:
             if not isinstance(part, dict):
@@ -144,6 +167,10 @@ class _LinkedInVideoPublisher:
             ):
                 raise ChannelError("Invalid LinkedIn upload part")
             etags.append(self._upload_part(url, data[first : last + 1]))
+
+        if thumbnail is not None:
+            assert isinstance(thumbnail_url, str)
+            self._put_upload(thumbnail_url, thumbnail, thumbnail=True)
 
         linkedin._request(
             "POST",
@@ -185,6 +212,7 @@ class _LinkedInVideoPublisher:
         video_bytes: Callable[[], bytes],
         ref: str | None,
         save_ref: Callable[[str], None],
+        thumbnail_bytes: Callable[[], bytes] | None = None,
     ) -> str | None:
         linkedin = self._linkedin
 
@@ -205,7 +233,13 @@ class _LinkedInVideoPublisher:
         if resumed and ref is not None:
             urn = ref.removeprefix(_FINAL)
         else:
-            urn = self._upload(video_bytes(), author, token, save_ref)
+            urn = self._upload(
+                video_bytes(),
+                author,
+                token,
+                save_ref,
+                thumbnail=thumbnail_bytes() if thumbnail_bytes is not None else None,
+            )
         try:
             if not self._available(urn, token):
                 return None
@@ -239,11 +273,13 @@ class LinkedInVideoChannel(_LinkedInVideoPublisher):
         *,
         fetch_video: Callable[[UUID], bytes],
         ai_generated: Callable[[UUID], bool],
+        fetch_thumbnail: Callable[[UUID], bytes] | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         super().__init__(linkedin, sleep)
         self._fetch_video = fetch_video
         self._ai_generated = ai_generated
+        self._fetch_thumbnail = fetch_thumbnail
 
     def _commentary(self, item: Item, variants: list[Variant]) -> str:
         label = AI_VIDEO_CAPTION_LABEL if self._ai_generated(item.id) else ""
@@ -277,6 +313,11 @@ class LinkedInVideoChannel(_LinkedInVideoPublisher):
             lambda: self._video_bytes(item.id),
             ref,
             save_ref,
+            thumbnail_bytes=(
+                partial(self._fetch_thumbnail, item.id)
+                if self._fetch_thumbnail is not None
+                else None
+            ),
         )
 
 

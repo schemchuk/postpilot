@@ -20,6 +20,7 @@ from postpilot.video.publisher import VideoChannel
 from postpilot.video.reel import ReelVideo
 
 _VIDEO = "reel_de.mp4"
+_COVER = "cover_de.png"
 
 
 class FactoryAssets:
@@ -29,11 +30,12 @@ class FactoryAssets:
         self.store = store
         self.client = client
         self.repo = repo
-        # The job processes one item at a time. Keep both versions only for that item.
-        self._key: tuple[UUID, Asset | None] | None = None
-        self._raw: bytes | None = None
+        # Keep the release and downloaded media for the current item only.
+        self._key: tuple[UUID, str, dict[str, Asset]] | None = None
+        self._release: FactoryRelease | None = None
+        self._downloads: dict[str, bytes] = {}
+        self._errors: dict[str, str] = {}
         self._fitted: bytes | None = None
-        self._error: str | None = None
 
     def reel(self, item_id: UUID) -> FactoryReel:
         reel = self.store.get_by_item(item_id)
@@ -41,47 +43,74 @@ class FactoryAssets:
             raise ChannelError("Factory reel data is unavailable")
         return reel
 
-    def _release_video(self, reel: FactoryReel) -> tuple[FactoryRelease, httpx.URL]:
-        try:
-            release = FactoryRelease(self.client, self.repo, reel.tag)
-        except Rejected:
-            raise ChannelError(f"Factory release {reel.tag} is unavailable") from None
-        try:
-            return release, release.asset_url(_VIDEO)
-        except Rejected as error:
-            raise ChannelError(f"Factory {error}") from None
+    def _release_for(self, item_id: UUID, reel: FactoryReel) -> FactoryRelease:
+        key = (item_id, reel.tag, reel.assets)
+        if self._key != key:
+            self._key = key
+            self._release = None
+            self._downloads.clear()
+            self._errors.clear()
+            self._fitted = None
+        if self._release is None and "release" not in self._errors:
+            try:
+                self._release = FactoryRelease(self.client, self.repo, reel.tag)
+            except Rejected:
+                self._errors["release"] = f"Factory release {reel.tag} is unavailable"
+        if self._release is None:
+            raise ChannelError(self._errors["release"])
+        return self._release
 
     def check_release(self, item_id: UUID) -> None:
         reel = self.reel(item_id)
-        if (item_id, reel.assets.get(_VIDEO)) != self._key:
-            self._release_video(reel)
-        elif self._error is not None:
-            raise ChannelError(self._error)
+        release = self._release_for(item_id, reel)
+        if _VIDEO in self._errors:
+            raise ChannelError(self._errors[_VIDEO])
+        try:
+            release.asset_url(_VIDEO)
+        except Rejected as error:
+            raise ChannelError(f"Factory {error}") from None
+
+    def _download(self, item_id: UUID, name: str) -> bytes:
+        reel = self.reel(item_id)
+        release = self._release_for(item_id, reel)
+        if name not in self._downloads and name not in self._errors:
+            try:
+                data = release.download(name, release.asset_url(name))
+                if reel.assets.get(name) != {
+                    "size": len(data),
+                    "sha256": sha256(data).hexdigest(),
+                }:
+                    raise ChannelError(f"Factory asset {name} changed since intake")
+                if name == _COVER and not data.startswith(b"\x89PNG\r\n\x1a\n"):
+                    raise ChannelError(
+                        f"Factory asset {name} must have a PNG signature"
+                    )
+                self._downloads[name] = data
+            except Rejected as error:
+                self._errors[name] = f"Factory {error}"
+            except ChannelError as error:
+                self._errors[name] = str(error)
+        if name in self._errors:
+            raise ChannelError(self._errors[name])
+        return self._downloads[name]
 
     def video(self, item_id: UUID) -> bytes:
+        return self._download(item_id, _VIDEO)
+
+    def cover(self, item_id: UUID) -> bytes:
+        return self._download(item_id, _COVER)
+
+    def cover_url(self, item_id: UUID) -> str:
         reel = self.reel(item_id)
-        expected = reel.assets.get(_VIDEO)
-        key = (item_id, expected)
-        if self._key != key:
-            self._key = key
-            self._fitted = self._raw = self._error = None
-            try:
-                release, url = self._release_video(reel)
-                video = release.download(_VIDEO, url)
-                if expected != {
-                    "size": len(video),
-                    "sha256": sha256(video).hexdigest(),
-                }:
-                    raise ChannelError(f"Factory asset {_VIDEO} changed since intake")
-                self._raw = video
-            except (ChannelError, Rejected) as error:
-                self._error = str(error)
-        if self._raw is None:
-            raise ChannelError(self._error)
-        return self._raw
+        release = self._release_for(item_id, reel)
+        try:
+            return str(release.asset_url(_COVER))
+        except Rejected as error:
+            raise ChannelError(f"Factory {error}") from None
 
     def fitted_video(self, item_id: UUID) -> bytes:
         raw = self.video(item_id)
+        self.cover(item_id)
         if self._fitted is None:
             # Intake stores duration only. Keep the release picture and normalize audio.
             self._fitted = _fit_video(raw, scale=False)
@@ -94,7 +123,10 @@ class FactoryLinkedInChannel(LinkedInVideoChannel):
 
     def __init__(self, linkedin: LinkedInChannel, assets: FactoryAssets) -> None:
         super().__init__(
-            linkedin, fetch_video=assets.video, ai_generated=lambda _: False
+            linkedin,
+            fetch_video=assets.video,
+            ai_generated=lambda _: False,
+            fetch_thumbnail=assets.cover,
         )
         self._assets = assets
 
@@ -183,12 +215,22 @@ class FactoryReelsChannel:
             raise ChannelHeld
         reel = self._assets.reel(item.id)
         caption = self._caption(reel)
+        try:
+            cover_url = self._assets.cover_url(item.id)
+        except ChannelError:
+            if ref is None:
+                raise
+            # Let Meta reconcile an existing publication even if the release is gone.
+            # Any path that needs the video will validate the cover before publishing.
+            cover_url = None
         return self._channel.publish_with_ref(
             ReelVideo(
                 partial(self._assets.fitted_video, item.id),
                 caption,
                 reel.duration,
                 reel.ai,
+                cover=partial(self._assets.cover, item.id),
+                cover_url=cover_url,
             ),
             token,
             ref,

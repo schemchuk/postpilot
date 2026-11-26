@@ -63,6 +63,10 @@ The factory also mentioned a request about postpilot's Friday GitHub post. Volod
    Instagram: `cover_url` = the public asset URL, `thumb_offset=0` as well (used if Meta ignores the URL).
    Facebook Reels: upload the cover as the video thumbnail if the Graph API accepts it for Reels (to be
    verified in T26c), else frame 0.
+   Finding (T26c, 2026-11-26): `video_reels` start/finish has no cover parameter; Meta's documented way is
+   `POST /{video_id}/thumbnails` (multipart `source`, `is_preferred=true`) after publishing. It needs Page
+   permissions (`pages_manage_engagement`, `pages_read_user_content`) the token may lack, so postpilot
+   calls it best effort: a failure is logged as a warning and the reel stays published with frame 0.
 8. **Release time (R3).** `publish-reels` (hourly at :00 UTC, has the Meta settings and ffmpeg) publishes
    factory items whose `release_at` has passed, on all four channels. 08:00 Berlin is a full hour in UTC
    in winter and summer, so a reel goes out within minutes of its release time. A cron-job.org miss is

@@ -78,6 +78,11 @@ class InstagramReelsChannel:
             data={
                 "media_type": "REELS",
                 "upload_type": "resumable",
+                **(
+                    {"cover_url": reel.cover_url, "thumb_offset": "0"}
+                    if reel.cover_url is not None
+                    else {}
+                ),
                 **({"caption": caption} if caption else {}),
                 **({"is_ai_generated": "true"} if reel.ai_generated else {}),
             },

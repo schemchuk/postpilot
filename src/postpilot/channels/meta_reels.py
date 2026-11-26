@@ -17,6 +17,7 @@ def request(
     *,
     data: dict[str, str] | None = None,
     video: bytes | None = None,
+    files: dict[str, tuple[str, bytes, str]] | None = None,
     offset: int = 0,
     finish: bool = False,
 ) -> dict[str, object]:
@@ -36,6 +37,7 @@ def request(
             url,
             headers=headers,
             data=data,
+            files=files,
             content=video[offset:] if video is not None else None,
             timeout=60,
             follow_redirects=False,
