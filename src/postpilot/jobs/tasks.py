@@ -21,8 +21,17 @@ from postpilot.ai.prompts import (
     SERIES_SYSTEM_PROMPT,
     generation_message,
 )
-from postpilot.channels.base import ChannelError, TransientChannelError
+from postpilot.channels.base import (
+    ChannelError,
+    TransientChannelError,
+)
 from postpilot.channels.facebook_reels import FacebookReelsChannel
+from postpilot.channels.factory import (
+    FactoryAssets,
+    FactoryLinkedInChannel,
+    FactoryReelsChannel,
+    FactoryThreadsChannel,
+)
 from postpilot.channels.instagram_reels import InstagramReelsChannel
 from postpilot.channels.linkedin import LINKEDIN_TEXT_CHANNELS, LinkedInChannel
 from postpilot.channels.linkedin_video import LinkedInRenderChannel
@@ -62,6 +71,7 @@ from postpilot.sources.series import SeriesStore
 from postpilot.sources.telegram import TelegramInbox
 from postpilot.stats import StatsStore
 from postpilot.store.bot_state import BotState
+from postpilot.store.factory_reels import FactoryReelStore
 from postpilot.store.own_videos import OwnVideo, OwnVideoStore
 from postpilot.store.repo import ItemRepo
 from postpilot.store.update_inbox import UpdateInbox
@@ -301,6 +311,9 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
         publish(repo.list_unfinished_item_ids())
 
     def retry_item(item_id: UUID) -> None:
+        item = repo.get_item(item_id)
+        if item is not None and item.source == "factory":
+            return
         try:
             publish([item_id])
         except _ChannelPublishingFailed:
@@ -497,12 +510,6 @@ def _own_video_reel_publisher(
 def publish_reels(
     settings: Settings, conn: Connection[TupleRow], *, retry: bool = False
 ) -> None:
-    if (
-        settings.facebook is None
-        and settings.instagram is None
-        and settings.linkedin is None
-    ):
-        return
     store = TokenStore(conn, TokenCipher(settings.token_encryption_key))
 
     def read_token(provider: str) -> str | None:
@@ -542,10 +549,7 @@ def publish_reels(
             retry=retry,
         )
 
-        if not reel_channels:
-            return
-        reels = {channel.name: channel for channel in reel_channels}
-        publisher = _own_video_reel_publisher(repo, reel_channels, api, read_token)
+        permalinks = {channel.name: channel.permalink for channel in reel_channels}
 
         def notify_result(item_id: UUID, name: str, result: ChannelResult) -> None:
             if result.outcome == "published":
@@ -554,20 +558,81 @@ def publish_reels(
                         publication.channel == name
                         and publication.remote_id is not None
                     ):
-                        alert(
-                            notify,
-                            f"{name}: published {reels[name].permalink(publication.remote_id)}",
-                        )
+                        link = permalinks[name](publication.remote_id)
+                        alert(notify, f"{name}: published {link}")
                         break
 
-        item_ids = repo.list_approved_item_ids(source="own_video")
-        item_ids += repo.list_unfinished_item_ids(source="own_video")
-        _publish_items(
-            publisher,
-            dict.fromkeys(item_ids),
-            on_result=notify_result,
-            notifier=notifier,
-        )
+        own_video_failed = False
+        if reel_channels:
+            publisher = _own_video_reel_publisher(repo, reel_channels, api, read_token)
+            item_ids = repo.list_approved_item_ids(source="own_video")
+            item_ids += repo.list_unfinished_item_ids(source="own_video")
+            try:
+                _publish_items(
+                    publisher,
+                    dict.fromkeys(item_ids),
+                    on_result=notify_result,
+                    notifier=notifier,
+                )
+            except _ChannelPublishingFailed:
+                own_video_failed = True
+
+        factory = FactoryReelStore(conn)
+        due = factory.list_due_item_ids(_now())
+        if due:
+            assets = FactoryAssets(factory, client, settings.factory_repo)
+            targets: list[
+                FactoryLinkedInChannel | FactoryThreadsChannel | FactoryReelsChannel
+            ] = [
+                FactoryReelsChannel(
+                    channel,
+                    read_token,
+                    assets,
+                    caption_limit=2200 if channel.name == _INSTAGRAM_TARGET else None,
+                )
+                for channel in reel_channels
+            ]
+            if settings.linkedin is not None:
+                targets.extend(
+                    FactoryLinkedInChannel(
+                        LinkedInChannel(
+                            name, lang, token_source, client, settings.linkedin.version
+                        ),
+                        assets,
+                    )
+                    for name, lang in LINKEDIN_VIDEO_CHANNELS.items()
+                    if lang == "de" and not is_paused(name)
+                )
+            targets.append(
+                FactoryThreadsChannel(partial(read_token, "threads"), client, assets)
+            )
+            permalinks.update({channel.name: channel.permalink for channel in targets})
+
+            def release_at(item_id: UUID) -> datetime | None:
+                reel = factory.get_by_item(item_id)
+                return reel.release_at if reel else None
+
+            def excluded(item_id: UUID) -> set[str]:
+                reel = factory.get_by_item(item_id)
+                return {"threads"} if reel and reel.threads_skipped else set()
+
+            _publish_items(
+                Publisher(
+                    repo,
+                    [],
+                    factory_channels=list(targets),
+                    factory_release_at=release_at,
+                    factory_excluded_channels=excluded,
+                    factory_lock=factory.lock_item,
+                    now=_now,
+                    token_guard=lambda provider: bool(read_token(provider)),
+                ),
+                due,
+                on_result=notify_result,
+                notifier=notifier,
+            )
+        if own_video_failed:
+            raise _ChannelPublishingFailed("Channel publishing failed")
 
 
 def check_tokens(settings: Settings, conn: Connection[TupleRow]) -> None:

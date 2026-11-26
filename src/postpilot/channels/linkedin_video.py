@@ -48,6 +48,7 @@ logging.getLogger("httpx").addFilter(_exclude_upload_urls)
 
 class _LinkedInVideoPublisher:
     token_provider = LinkedInChannel.token_provider
+    _verbatim = False
 
     def __init__(
         self, linkedin: LinkedInChannel, sleep: Callable[[float], None]
@@ -55,6 +56,9 @@ class _LinkedInVideoPublisher:
         self.name = linkedin.name
         self._linkedin = linkedin
         self._sleep = sleep
+
+    def permalink(self, remote_id: str) -> str:
+        return f"https://www.linkedin.com/feed/update/{quote(remote_id, safe=':')}/"
 
     def _upload_part(self, url: str, data: bytes) -> str:
         for attempt in range(_PART_ATTEMPTS):
@@ -183,9 +187,15 @@ class _LinkedInVideoPublisher:
         save_ref: Callable[[str], None],
     ) -> str | None:
         linkedin = self._linkedin
+
+        def find_existing(urn: str) -> str | None:
+            if self._verbatim:
+                return linkedin._find_existing(item_id, token, video=urn)
+            return linkedin._find_existing(item_id, token)
+
         if ref and ref.startswith(_POSTING):
             try:
-                return linkedin._find_existing(item_id, token)
+                return find_existing(ref.removeprefix(_POSTING))
             except ChannelError:
                 raise UncertainPublication("LinkedIn post lookup failed") from None
 
@@ -199,12 +209,14 @@ class _LinkedInVideoPublisher:
         try:
             if not self._available(urn, token):
                 return None
-            if resumed and (existing := linkedin._find_existing(item_id, token)):
+            if resumed and (existing := find_existing(urn)):
                 return existing
         except TransientChannelError:
             # Keep the finalized upload for the next run.
             return None
 
+        if resumed and self._verbatim:
+            video_bytes()
         save_ref(_POSTING + urn)
         try:
             return linkedin._create_post(text, author, token, video=urn)
@@ -219,6 +231,8 @@ class _LinkedInVideoPublisher:
 
 
 class LinkedInVideoChannel(_LinkedInVideoPublisher):
+    _file_limit: int | None = _FILE_LIMIT
+
     def __init__(
         self,
         linkedin: LinkedInChannel,
@@ -243,7 +257,7 @@ class LinkedInVideoChannel(_LinkedInVideoPublisher):
             data = self._fetch_video(item_id)
         except TelegramError:
             raise ChannelError("Telegram video retrieval failed") from None
-        if not 0 < len(data) <= _FILE_LIMIT:
+        if not data or (self._file_limit is not None and len(data) > self._file_limit):
             raise ChannelError("Invalid LinkedIn video size")
         return data
 
@@ -302,6 +316,3 @@ class LinkedInRenderChannel(_LinkedInVideoPublisher):
             ref,
             save_ref,
         )
-
-    def permalink(self, remote_id: str) -> str:
-        return f"https://www.linkedin.com/feed/update/{quote(remote_id, safe=':')}/"

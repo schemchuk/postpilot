@@ -155,6 +155,45 @@ def _probe_duration(video: bytes) -> float:
         return float(media["format"]["duration"])
 
 
+class FactoryRelease:
+    def __init__(self, client: httpx.Client, repo: str, tag: str) -> None:
+        self.client = client
+        self.repo = repo
+        self.tag = tag
+        try:
+            response = client.get(
+                f"https://api.github.com/repos/{repo}/releases/tags/{quote(tag, safe='')}",
+                follow_redirects=False,
+            )
+            response.raise_for_status()
+            self.metadata = {
+                asset["name"]: asset for asset in response.json()["assets"]
+            }
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            raise Rejected(f"could not read release {tag}") from None
+
+    def asset_url(self, name: str) -> httpx.URL:
+        if name not in self.metadata:
+            raise Rejected(f"release {self.tag} is missing {name}")
+        size = self.metadata[name].get("size")
+        limit = _LIMITS[name]
+        if type(size) is not int or size < 0:
+            raise Rejected(f"{name} has an invalid release asset size")
+        if size > limit:
+            raise Rejected(f"{name} exceeds {limit} bytes")
+        raw_url = self.metadata[name].get("browser_download_url")
+        try:
+            url = httpx.URL(raw_url) if isinstance(raw_url, str) else httpx.URL()
+        except httpx.InvalidURL:
+            raise Rejected(f"{name} has a disallowed download URL") from None
+        if not _asset_url(url, self.repo):
+            raise Rejected(f"{name} has a disallowed download URL")
+        return url
+
+    def download(self, name: str, url: httpx.URL) -> bytes:
+        return _asset(self.client, url, self.repo, name)
+
+
 def _download(
     client: httpx.Client,
     repo: str,
@@ -163,39 +202,16 @@ def _download(
     ai: bool,
     probe: Callable[[bytes], float],
 ) -> FactoryReel:
-    tag = f"reel/{episode}"
-    try:
-        response = client.get(
-            f"https://api.github.com/repos/{repo}/releases/tags/{quote(tag, safe='')}"
-        )
-        response.raise_for_status()
-        metadata = {asset["name"]: asset for asset in response.json()["assets"]}
-    except (httpx.HTTPError, ValueError, KeyError, TypeError):
-        raise Rejected(f"could not read release {tag}") from None
-    urls: dict[str, httpx.URL] = {}
-    for name, limit in _LIMITS.items():
-        if name not in metadata:
-            if name == "post_threads.txt":
-                continue
-            raise Rejected(f"release {tag} is missing {name}")
-        size = metadata[name].get("size")
-        if type(size) is not int or size < 0:
-            raise Rejected(f"{name} has an invalid release asset size")
-        if size > limit:
-            raise Rejected(f"{name} exceeds {limit} bytes")
-        raw_url = metadata[name].get("browser_download_url")
-        try:
-            url = httpx.URL(raw_url) if isinstance(raw_url, str) else httpx.URL()
-        except httpx.InvalidURL:
-            raise Rejected(f"{name} has a disallowed download URL") from None
-        if not _asset_url(url, repo):
-            raise Rejected(f"{name} has a disallowed download URL")
-        urls[name] = url
-
+    release = FactoryRelease(client, repo, f"reel/{episode}")
+    urls = {
+        name: release.asset_url(name)
+        for name in _LIMITS
+        if name != "post_threads.txt" or name in release.metadata
+    }
     assets: dict[str, Asset] = {}
 
     def download(name: str) -> bytes:
-        data = _asset(client, urls[name], repo, name)
+        data = release.download(name, urls[name])
         assets[name] = {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
         return data
 

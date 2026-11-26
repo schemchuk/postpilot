@@ -404,7 +404,10 @@ def test_job_publishes_heygen_with_linkedin_only(monkeypatch, has_token):
     tokens.get.return_value = token if has_token else None
     monkeypatch.setattr(tasks, "TokenStore", Mock(return_value=tokens))
 
-    tasks.publish_reels(settings, Mock())
+    conn = Mock()
+    conn.transaction.side_effect = nullcontext
+    conn.execute.return_value.fetchall.return_value = []
+    tasks.publish_reels(settings, conn)
 
     store.oldest_eligible.assert_called_once_with(
         {"linkedin-video"}, timedelta(minutes=15), retry=False
