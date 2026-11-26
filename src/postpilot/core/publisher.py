@@ -64,6 +64,8 @@ class Publisher:
         item = self.repo.get_item(item_id)
         if item is None:
             raise KeyError(item_id)
+        if item.source == "factory":
+            raise IllegalTransition("Factory reels require the factory publisher")
         own_video = item.source == "own_video"
         if own_video and self.own_video_channels is None:
             return PublishReport(

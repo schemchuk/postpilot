@@ -3,11 +3,14 @@
 import argparse
 import json
 import logging
+import os
+import sys
 from collections.abc import Callable
 from datetime import date
 from functools import partial
 from pathlib import Path
 
+import httpx
 from psycopg import Connection, Error
 from psycopg.rows import TupleRow
 
@@ -16,9 +19,12 @@ from postpilot.config import ConfigError, Settings
 from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
 from postpilot.jobs import tasks
 from postpilot.jobs.runner import run_job
+from postpilot.notify.telegram import Notifier, TelegramApi
+from postpilot.sources.factory import intake
 from postpilot.sources.series import ActiveSeriesExists, SeriesStore
 from postpilot.store import migrate
 from postpilot.store.db import connect
+from postpilot.store.factory_reels import FactoryReel, FactoryReelStore, IntakeStatus
 
 _DATABASE_COMMANDS = {
     "draft-weekly": tasks.draft_weekly,
@@ -32,6 +38,7 @@ _DATABASE_COMMANDS = {
     "threads-import-token": tasks.threads_import_token,
 }
 _COMMANDS = (
+    "factory-intake",
     "series-import",
     "draft-weekly",
     "poll-engagement",
@@ -171,6 +178,24 @@ def _series_import(path: Path, settings: Settings) -> None:
     )
 
 
+def _factory_intake(raw: str, settings: Settings) -> int:
+    notifier = Notifier(
+        TelegramApi(settings.telegram_bot_token), settings.telegram_chat_id
+    )
+
+    def save(reel: FactoryReel) -> IntakeStatus:
+        with connect(settings.database_url) as conn:
+            migrate.up(conn)
+            return FactoryReelStore(conn).create_factory_item(reel)
+
+    def notify(message: str) -> None:
+        print(message, file=sys.stderr)
+        notifier.send_alert(message)
+
+    with httpx.Client(timeout=30) as client:
+        return intake(raw, settings.factory_repo, client, save, notify)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="postpilot", description=f"postpilot {__version__}"
@@ -178,6 +203,10 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command")
     for command in _COMMANDS:
         subparser = subparsers.add_parser(command)
+        if command == "factory-intake":
+            subparser.add_argument(
+                "--payload", default=os.environ.get("FACTORY_PAYLOAD", "")
+            )
         if command == "series-import":
             subparser.add_argument("path", type=Path)
         if command in {"render-video", "publish-reels"}:
@@ -189,11 +218,24 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        settings = Settings.from_env(Path(".env"))
+        settings = (
+            Settings.from_env(Path(".env"), require_token_key=False)
+            if args.command == "factory-intake"
+            else Settings.from_env(Path(".env"))
+        )
         if args.command == "render-video":
             tasks.validate_video_settings(settings)
     except ConfigError as error:
         parser.error(str(error))
+
+    if args.command == "factory-intake":
+        result = 1
+
+        def run_intake() -> None:
+            nonlocal result
+            result = _factory_intake(args.payload, settings)
+
+        return run_job(args.command, run_intake, settings) or result
 
     if args.command == "series-import":
         try:

@@ -41,6 +41,8 @@ class VideoPublicationStore:
                 """
                 SELECT id FROM video_renders r
                 WHERE lang = 'de' AND status = 'APPROVED' AND EXISTS (
+                    SELECT 1 FROM items i WHERE i.id = r.item_id AND i.source <> 'factory'
+                ) AND EXISTS (
                     SELECT 1 FROM unnest(%s::text[]) AS configured(channel)
                     LEFT JOIN video_publications p
                         ON p.render_id = r.id AND p.channel = configured.channel
@@ -72,7 +74,9 @@ class VideoPublicationStore:
             return None
         with self.conn.transaction():
             render = self.conn.execute(
-                "SELECT status, linkedin FROM video_renders WHERE id = %s FOR UPDATE",
+                "SELECT status, linkedin FROM video_renders r WHERE id = %s AND EXISTS ("
+                "SELECT 1 FROM items i WHERE i.id = r.item_id AND i.source <> 'factory'"
+                ") FOR UPDATE",
                 (render_id,),
             ).fetchone()
             if render is None or render[0] != "APPROVED":

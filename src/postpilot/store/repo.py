@@ -78,6 +78,8 @@ class ItemRepo:
         self.bot_state = BotState(conn)
 
     def create_item(self, source: Source) -> Item:
+        if source == "factory":
+            raise ValueError("Factory items must be created by factory intake")
         with self.conn.transaction():
             row = self.conn.execute(
                 f"INSERT INTO items (id, source, state) VALUES (%s, %s, %s) RETURNING {_ITEM_COLUMNS}",
@@ -130,7 +132,7 @@ class ItemRepo:
             rows = self.conn.execute(
                 """
                 SELECT i.id FROM items i
-                WHERE (%s::text IS NULL OR i.source = %s)
+                WHERE i.source <> 'factory' AND (%s::text IS NULL OR i.source = %s)
                   AND (i.state = 'PUBLISHING' OR (
                     i.state = 'FAILED'
                     AND EXISTS (
@@ -153,7 +155,8 @@ class ItemRepo:
     ) -> list[UUID]:
         with self.conn.transaction():
             rows = self.conn.execute(
-                "SELECT id FROM items WHERE state = %s AND (%s::text IS NULL OR source = %s) "
+                "SELECT id FROM items WHERE state = %s AND source <> 'factory' "
+                "AND (%s::text IS NULL OR source = %s) "
                 "ORDER BY created_at, id",
                 (state.value, source, source),
             ).fetchall()
@@ -167,7 +170,7 @@ class ItemRepo:
                 FROM items i JOIN variants v ON v.item_id = i.id AND v.lang = 'de'
                 LEFT JOIN video_renders r ON r.item_id = i.id AND r.lang = v.lang
                 WHERE i.state IN ('APPROVED', 'PUBLISHING', 'PUBLISHED')
-                  AND i.source <> 'own_video'
+                  AND i.source IN ('github', 'telegram')
                   AND CASE WHEN %s THEN r.status = 'FAILED' AND NOT r.retried
                            ELSE r.id IS NULL END
                 ORDER BY i.created_at, i.id LIMIT 1
