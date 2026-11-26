@@ -61,6 +61,7 @@ class LinkedInChannel:
         *,
         label: str = "",
         leading_label: str = "",
+        include_marker: bool = True,
     ) -> str:
         for variant in variants:
             if variant.item_id == item.id and variant.lang == self._lang:
@@ -70,7 +71,7 @@ class LinkedInChannel:
             raise ChannelError("Missing required language variant")
         if not text.strip():
             raise ChannelError("LinkedIn text is empty")
-        suffix = self._suffix(item.id)
+        suffix = self._suffix(item.id) if include_marker else ""
         if leading_label:
             text = leading_label + "\n\n" + text
         if label:
@@ -196,7 +197,9 @@ class LinkedInChannel:
     def find_existing(self, item_id: UUID) -> str | None:
         return self._find_existing(item_id, self._token())
 
-    def _find_existing(self, item_id: UUID, token: str) -> str | None:
+    def _find_existing(
+        self, item_id: UUID, token: str, *, video: str | None = None
+    ) -> str | None:
         author = self._author(token)
         start = 0
         suffix = self._suffix(item_id)
@@ -220,7 +223,14 @@ class LinkedInChannel:
                 if not isinstance(post, dict):
                     raise ChannelError("Invalid LinkedIn post response")
                 commentary, found_id = post.get("commentary"), post.get("id")
-                if isinstance(commentary, str) and commentary.endswith(suffix):
+                content = post.get("content")
+                media = content.get("media") if isinstance(content, dict) else None
+                matches = (
+                    isinstance(media, dict) and media.get("id") == video
+                    if video is not None
+                    else isinstance(commentary, str) and commentary.endswith(suffix)
+                )
+                if matches:
                     if not isinstance(found_id, str) or not found_id:
                         raise ChannelError("LinkedIn post ID is unavailable")
                     return found_id

@@ -83,13 +83,16 @@ class FacebookReelsChannel:
                 uploaded = upload.get(
                     "bytes_transferred", upload.get("bytes_transfered", 0)
                 )
-                if type(uploaded) is not int or not 0 <= uploaded <= len(reel.video):
+                if type(uploaded) is not int or not 0 <= uploaded <= len(
+                    reel.video_bytes()
+                ):
                     raise TransientChannelError("Invalid Facebook Reels upload offset")
                 offset = uploaded
             elif publishing.get("status") == "not_started":
-                offset = len(reel.video)
+                offset = len(reel.video_bytes())
             else:
                 return None
+        video = reel.video_bytes()
         if ref is None:
             new_ref = self._request(
                 "POST",
@@ -101,9 +104,9 @@ class FacebookReelsChannel:
                 raise TransientChannelError("Facebook Reels did not return a video ID")
             ref = new_ref
             save_ref(ref)
-        if offset < len(reel.video):
+        if offset < len(video):
             url = f"https://rupload.facebook.com/video-upload/{self._settings.graph_version}/{quote(ref, safe='')}"
-            self._request("POST", url, token, video=reel.video, offset=offset)
+            self._request("POST", url, token, video=video, offset=offset)
         # Verify claim ownership again after upload, before publishing.
         save_ref(ref)
         result = self._request(

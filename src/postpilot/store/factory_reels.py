@@ -1,7 +1,9 @@
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, TypedDict
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from psycopg import Connection
 from psycopg.rows import TupleRow
@@ -27,6 +29,9 @@ class FactoryReel:
     assets: dict[str, Asset]
     duration: float
 
+    item_id: UUID | None = None
+    threads_skipped: bool = False
+
     @property
     def tag(self) -> str:
         return f"reel/{self.episode}"
@@ -35,6 +40,39 @@ class FactoryReel:
 class FactoryReelStore:
     def __init__(self, conn: Connection[TupleRow]) -> None:
         self.conn = conn
+
+    def get_by_item(self, item_id: UUID) -> FactoryReel | None:
+        with self.conn.transaction():
+            row = self.conn.execute(
+                """
+                SELECT episode, release_at, ai, post_de, post_threads, assets,
+                    duration, item_id, threads_skipped
+                FROM factory_reels WHERE item_id = %s
+                """,
+                (item_id,),
+            ).fetchone()
+        return FactoryReel(*row) if row else None
+
+    def list_due_item_ids(self, now: datetime) -> list[UUID]:
+        with self.conn.transaction():
+            rows = self.conn.execute(
+                """
+                SELECT f.item_id FROM factory_reels f JOIN items i ON i.id = f.item_id
+                WHERE i.source = 'factory' AND i.state IN ('APPROVED', 'PUBLISHING')
+                    AND f.release_at <= %s
+                ORDER BY f.release_at, f.item_id
+                """,
+                (now,),
+            ).fetchall()
+        return [item_id for (item_id,) in rows]
+
+    @contextmanager
+    def lock_item(self, item_id: UUID) -> Iterator[None]:
+        with self.conn.transaction():
+            self.conn.execute(
+                "SELECT id FROM items WHERE id = %s FOR UPDATE", (item_id,)
+            )
+            yield
 
     def create_factory_item(self, reel: FactoryReel) -> IntakeStatus:
         with self.conn.transaction():

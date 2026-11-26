@@ -65,8 +65,11 @@ class InstagramReelsChannel:
             if status == "IN_PROGRESS":
                 return None
             if status not in ("ERROR", "EXPIRED"):
+                if status != "PUBLISHED":
+                    reel.video_bytes()
                 return self._finish(status, ref, caption, token, claimed_at, save_ref)
 
+        video = reel.video_bytes()
         # At most one new container per run, including when recovering an old one.
         container = self._request(
             "POST",
@@ -86,7 +89,7 @@ class InstagramReelsChannel:
             "https://rupload.facebook.com/ig-api-upload/"
             f"{self._settings.graph_version}/{quote(container, safe='')}"
         )
-        self._upload(upload, token, reel.video)
+        self._upload(upload, token, video)
         status = self._poll(container, token, deadline)
         if status in ("FINISHED", "PUBLISHED"):
             return self._finish(status, container, caption, token, claimed_at, save_ref)

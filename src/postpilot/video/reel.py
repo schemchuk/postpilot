@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from postpilot.channels.base import ChannelError
@@ -7,10 +8,17 @@ from postpilot.video.label import AI_AVATAR_CAPTION_LABEL, AI_VIDEO_CAPTION_LABE
 
 @dataclass(frozen=True)
 class ReelVideo:
-    video: bytes
+    # A factory loader lets adapters recover published refs without the release bytes.
+    video: bytes | Callable[[], bytes]
     caption: str
     duration: float | None
     ai_generated: bool
+
+    def video_bytes(self) -> bytes:
+        video = self.video() if callable(self.video) else self.video
+        if not video:
+            raise ChannelError("An approved video is required")
+        return video
 
     def validate(self, channel: str, max_duration: int) -> None:
         if not self.video:

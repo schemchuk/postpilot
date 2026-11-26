@@ -95,6 +95,9 @@ class ThreadsChannel:
             raise ChannelError("Invalid Threads lookup response")
         raise transient("Threads request failed")
 
+    def _before_publish(self, item: Item) -> None:
+        pass
+
     def publish_with_ref(
         self,
         item: Item,
@@ -120,6 +123,7 @@ class ThreadsChannel:
                 raise ChannelError("Invalid Threads container status")
 
         self._check_token(token)
+        self._before_publish(item)
         if ref is None:
             creation_id = self._request(
                 "POST", "me/threads", token, data={"media_type": "TEXT", "text": text}
