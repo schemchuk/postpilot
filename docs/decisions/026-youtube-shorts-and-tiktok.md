@@ -1,8 +1,8 @@
 # 026. YouTube Shorts and TikTok video channels
 
-Status: PROPOSED (Claude Code, 2026-11-26; Volodymyr's answers of 2026-11-26 included: factory reels go to
+Status: ACCEPTED (Volodymyr, 2026-11-26; his answers of 2026-11-26 included: factory reels go to
 TikTok and YouTube, category Science & Technology for all, YouTube also without a description (default title), HeyGen
-renders stay off both. Would amend the spec outputs and the video channel sets of ADRs 019, 023 and 024)
+renders stay off both. Amends the spec outputs and the video channel sets of ADRs 019, 023 and 024)
 
 ## Context
 

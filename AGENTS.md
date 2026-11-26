@@ -41,8 +41,9 @@ Prior art (learn from it, do not copy blindly):
 - AI-generated media (avatar videos) is labelled as AI-generated on every channel (EU AI Act, Meta).
 - Publishing is idempotent: a rerun never posts the same item twice.
 - Channels are pluggable: nothing in the core depends on a specific network.
-- No auto-publishing without an explicit approval in Telegram. Only exception: factory reels
-  (ADR 024), approved with the script in the factory and published at their release time.
+- No auto-publishing without an explicit approval in Telegram. Only exception: allowlisted projects with
+  `approval = "auto"` (ADR 024, ADR 025; today the factory), approved in that project and published at
+  their release time.
 - Stack: Python (decided in interview round 2). Runs in the cloud, not on Volodymyr's laptop.
 - No time box: scope is not cut to fit a deadline (round 2). Still keep tasks small.
 

@@ -1,7 +1,7 @@
 # 025. Publishing from any project: allowlisted repos, release manifest, per-project approval
 
-Status: PROPOSED (Claude Code, 2026-11-26; awaiting Volodymyr's review. Would amend spec F3.3, the AGENTS.md
-approval constraint and ADR 024 decisions 3-4)
+Status: ACCEPTED (Volodymyr, 2026-11-26; amends spec F3.3, the AGENTS.md approval constraint and ADR 024
+decisions 3-4)
 
 ## Context
 

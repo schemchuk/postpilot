@@ -241,6 +241,56 @@ hash mismatch, deleted asset, rerun after partial publish; live: test reel 002 p
 frame 0, write the finding into the ADR). Accept: tests for request payloads and the thumbnail upload
 step; live: the cover visible on LinkedIn, IG and FB for one reel.
 
+**T28a** YouTube token (ADR 026 decision 6): token provider `youtube`, command `youtube-import-token`
+(reads `YOUTUBE_REFRESH_TOKEN` from the environment, stores it encrypted), access token fetched per run and
+never stored, `check-tokens` refresh check with alert on failure, config `YOUTUBE_CLIENT_ID/SECRET`.
+Secrets: Volodymyr sets the two client secrets in GitHub Secrets (command given at task start). Accept: tests
+for import, refresh success and failure, no token in logs; live: import from `.env`, `check-tokens` green.
+**T28b** YouTube channel (ADR 026 decisions 1-4, 8): video channel `youtube` for S3 (with and without a
+description) and factory reels, title rules (first line, first sentence, default title, `title_de.txt`),
+`<`/`>` replaced, description with AI label line, `categoryId=28`, `containsSyntheticMedia`, resumable upload
+with the session URI in `remote_ref`, recovery (308 resume, 201 take id, 404 new session), quota errors held,
+preview and intake notice list YouTube. HeyGen renders untouched. Accept: tests for each title case, payload,
+each recovery branch, no second upload after a completed session, quota hold; live: one own video and one
+factory reel as public Shorts.
+**T28c** YouTube cover (ADR 026 decision 4): `thumbnails.set` with the factory cover after
+`processingStatus=succeeded`, best effort with a warning. Accept: tests for the wait, success and failure
+paths; live: cover visible on one factory Short (needs the channel's intermediate features).
+**T29a** TikTok token and sandbox check (ADR 026 decisions 5-6): token provider `tiktok` with refresh-token
+rotation written back, `tiktok-import-token`, `TIKTOK_ENV=sandbox|production`, `/renew` for provider `tiktok`
+(signed state), `check-tokens` alert 30 days before the refresh expiry. Then one sandbox inbox upload
+(`video.upload`) to the public account; record the result in ADR 026: works -> `draft` mode allowed, fails ->
+`tiktok` stays in `PAUSED_CHANNELS`. Accept: tests for rotation, renewal, expiry alert; live: the sandbox check.
+**T29b** TikTok channel, `draft` mode (ADR 026 decisions 1, 2, 5, 8): video channel `tiktok` for S3 and
+factory reels, inbox upload (`FILE_UPLOAD`, chunking), `publish_id` saved before upload, recovery via
+`status/fetch`, result line with the caption to copy, rate and spam errors held. Accept: tests for chunking,
+each status branch, caption line; live: one own video and one factory reel in the TikTok inbox.
+**T29c** TikTok `direct` mode (ADR 026 decisions 5, 7): Telegram TikTok row in the preview and in the factory
+intake notice (privacy from `creator_info`, comment/duet/stitch toggles, nothing preselected, Approve waits
+for privacy), per-item settings migration, Direct Post with caption, `is_aigc`, `video_cover_timestamp_ms=0`,
+factory fallback to the inbox when no choice by `release_at`. Then Claude records the sandbox demo, replaces the
+placeholder video, Volodymyr submits for review. Accept: tests for the row, defaults, the gate on Approve, the
+payload, the factory fallback; live: sandbox demo post (private), app submitted.
+**T27a** Project allowlist (ADR 025 decisions 2, 3, 6): `config/projects.toml` with the factory entry
+(`beekeeper`, `reel`, LinkedIn DE, Threads, IG, FB, YouTube, TikTok, `auto`, `max_per_day = 2`), source
+`project`, migration `project_items` with the `factory_reels` data copied, F3.3 rule in the core keyed on
+`approval = "auto"`. Factory behaviour unchanged. Accept: tests for config parsing and validation, migration
+up/down with data, the approval rule (auto vs tap vs unknown project); live: an existing factory item still
+publishes.
+**T27b** Manifest v2 intake (ADR 025 decisions 4-7): `manifest.json` schema, v1 asset names kept for the
+factory, polling of enabled projects in the hourly run, workflow `project-intake` (`{"project": ...}`), `tap`
+preview with Approve/Reject, `max_per_day`, `enabled = false`, idempotency per (project, id). Touches a
+workflow: Volodymyr's OK before merge. Accept: tests for each manifest error, polling, both approval modes,
+the day limit, the three repeat cases; live: one test release in a test repo found by polling.
+**T27c** `post` kind, text (ADR 025 decision 4): text posts from a release to LinkedIn DE and Threads, text as
+written, length checks. Accept: tests for intake and publish per channel; live: one test post.
+**T27d** `post` kind, image (ADR 025 consequences): LinkedIn Images API upload, Threads `IMAGE` container.
+Accept: tests for upload payloads and recovery; live: one image post on both.
+**T27e** Contract for other projects (ADR 025 decision 8): `docs/publishing-contract.md` with the manifest
+schema and a `gh release create` example, the AGENTS.md block for other projects, the factory moved to v2
+(with the factory session), then `factory-intake` and `factory_reels` removed. Touches a workflow: Volodymyr's
+OK before merge. Accept: doc reviewed by Volodymyr; live: one factory release in v2 published.
+
 ## Order
-T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22 -> T23a -> T23b -> T24a -> T24b -> T25a -> T25b -> T26a -> T26b -> T26c (due before 2026-12-14).
+T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22 -> T23a -> T23b -> T24a -> T24b -> T25a -> T25b -> T26a -> T26b -> T26c (due before 2026-12-14) -> T28a -> T28b -> T28c -> T29a -> T29b -> T27a -> T27b -> T27c -> T27d -> T27e -> T29c.
 First useful vertical slice after T11: Telegram text to approval to LinkedIn.

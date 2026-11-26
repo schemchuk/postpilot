@@ -18,6 +18,8 @@ postpilot is a Python pipeline that turns two kinds of input into approved posts
 | Threads | Text only, shortened | DE only |
 | Instagram Reels | HeyGen avatar video, burned-in subtitles | DE |
 | Facebook Reels | Same video, separate credentials | DE |
+| YouTube Shorts | Own videos and factory reels (ADR 026), not HeyGen renders | DE |
+| TikTok | Own videos and factory reels (ADR 026); inbox draft until TikTok's audit | DE |
 
 Why: a portfolio project for automation roles in Germany (and Ukraine from 2029-01-01) that shows real
 engineering: agents in production, CI/CD, tests, docs and decision records. It replaces
@@ -50,8 +52,9 @@ engineering: agents in production, CI/CD, tests, docs and decision records. It r
 - F3.1 A new bot with new secrets. Nothing is reused from handmake.
 - F3.2 Every item (text and video) is previewed. Actions: approve, edit, regenerate (S1 only), skip.
 - F3.3 No publishing without an explicit approval. This is enforced in the core, not by convention.
-  Exception (ADR 024): factory reels (source `factory`, created only by `factory-intake`) are approved by
-  the factory's script approval and publish at their release time without a tap.
+  Exception (ADR 024, generalized by ADR 025): items of an allowlisted project with `approval = "auto"` in
+  `config/projects.toml` (today the factory) are approved by that project and publish at their release time
+  without a tap.
 - F3.4 Only Volodymyr's Telegram user id may operate the bot; all other senders are ignored.
 
 ### F4. Quality and safety gates (ported from work_in_Linkedin)
