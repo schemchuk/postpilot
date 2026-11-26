@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from postpilot.channels.youtube import fitting_title
 from postpilot.core.limits import (
     LINKEDIN_TEXT_LIMIT,
     REELS_MAX_DURATION,
@@ -26,6 +27,7 @@ _LIMITS = {
     "cover_de.png": 10_000_000,
     "post_de.txt": 4 * LINKEDIN_TEXT_LIMIT,
     "post_threads.txt": 4 * 500,
+    "title_de.txt": 16_000,
 }
 _WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
@@ -206,7 +208,8 @@ def _download(
     urls = {
         name: release.asset_url(name)
         for name in _LIMITS
-        if name != "post_threads.txt" or name in release.metadata
+        if name != "title_de.txt"
+        and (name != "post_threads.txt" or name in release.metadata)
     }
     assets: dict[str, Asset] = {}
 
@@ -235,7 +238,21 @@ def _download(
         raise Rejected(
             f"reel_de.mp4 must be {REELS_MIN_DURATION}-{REELS_MAX_DURATION} seconds"
         )
-    return FactoryReel(episode, release_at, ai, post_de, threads, assets, duration)
+    title = None
+    if (title_asset := release.metadata.get("title_de.txt")) is not None:
+        size = title_asset.get("size")
+        title = ""
+        if not (type(size) is int and size > _LIMITS["title_de.txt"]):
+            urls["title_de.txt"] = release.asset_url("title_de.txt")
+            try:
+                raw_title = download("title_de.txt").decode("utf-8")
+            except UnicodeDecodeError:
+                raw_title = ""
+            if "\0" not in raw_title:
+                title = fitting_title("", raw_title)
+    return FactoryReel(
+        episode, release_at, ai, post_de, threads, assets, duration, title_de=title
+    )
 
 
 def _notice(repo: str, reel: FactoryReel, status: IntakeStatus) -> str:
@@ -244,7 +261,7 @@ def _notice(repo: str, reel: FactoryReel, status: IntakeStatus) -> str:
     lines = [
         (
             f"Factory reel {reel.episode} · scheduled {_WEEKDAYS[local.weekday()]} "
-            f"{local:%d.%m %H:%M} · LinkedIn DE, {threads}IG, FB · AI label: "
+            f"{local:%d.%m %H:%M} · LinkedIn DE, {threads}IG, FB, YouTube · AI label: "
             f"{'yes' if reel.ai else 'no'}"
         )
     ]
@@ -252,6 +269,8 @@ def _notice(repo: str, reel: FactoryReel, status: IntakeStatus) -> str:
         lines.append(
             f"Threads skipped: post_de.txt is {len(reel.post_de)} chars (max 500), no post_threads.txt"
         )
+    if not fitting_title(reel.post_de, reel.title_de):
+        lines.append("YouTube will use the default title.")
     lines.append(
         f"Status: {'refused (already published)' if status == 'refused' else status}"
     )

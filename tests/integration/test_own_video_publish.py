@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -15,6 +16,7 @@ from postpilot.config import (
     LinkedInSettings,
     Settings,
     ThreadsSettings,
+    YouTubeSettings,
 )
 from postpilot.core.models import PublicationStatus
 from postpilot.core.states import ItemState
@@ -79,6 +81,7 @@ def test_own_video_jobs_share_targets_and_resume_saved_ref(
         threads=ThreadsSettings("id", "secret", "uri"),
         facebook=FacebookSettings("fb"),
         instagram=InstagramSettings("ig"),
+        youtube=YouTubeSettings("id", "secret"),
     )
     linkedin_validate = Mock()
     monkeypatch.setattr(LinkedInVideoChannel, "validate", linkedin_validate)
@@ -86,7 +89,9 @@ def test_own_video_jobs_share_targets_and_resume_saved_ref(
         LinkedInVideoChannel, "publish_with_ref", lambda *args, **kwargs: "linkedin"
     )
     token = SimpleNamespace(
-        access_token="token", expires_at=datetime.now(UTC) + timedelta(days=1)
+        access_token="token",
+        refresh_token="refresh",
+        expires_at=datetime.now(UTC) + timedelta(days=1),
     )
     monkeypatch.setattr(
         tasks, "TokenStore", Mock(**{"return_value.get.return_value": token})
@@ -99,6 +104,35 @@ def test_own_video_jobs_share_targets_and_resume_saved_ref(
 
     def route(request):
         path = request.url.path
+        if request.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "youtube-token"})
+        if request.url.host == "www.googleapis.com":
+            assert duration == 30
+            assert request.headers["authorization"] == "Bearer youtube-token"
+            if request.method == "POST":
+                snippet = json.loads(request.content)["snippet"]
+                assert snippet["description"] == (
+                    text
+                    if described
+                    else AI_VIDEO_CAPTION_LABEL
+                    if ai_generated
+                    else ""
+                )
+                return httpx.Response(
+                    200,
+                    headers={
+                        "Location": str(
+                            request.url.copy_merge_params({"upload_id": "test"})
+                        )
+                    },
+                )
+            with conn.transaction():
+                assert conn.execute(
+                    "SELECT remote_ref FROM video_publications WHERE item_id = %s",
+                    (item.id,),
+                ).fetchone() == (str(request.url),)
+            assert request.content == b"test"
+            return httpx.Response(201, json={"id": "youtube-id"})
         form = parse_qs(request.content.decode())
         if request.url.host == "graph.threads.com":
             threads_calls.append(path)
@@ -186,7 +220,10 @@ def test_own_video_jobs_share_targets_and_resume_saved_ref(
     rows = repo.list_publications(item.id)
     targets = {"linkedin", "threads"} if described else set()
     if duration == 30:
-        targets.update(("instagram-reels", "facebook-reels"))
+        targets.update(("instagram-reels", "facebook-reels", "youtube"))
+        alerts.assert_any_call(
+            "youtube: published https://www.youtube.com/shorts/youtube-id"
+        )
         alerts.assert_any_call(
             "instagram-reels: published https://www.instagram.com/reel/test"
         )

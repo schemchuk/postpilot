@@ -244,7 +244,7 @@ def _linkedin_targets(channels: dict[str, Language]) -> list[str]:
 def _preview_heading(item: Item, *, reels: bool = False) -> str:
     targets = [*_linkedin_targets(LINKEDIN_TEXT_CHANNELS), "Threads"]
     if reels:
-        targets.extend(("Instagram", "Facebook"))
+        targets.extend(("Instagram", "Facebook", "YouTube"))
     return f"Item {item.id.hex[:8]} · {item.source}\nChannels: {', '.join(targets)}"
 
 

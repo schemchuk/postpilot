@@ -7,6 +7,11 @@ REELS_MAX_DURATION = 90
 _SENTENCE_END = re.compile(r"""[.!?…]+["'”’»“‘)\]]*(?=\s|$)""")
 
 
+def first_sentence(text: str) -> str:
+    end = _SENTENCE_END.search(text)
+    return text[: end.end()] if end else text
+
+
 def shorten_text(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text

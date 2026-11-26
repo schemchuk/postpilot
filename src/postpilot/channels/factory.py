@@ -182,6 +182,7 @@ class FactoryReelsChannel:
         assets: FactoryAssets,
         *,
         caption_limit: int | None = None,
+        use_release_video: bool = False,
     ) -> None:
         self.name = channel.name
         self.token_provider = channel.token_provider
@@ -189,6 +190,7 @@ class FactoryReelsChannel:
         self._read_token = read_token
         self._assets = assets
         self._caption_limit = caption_limit
+        self._use_release_video = use_release_video
 
     def _caption(self, reel: FactoryReel) -> str:
         text = reel.post_de + (f"\n\n{AI_VIDEO_CAPTION_LABEL}" if reel.ai else "")
@@ -216,7 +218,9 @@ class FactoryReelsChannel:
         reel = self._assets.reel(item.id)
         caption = self._caption(reel)
         try:
-            cover_url = self._assets.cover_url(item.id)
+            cover_url = (
+                None if self._use_release_video else self._assets.cover_url(item.id)
+            )
         except ChannelError:
             if ref is None:
                 raise
@@ -225,12 +229,18 @@ class FactoryReelsChannel:
             cover_url = None
         return self._channel.publish_with_ref(
             ReelVideo(
-                partial(self._assets.fitted_video, item.id),
+                partial(
+                    self._assets.video
+                    if self._use_release_video
+                    else self._assets.fitted_video,
+                    item.id,
+                ),
                 caption,
                 reel.duration,
                 reel.ai,
                 cover=partial(self._assets.cover, item.id),
                 cover_url=cover_url,
+                title=reel.title_de,
             ),
             token,
             ref,

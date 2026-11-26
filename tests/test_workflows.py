@@ -115,7 +115,12 @@ def test_scheduled_workflow(name, cron):
             assert job["timeout-minutes"] == 15
             expected.update(
                 linkedin_credentials
-                | {"FACEBOOK_PAGE_ID", "INSTAGRAM_BUSINESS_ACCOUNT_ID"}
+                | {
+                    "FACEBOOK_PAGE_ID",
+                    "INSTAGRAM_BUSINESS_ACCOUNT_ID",
+                    "YOUTUBE_CLIENT_ID",
+                    "YOUTUBE_CLIENT_SECRET",
+                }
             )
         elif name == "render-video":
             assert job["timeout-minutes"] == 25

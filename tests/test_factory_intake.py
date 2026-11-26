@@ -216,7 +216,7 @@ def test_notice_and_verbatim_text(status, monkeypatch):
     assert code == int(status == "refused")
     status_line = "refused (already published)" if status == "refused" else status
     assert message == (
-        f"Factory reel {EPISODE} · scheduled Tue 01.12 08:00 · LinkedIn DE, Threads, IG, FB · AI label: yes\n"
+        f"Factory reel {EPISODE} · scheduled Tue 01.12 08:00 · LinkedIn DE, Threads, IG, FB, YouTube · AI label: yes\n"
         f"Status: {status_line}\n{URL}"
     )
     reel = save.call_args.args[0]
@@ -234,9 +234,9 @@ def test_threads_skip_or_use_explicit_text():
     code, message, save = run(raw, assets=assets)
     assert code == 0
     assert message == (
-        f"Factory reel {EPISODE} · scheduled Tue 01.12 08:00 · LinkedIn DE, IG, FB · AI label: no\n"
+        f"Factory reel {EPISODE} · scheduled Tue 01.12 08:00 · LinkedIn DE, IG, FB, YouTube · AI label: no\n"
         f"Threads skipped: post_de.txt is 2200 chars (max 500), no post_threads.txt\n"
-        f"Status: new\n{URL}"
+        f"YouTube will use the default title.\nStatus: new\n{URL}"
     )
     assert save.call_args.args[0].post_threads is None
     code, _, save = run(raw, assets=assets | {"post_threads.txt": b"b" * 500})
@@ -348,3 +348,36 @@ def test_disallowed_download_redirect_is_not_followed():
     assert message.endswith("post_de.txt has a disallowed download redirect")
     assert len(downloads) == 1 and target not in downloads
     save.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "raw_title, expected",
+    [(b"  Override \n", "Override"), (b"a" * 101, "")],
+)
+def test_youtube_title_asset(raw_title, expected):
+    code, message, save = run(
+        json.dumps(PAYLOAD), assets=ASSETS | {"title_de.txt": raw_title}
+    )
+    assert code == 0
+    assert "IG, FB, YouTube" in message
+    assert ("YouTube will use the default title." in message) == (not expected)
+    reel = save.call_args.args[0]
+    assert reel.title_de == expected
+    assert (
+        reel.assets["title_de.txt"]["sha256"] == hashlib.sha256(raw_title).hexdigest()
+    )
+
+
+def test_oversized_youtube_title_asset_keeps_factory_intake():
+    name = "title_de.txt"
+    downloads = []
+    code, message, save = run(
+        json.dumps(PAYLOAD),
+        assets=ASSETS | {name: b"large title"},
+        sizes={name: factory._LIMITS[name] + 1},
+        downloads=downloads,
+    )
+    assert code == 0
+    assert "YouTube will use the default title." in message
+    assert save.call_args.args[0].title_de == ""
+    assert not any(url.endswith(name) for url in downloads)

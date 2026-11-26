@@ -372,6 +372,7 @@ def test_text_publisher_holds_only_reels_for_no_description(
     assert {name: result.outcome for name, result in report.channels.items()} == {
         "instagram-reels": "held",
         "facebook-reels": "held",
+        "youtube": "held",
     }
     repo.claim_publication.assert_not_called()
     read_token.assert_not_called()

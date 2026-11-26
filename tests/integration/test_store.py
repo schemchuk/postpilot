@@ -110,6 +110,7 @@ def test_migration_up_noop_and_down(conn):
         "0017_video_linkedin",
         "0018_telegram_inbox",
         "0019_factory_reels",
+        "0020_item_video_publications",
     ]
     migrate.up(conn)
     assert applied_migrations(conn) == initial
@@ -119,6 +120,8 @@ def test_migration_up_noop_and_down(conn):
             (id := uuid4(),),
         )
         conn.execute("DELETE FROM items WHERE id = %s", (id,))
+    migrate.down(conn)
+    assert applied_migrations(conn) == initial[:19]
     migrate.down(conn)
     assert applied_migrations(conn) == initial[:18]
     assert "factory_reels" not in table_names(conn)

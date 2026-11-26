@@ -107,7 +107,8 @@ remote status (ADR 014).
 8. **Limits and failures.** Both channels publish at most one item per run like the Reels channels, fail and
    retry independently (ADR 022 Retry/Skip), and never block Instagram or Facebook. A quota or rate error
    (`quotaExceeded`, `rate_limit_exceeded`, `spam_risk_too_many_posts`) is held for the next run, not
-   failed.
+   failed. YouTube descriptions over 5000 UTF-8 bytes after escaping and adding the AI label fail the
+   YouTube publication without truncation. Other channels continue and Telegram offers Retry/Skip.
 
 ## Consequences
 

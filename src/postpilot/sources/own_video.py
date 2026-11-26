@@ -483,7 +483,7 @@ class OwnVideoInbox:
         if not video.has_description:
             self.api.send_message(
                 video.chat_id,
-                f"Own video · no description · Reels only · AI label: {label}",
+                f"Own video · no description · Instagram, Facebook, YouTube · AI label: {label}",
                 approval_keyboard(item.id, edit=False, regenerate=False),
             )
             return

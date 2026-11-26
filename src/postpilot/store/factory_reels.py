@@ -31,6 +31,7 @@ class FactoryReel:
 
     item_id: UUID | None = None
     threads_skipped: bool = False
+    title_de: str | None = None
 
     @property
     def tag(self) -> str:
@@ -46,7 +47,7 @@ class FactoryReelStore:
             row = self.conn.execute(
                 """
                 SELECT episode, release_at, ai, post_de, post_threads, assets,
-                    duration, item_id, threads_skipped
+                    duration, item_id, threads_skipped, title_de
                 FROM factory_reels WHERE item_id = %s
                 """,
                 (item_id,),
@@ -83,7 +84,7 @@ class FactoryReelStore:
             )
             previous = self.conn.execute(
                 """
-                SELECT f.item_id, f.release_at, f.ai, f.assets FROM factory_reels f
+                SELECT f.item_id, f.release_at, f.ai, f.assets, f.title_de FROM factory_reels f
                 JOIN items i ON i.id = f.item_id
                 WHERE f.episode = %s FOR UPDATE OF f, i
                 """,
@@ -97,6 +98,7 @@ class FactoryReelStore:
                 reel.post_threads,
                 reel.post_threads is None,
                 reel.duration,
+                reel.title_de,
             )
             repo = ItemRepo(self.conn)
             if previous is None:
@@ -109,27 +111,33 @@ class FactoryReelStore:
                 self.conn.execute(
                     """
                     INSERT INTO factory_reels (episode, tag, item_id, release_at, ai,
-                        assets, post_de, post_threads, threads_skipped, duration)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        assets, post_de, post_threads, threads_skipped, duration, title_de)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (reel.episode, reel.tag, item_id, *values),
                 )
                 repo.add_variant(item_id, "de", reel.post_de)
                 return "new"
 
-            item_id, release_at, ai, assets = previous
-            if (release_at, ai, assets) == (reel.release_at, reel.ai, reel.assets):
+            item_id, release_at, ai, assets, title_de = previous
+            if (release_at, ai, assets, title_de) == (
+                reel.release_at,
+                reel.ai,
+                reel.assets,
+                reel.title_de,
+            ):
                 return "unchanged"
             if self.conn.execute(
-                "SELECT 1 FROM publications WHERE item_id = %s "
-                "AND status IN ('PUBLISHED', 'PUBLISHING') LIMIT 1",
+                "SELECT 1 FROM item_publications WHERE item_id = %s "
+                "AND (status IN ('PUBLISHED', 'PUBLISHING') "
+                "OR (channel = 'youtube' AND remote_ref IS NOT NULL)) LIMIT 1",
                 (item_id,),
             ).fetchone():
                 return "refused"
             self.conn.execute(
                 """
                 UPDATE factory_reels SET release_at = %s, ai = %s, assets = %s,
-                    post_de = %s, post_threads = %s, threads_skipped = %s, duration = %s,
+                    post_de = %s, post_threads = %s, threads_skipped = %s, duration = %s, title_de = %s,
                     updated_at = now()
                 WHERE episode = %s
                 """,

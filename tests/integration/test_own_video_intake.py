@@ -317,7 +317,8 @@ def test_guided_no_description(bot, conn, repo, media, kind, duration, action, s
     assert {v.lang: v.text for v in repo.get_variants(item_id)} == {"ua": "", "de": ""}
     label = "yes" if kind == "AI-generated" else "no"
     assert buttons(
-        api, f"Own video · no description · Reels only · AI label: {label}"
+        api,
+        f"Own video · no description · Instagram, Facebook, YouTube · AI label: {label}",
     ) == {
         "Approve": f"approve:{item_id}",
         "Skip": f"skip:{item_id}",
