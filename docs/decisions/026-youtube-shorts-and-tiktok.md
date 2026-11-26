@@ -78,6 +78,9 @@ remote status (ADR 014).
      TikTok inbox; the Telegram result line carries the caption to copy and says "finish in the TikTok app".
      Before this mode is enabled, the sandbox must show that an inbox upload works for a public account. If it
      does not, `tiktok` stays in `PAUSED_CHANNELS` (ADR 020 switch) until the audit.
+     Sandbox check done 2026-11-26 (T29a): an inbox `FILE_UPLOAD` of factory reel 002 (8.1 MB, one chunk)
+     to the public account reached `SEND_TO_USER_INBOX` after about 20 s. The first try was still in
+     `PROCESSING_UPLOAD` when its 60 s poll ended. Result: `draft` mode is allowed.
    - `direct` (after the audit): Direct Post with `FILE_UPLOAD`. The caption is the German text (TikTok limit
      2200 characters, longer text skips TikTok with a note) plus the AI label line; `is_aigc` from the item's
      AI flag; `video_cover_timestamp_ms=0` (frame 0 is the factory cover). To meet TikTok's UX rules the
