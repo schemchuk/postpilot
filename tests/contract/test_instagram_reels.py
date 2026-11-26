@@ -191,6 +191,20 @@ def test_published_recovery_uses_cursor_and_exact_recent_caption(render):
     assert scenario.run("old") == ("media-id", LINK)
 
 
+def test_published_recovery_accepts_omitted_caption_for_no_description(render):
+    media = post("media-id")
+    del media["caption"]
+    scenario = Scenario(
+        replace(render, caption="", ai_generated=False),
+        [
+            status("old", "PUBLISHED"),
+            ("/v27.0/123/media", {"data": [media]}),
+            PERMALINK,
+        ],
+    )
+    assert scenario.run("old") == ("media-id", LINK)
+
+
 @pytest.mark.parametrize("posts", [[], [post("one"), post("two")]])
 def test_unmatched_or_ambiguous_published_is_uncertain(render, posts):
     with pytest.raises(UncertainPublication):

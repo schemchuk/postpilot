@@ -9,13 +9,18 @@ from uuid import UUID, uuid4
 from postpilot.ai.client import TextModel
 from postpilot.ai.humanizer import humanize_pair
 from postpilot.ai.prompts import OWN_VIDEO_SYSTEM_PROMPT, interview_message
-from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
+from postpilot.core.limits import (
+    LINKEDIN_TEXT_LIMIT,
+    REELS_MAX_DURATION,
+    REELS_MIN_DURATION,
+)
 from postpilot.core.models import Item
 from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.notify.telegram import (
     Notifier,
     TelegramApi,
     TelegramError,
+    approval_keyboard,
     send_callback_result,
 )
 from postpilot.store.own_videos import OwnVideo, OwnVideoIntake, OwnVideoStore
@@ -258,7 +263,7 @@ class OwnVideoInbox:
     def intake_callback(
         self, update_id: int, chat: int, message_id: object, action: str, token: UUID
     ) -> None:
-        preview = None
+        preview: tuple[OwnVideo, Item, tuple[str, ...]] | None = None
         with self.repo.conn.transaction():
             self.store.lock_intake(chat)
             intake = self.store.get_intake(chat)
@@ -290,7 +295,20 @@ class OwnVideoInbox:
                 self._show_step(chat, intake)
                 return
             elif intake.step == "description" and action == "none":
-                result = "Coming soon"
+                video = self._intake_video(chat, intake)
+                if not video.reels_eligible:
+                    assert video.duration is not None
+                    result = (
+                        f"Video is {round(video.duration)} s: Reels need "
+                        f"{REELS_MIN_DURATION}-{REELS_MAX_DURATION} s. "
+                        "Upload a description to post on LinkedIn."
+                    )
+                else:
+                    item_id = self._create_item(video, ua="", de="")
+                    intake.step = "closed"
+                    self._save_step(chat, intake)
+                    preview = (video, self.repo.transition(item_id, _AWAITING), ())
+                    result = None
             elif intake.step == "text" and action == "done":
                 video = self._intake_video(chat, intake)
                 if video.interview:
@@ -416,10 +434,7 @@ class OwnVideoInbox:
                         item_id, "ua", ua, expected_state=ItemState.DRAFT
                     )
                 else:
-                    item_id = self.repo.create_item("own_video").id
-                    self.repo.add_variant(item_id, "ua", ua)
-                    self.repo.add_variant(item_id, "de", de)
-                    self.store.finish(video.id, item_id)
+                    item_id = self._create_item(video, ua=ua, de=de)
                 return self.repo.transition(item_id, _AWAITING), warnings
         except IllegalTransition:
             send_callback_result(self.api, chat, message_id, "Already handled")
@@ -432,6 +447,13 @@ class OwnVideoInbox:
                 f"Generation failed ({step}), press {retry_button} again.",
             )
             return None
+
+    def _create_item(self, video: OwnVideo, *, ua: str, de: str) -> UUID:
+        item_id = self.repo.create_item("own_video").id
+        self.repo.add_variant(item_id, "ua", ua)
+        self.repo.add_variant(item_id, "de", de)
+        self.store.finish(video.id, item_id)
+        return item_id
 
     @staticmethod
     def _check_lengths(de: str, ua: str) -> None:
@@ -458,6 +480,13 @@ class OwnVideoInbox:
         except TelegramError:
             # Telegram document file IDs can only be reused as documents.
             self.api.send_document_ref(video.chat_id, video.file_id)
+        if not video.has_description:
+            self.api.send_message(
+                video.chat_id,
+                f"Own video · no description · Reels only · AI label: {label}",
+                approval_keyboard(item.id, edit=False, regenerate=False),
+            )
+            return
         Notifier(self.api, video.chat_id).send_preview(
             item,
             self.repo.get_variants(item.id),

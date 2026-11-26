@@ -29,17 +29,24 @@ def item():
 
 
 @pytest.mark.parametrize(
-    "ai, size, long",
+    "ai, size, long, described",
     [
-        (False, (1080, 1920), False),
-        (True, (1920, 1080), False),
-        (True, (270, 480), True),
-        (True, (None, None), True),
+        (False, (1080, 1920), False, True),
+        (True, (1920, 1080), False, True),
+        (True, (270, 480), True, True),
+        (True, (None, None), True, True),
+        (False, (1080, 1920), False, False),
+        (True, (1080, 1920), False, False),
     ],
 )
-def test_own_video_instagram_caption_and_fit(item, monkeypatch, ai, size, long):
-    video = OwnVideo(uuid4(), item.id, 1, "file", 30, ai, "", "generated", *size)
+def test_own_video_instagram_caption_and_fit(
+    item, monkeypatch, ai, size, long, described
+):
+    interview = "Interview" if described else ""
+    video = OwnVideo(uuid4(), item.id, 1, "file", 30, ai, interview, "generated", *size)
     text = "Ein vollständiger Satz. " + "Wort " * 550 if long else "Ein Beitrag."
+    if not described:
+        text = ""
     saved = []
 
     def ffmpeg(command, *, check, capture_output, timeout):
@@ -68,11 +75,14 @@ def test_own_video_instagram_caption_and_fit(item, monkeypatch, ai, size, long):
             return httpx.Response(200, content=b"original")
         if path.endswith("/ig/media"):
             form = parse_qs(request.content.decode())
-            label = f"\n\n{AI_VIDEO_CAPTION_LABEL}" if ai else ""
-            assert form["caption"] == [
-                ("Ein vollständiger Satz.…" if long else text) + label
-            ]
-            assert len(form["caption"][0]) <= 2200
+            label = AI_VIDEO_CAPTION_LABEL if ai else ""
+            expected = "\n\n".join(
+                part
+                for part in ("Ein vollständiger Satz.…" if long else text, label)
+                if part
+            )
+            assert form.get("caption") == ([expected] if expected else None)
+            assert len(expected) <= 2200
             assert form.get("is_ai_generated") == (["true"] if ai else None)
             return httpx.Response(200, json={"id": "container"})
         if request.url.host == "rupload.facebook.com":

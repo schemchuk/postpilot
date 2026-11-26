@@ -317,7 +317,11 @@ def test_linkedin_provider_and_expiry_guard(
         "OwnVideoStore",
         Mock(
             return_value=Mock(
-                get_by_item=Mock(return_value=SimpleNamespace(reels_eligible=False))
+                get_by_item=Mock(
+                    return_value=SimpleNamespace(
+                        reels_eligible=False, has_description=True
+                    )
+                )
             )
         ),
     )
@@ -339,6 +343,38 @@ def test_linkedin_provider_and_expiry_guard(
         ("linkedin",),
     ]
     repo.claim_publication.assert_not_called()
+
+
+def test_text_publisher_holds_only_reels_for_no_description(
+    settings, repo, monkeypatch
+):
+    now = datetime.now(UTC)
+    item = Item(uuid4(), "own_video", ItemState.PUBLISHING, now, now, 1, now)
+    repo.get_item.return_value = item
+    repo.get_variants.return_value = []
+    repo.list_publications.return_value = []
+    monkeypatch.setattr(
+        tasks,
+        "OwnVideoStore",
+        Mock(
+            **{
+                "return_value.get_by_item.return_value": SimpleNamespace(
+                    has_description=False
+                )
+            }
+        ),
+    )
+    read_token = Mock()
+    monkeypatch.setattr(tasks, "_read_token", read_token)
+    with httpx.Client() as client:
+        report = tasks._publisher(settings, repo, client).publish_item(item.id)
+
+    assert {name: result.outcome for name, result in report.channels.items()} == {
+        "instagram-reels": "held",
+        "facebook-reels": "held",
+    }
+    repo.claim_publication.assert_not_called()
+    read_token.assert_not_called()
 
 
 @pytest.mark.parametrize("mode", ["empty", "partial", "failed", "clicks-only"])
@@ -727,21 +763,35 @@ def test_publish_failure_notification(telegram_error, caplog):
     assert "private request details" not in caplog.text
 
 
+@pytest.mark.parametrize("source", ["telegram", "own_video"])
 def test_poll_processes_failed_retry_and_next_update(
-    settings, repo, inbox, api, monkeypatch, caplog
+    settings, repo, inbox, api, monkeypatch, caplog, source
 ):
     item_id, next_item_id = uuid4(), uuid4()
     publisher = Mock(repo=repo)
-    failure = PublishReport(
-        {"linkedin": ChannelResult("failed")}, transitioned_to_failed=True
+    own_video = source == "own_video"
+    report = (
+        PublishReport(
+            {
+                "instagram-reels": ChannelResult("held"),
+                "facebook-reels": ChannelResult("held"),
+            }
+        )
+        if own_video
+        else PublishReport(
+            {"linkedin": ChannelResult("failed")}, transitioned_to_failed=True
+        )
     )
-    repo.get_item.return_value = SimpleNamespace(id=item_id, source="telegram")
+    repo.get_item.return_value = SimpleNamespace(id=item_id, source=source)
     repo.list_publications.return_value = [
         SimpleNamespace(
             channel="linkedin", status=PublicationStatus.FAILED, error="rejected"
         )
     ]
-    monkeypatch.setattr(tasks, "_publisher", Mock(return_value=publisher))
+    text_publisher = Mock(return_value=publisher)
+    monkeypatch.setattr(tasks, "_publisher", text_publisher)
+    reel_channels = Mock()
+    monkeypatch.setattr(tasks, "_reel_channels", reel_channels)
     inbox.pending.return_value = [
         (
             41,
@@ -780,7 +830,7 @@ def test_poll_processes_failed_retry_and_next_update(
         api.send_message.assert_called_once_with(
             settings.telegram_chat_id, "Retrying", reply_to_message_id=11
         )
-        return failure
+        return report
 
     publisher.publish_item.side_effect = publish
 
@@ -793,10 +843,18 @@ def test_poll_processes_failed_retry_and_next_update(
     api.send_message.assert_called_with(
         settings.telegram_chat_id, "Skipped", reply_to_message_id=12
     )
-    assert caplog.messages == [
-        f"Channel publishing failed after Telegram retry (item {item_id})"
-    ]
-
+    text_publisher.assert_called_once()
     publisher.publish_item.assert_called_once_with(item_id)
-    assert api.send_message.call_count == 3
-    assert api.send_message.call_args_list[1].args[1].endswith("\nlinkedin: rejected")
+    reel_channels.assert_not_called()
+    if own_video:
+        assert not caplog.messages
+        assert api.send_message.call_count == 2
+        repo.list_publications.assert_not_called()
+    else:
+        assert caplog.messages == [
+            f"Channel publishing failed after Telegram retry (item {item_id})"
+        ]
+        assert api.send_message.call_count == 3
+        assert (
+            api.send_message.call_args_list[1].args[1].endswith("\nlinkedin: rejected")
+        )

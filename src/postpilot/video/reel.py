@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 from postpilot.channels.base import ChannelError
+from postpilot.core.limits import REELS_MIN_DURATION
 from postpilot.video.label import AI_AVATAR_CAPTION_LABEL, AI_VIDEO_CAPTION_LABEL
 
 
@@ -14,11 +15,19 @@ class ReelVideo:
     def validate(self, channel: str, max_duration: int) -> None:
         if not self.video:
             raise ChannelError("An approved video is required")
-        if not self.caption.strip():
+        if self.caption and not self.caption.strip():
             raise ChannelError("A video caption is required")
-        if self.ai_generated and not self.caption.endswith(
-            (f"\n\n{AI_AVATAR_CAPTION_LABEL}", f"\n\n{AI_VIDEO_CAPTION_LABEL}")
+        if (
+            self.ai_generated
+            and self.caption != AI_VIDEO_CAPTION_LABEL
+            and not self.caption.endswith(
+                (f"\n\n{AI_AVATAR_CAPTION_LABEL}", f"\n\n{AI_VIDEO_CAPTION_LABEL}")
+            )
         ):
             raise ChannelError("An AI-generated video label is required")
-        if self.duration is not None and not 3 <= self.duration <= max_duration:
-            raise ChannelError(f"{channel} must be 3 to {max_duration} seconds long")
+        if self.duration is not None and not (
+            REELS_MIN_DURATION <= self.duration <= max_duration
+        ):
+            raise ChannelError(
+                f"{channel} must be {REELS_MIN_DURATION} to {max_duration} seconds long"
+            )

@@ -266,12 +266,6 @@ def test_guided_video_generates_preview(bot, conn, media, monkeypatch):
     api.send_message.assert_called_with(
         12, "Choose Upload description, No description, or Cancel."
     )
-    message_id = event(action=description["No description"])
-    api.send_message.assert_called_with(
-        12, "Coming soon", reply_to_message_id=message_id
-    )
-    model.complete.assert_not_called()
-    assert video_row(conn, media)[3:] == ("collecting", None)
     event(action=description["Upload description"])
     text = buttons(api, _TEXT)
     message_id = event(action=text["Done"])
@@ -301,6 +295,61 @@ def test_guided_video_generates_preview(bot, conn, media, monkeypatch):
     )
     model.complete.assert_called_once()
     api.answer_callback_query.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "kind, duration, action, state",
+    [
+        ("Original", 3, "Approve", ItemState.APPROVED),
+        ("AI-generated", 90, "Skip", ItemState.SKIPPED),
+    ],
+)
+def test_guided_no_description(bot, conn, repo, media, kind, duration, action, state):
+    api, model, event = bot
+    event(text="/work")
+    event(action=buttons(api, _KIND)[kind])
+    event(video={**media, "duration": duration})
+    no_description = buttons(api, _DESCRIPTION)["No description"]
+    event(action=no_description)
+    _, _, interview, status, item_id = video_row(conn, media)
+    assert (interview, status) == ("", "generated")
+    assert repo.get_item(item_id).state == ItemState.AWAITING_APPROVAL
+    assert {v.lang: v.text for v in repo.get_variants(item_id)} == {"ua": "", "de": ""}
+    label = "yes" if kind == "AI-generated" else "no"
+    assert buttons(
+        api, f"Own video · no description · Reels only · AI label: {label}"
+    ) == {
+        "Approve": f"approve:{item_id}",
+        "Skip": f"skip:{item_id}",
+    }
+    api.send_video.assert_called_once_with(12, "file")
+    event(action=f"{action.lower()}:{item_id}")
+    assert repo.get_item(item_id).state == state
+    message_id = event(action=no_description)
+    api.send_message.assert_called_with(
+        12, "Already handled", reply_to_message_id=message_id
+    )
+    model.complete.assert_not_called()
+
+
+@pytest.mark.parametrize("duration", [2, 91])
+def test_guided_no_description_refuses_ineligible_video(bot, conn, media, duration):
+    api, model, event = bot
+    event(text="/work")
+    event(action=buttons(api, _KIND)["Original"])
+    event(video={**media, "duration": duration})
+    description = buttons(api, _DESCRIPTION)
+    message_id = event(action=description["No description"])
+    api.send_message.assert_called_with(
+        12,
+        f"Video is {duration} s: Reels need 3-90 s. Upload a description to post on LinkedIn.",
+        reply_to_message_id=message_id,
+    )
+    assert video_row(conn, media)[3:] == ("collecting", None)
+    event(action=description["Upload description"])
+    buttons(api, _TEXT)
+    api.send_video.assert_not_called()
+    model.complete.assert_not_called()
 
 
 @pytest.mark.parametrize("step", [_KIND, _VIDEO, _DESCRIPTION, _TEXT])
