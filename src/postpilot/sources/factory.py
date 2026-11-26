@@ -261,7 +261,7 @@ def _notice(repo: str, reel: FactoryReel, status: IntakeStatus) -> str:
     lines = [
         (
             f"Factory reel {reel.episode} · scheduled {_WEEKDAYS[local.weekday()]} "
-            f"{local:%d.%m %H:%M} · LinkedIn DE, {threads}IG, FB, YouTube · AI label: "
+            f"{local:%d.%m %H:%M} · LinkedIn DE, {threads}IG, FB, YouTube, TikTok · AI label: "
             f"{'yes' if reel.ai else 'no'}"
         )
     ]

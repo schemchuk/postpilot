@@ -73,7 +73,7 @@ class _DuplicateInboxUpdate(Exception):
 
 
 def _publication_table(channel: str) -> str:
-    return "video_publications" if channel == "youtube" else "publications"
+    return "video_publications" if channel in {"youtube", "tiktok"} else "publications"
 
 
 class ItemRepo:

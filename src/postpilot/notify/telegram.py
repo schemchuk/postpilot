@@ -244,7 +244,7 @@ def _linkedin_targets(channels: dict[str, Language]) -> list[str]:
 def _preview_heading(item: Item, *, reels: bool = False) -> str:
     targets = [*_linkedin_targets(LINKEDIN_TEXT_CHANNELS), "Threads"]
     if reels:
-        targets.extend(("Instagram", "Facebook", "YouTube"))
+        targets.extend(("Instagram", "Facebook", "YouTube", "TikTok"))
     return f"Item {item.id.hex[:8]} · {item.source}\nChannels: {', '.join(targets)}"
 
 
@@ -388,6 +388,36 @@ class Notifier:
 
     def send_alert(self, text: str) -> None:
         self.api.send_message(self.chat_id, _truncate(text))
+
+    def send_tiktok_draft(self, caption: str) -> None:
+        heading = "tiktok: in your TikTok inbox, finish in the TikTok app."
+        if not caption:
+            self.send_alert(f"{heading}\nNo caption.")
+            return
+        note = (
+            f"Caption is {len(caption)} chars, TikTok allows 2200."
+            if len(caption) > 2200
+            else ""
+        )
+        heading += "\nCaption to copy:"
+        message = f"{heading}\n{caption}"
+        if note:
+            message += f"\n{note}"
+        if len(message.encode("utf-16-le")) // 2 <= _MESSAGE_LIMIT:
+            self.send_alert(message)
+            return
+
+        self.send_alert(heading)
+        start = size = 0
+        for index, character in enumerate(caption):
+            width = 2 if ord(character) > 0xFFFF else 1
+            if size + width > _MESSAGE_LIMIT:
+                self.send_alert(caption[start:index])
+                start, size = index, 0
+            size += width
+        self.send_alert(caption[start:])
+        if note:
+            self.send_alert(note)
 
     def send_renewal_prompt(self, provider: str, url: str) -> None:
         label = {"linkedin": "LinkedIn", "threads": "Threads", "tiktok": "TikTok"}.get(

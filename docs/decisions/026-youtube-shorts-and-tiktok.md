@@ -95,6 +95,11 @@ remote status (ADR 014).
    - Idempotency for both: `publish_id` is stored before the upload. Recovery reads `status/fetch`:
      `PUBLISH_COMPLETE` done, processing states pending, `FAILED` or an expired upload URL (1 h) starts again.
 
+   Implementation (2026-11-26, T29b): draft uploads poll at most six times, 10 s apart. Recovery checks
+   the saved ID once and retries the upload if it failed in an earlier run or is still processing more than
+   one hour after the ID was saved. A new upload that reports `FAILED` offers Retry/Skip in Telegram.
+   Draft captions over 2200 characters are shown in full with a length note.
+
 6. **Tokens (ADR 005).** Two token providers, `youtube` and `tiktok`, stored encrypted in the `tokens` table.
    - `youtube`: the refresh token is imported once from `.env` (`postpilot youtube-import-token`); access tokens
      (1 h) are fetched per run and not stored. `check-tokens` tries a refresh daily and alerts on failure

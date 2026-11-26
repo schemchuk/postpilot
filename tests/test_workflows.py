@@ -149,7 +149,9 @@ def test_scheduled_workflow(name, cron):
             )
         else:
             expected.update(channel_credentials)
-        if name in {"check-tokens", "poll-telegram"}:
+        if name == "publish-reels":
+            expected.add("TIKTOK_MODE")
+        if name in {"check-tokens", "poll-telegram", "publish-reels"}:
             expected.update(
                 {
                     "TIKTOK_ENV",
@@ -191,6 +193,9 @@ def test_scheduled_workflow(name, cron):
                 continue
             if variable == "TIKTOK_ENV":
                 assert value == "${{ secrets.TIKTOK_ENV || 'sandbox' }}"
+                continue
+            if variable == "TIKTOK_MODE":
+                assert value == "${{ secrets.TIKTOK_MODE || 'draft' }}"
                 continue
             secret = "GH_TRAFFIC_TOKEN" if variable == "GITHUB_TOKEN" else variable
             assert value == "${{ secrets." + secret + " }}"

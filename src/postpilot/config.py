@@ -32,6 +32,7 @@ class TikTokSettings:
     client_secret: str = field(repr=False)
     redirect_uri: str
     refresh_token: str | None = field(default=None, repr=False)
+    mode: str = "draft"
 
 
 @dataclass(frozen=True)
@@ -139,6 +140,11 @@ class Settings:
         )
         youtube_id = values.get("YOUTUBE_CLIENT_ID")
         youtube_secret = values.get("YOUTUBE_CLIENT_SECRET")
+        tiktok_mode = values.get("TIKTOK_MODE", "draft")
+        if tiktok_mode == "direct":
+            raise ConfigError("TIKTOK_MODE=direct comes with T29c")
+        if tiktok_mode != "draft":
+            raise ConfigError("TIKTOK_MODE must be draft")
         tiktok_env = values.get("TIKTOK_ENV", "sandbox")
         if tiktok_env not in {"sandbox", "production"}:
             raise ConfigError("TIKTOK_ENV must be sandbox or production")
@@ -214,6 +220,7 @@ class Settings:
                 tiktok_secret,
                 redirect_uri or "https://schemchuk.github.io/postpilot/callback/",
                 values.get(f"{tiktok_prefix}_REFRESH_TOKEN"),
+                tiktok_mode,
             )
             if tiktok_key and tiktok_secret
             else None,

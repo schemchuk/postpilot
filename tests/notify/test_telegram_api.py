@@ -210,8 +210,38 @@ def test_own_video_preview_lists_youtube(interview):
     repo.get_variants.return_value = [Variant(item.id, "de", "Hallo")]
     OwnVideoInbox(repo, api, None)._preview(video, item)
     preview = api.send_message.call_args.args[1]
-    targets = "Instagram, Facebook, YouTube"
+    targets = "Instagram, Facebook, YouTube, TikTok"
     if interview:
         assert f"Channels: LinkedIn DE, Threads, {targets}" in preview
     else:
         assert f"Own video · no description · {targets}" in preview
+
+
+@pytest.mark.parametrize(
+    "caption", ["", "Hallo\nWelt", "a" * 2201, "a" * 4000, "🐝" * 4200]
+)
+def test_tiktok_draft_notice_preserves_caption_within_message_limit(caption):
+    api = Mock()
+    Notifier(api, 1).send_tiktok_draft(caption)
+    messages = [call.args[1] for call in api.send_message.call_args_list]
+    heading = "tiktok: in your TikTok inbox, finish in the TikTok app."
+    if not caption:
+        assert messages == [f"{heading}\nNo caption."]
+        return
+    note = (
+        f"Caption is {len(caption)} chars, TikTok allows 2200."
+        if len(caption) > 2200
+        else ""
+    )
+    heading += "\nCaption to copy:"
+    assert all(len(message.encode("utf-16-le")) // 2 <= 4096 for message in messages)
+    if len(messages) == 1:
+        expected = f"{heading}\n{caption}"
+        if note:
+            expected += f"\n{note}"
+        assert messages == [expected]
+    else:
+        assert messages[0] == heading
+        if note:
+            assert messages.pop() == note
+        assert "".join(messages[1:]) == caption
