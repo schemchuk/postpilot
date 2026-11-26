@@ -26,6 +26,15 @@ class YouTubeSettings:
 
 
 @dataclass(frozen=True)
+class TikTokSettings:
+    environment: str
+    client_key: str = field(repr=False)
+    client_secret: str = field(repr=False)
+    redirect_uri: str
+    refresh_token: str | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
 class ThreadsSettings:
     app_id: str = field(repr=False)
     app_secret: str = field(repr=False)
@@ -97,6 +106,7 @@ class Settings:
     imap: ImapSettings | None = None
     factory_repo: str = DEFAULT_FACTORY_REPO
     youtube: YouTubeSettings | None = None
+    tiktok: TikTokSettings | None = None
 
     @classmethod
     def from_env(
@@ -129,6 +139,12 @@ class Settings:
         )
         youtube_id = values.get("YOUTUBE_CLIENT_ID")
         youtube_secret = values.get("YOUTUBE_CLIENT_SECRET")
+        tiktok_env = values.get("TIKTOK_ENV", "sandbox")
+        if tiktok_env not in {"sandbox", "production"}:
+            raise ConfigError("TIKTOK_ENV must be sandbox or production")
+        tiktok_prefix = "TIKTOK_SANDBOX" if tiktok_env == "sandbox" else "TIKTOK"
+        tiktok_key = values.get(f"{tiktok_prefix}_CLIENT_KEY")
+        tiktok_secret = values.get(f"{tiktok_prefix}_CLIENT_SECRET")
         app_id = values.get("THREADS_APP_ID")
         app_secret = values.get("THREADS_APP_SECRET")
         threads_redirect = values.get("THREADS_REDIRECT_URI") or redirect_uri
@@ -192,6 +208,15 @@ class Settings:
             YouTubeSettings(youtube_id, youtube_secret)
             if youtube_id and youtube_secret
             else None,
+            TikTokSettings(
+                tiktok_env,
+                tiktok_key,
+                tiktok_secret,
+                redirect_uri or "https://schemchuk.github.io/postpilot/callback/",
+                values.get(f"{tiktok_prefix}_REFRESH_TOKEN"),
+            )
+            if tiktok_key and tiktok_secret
+            else None,
         )
 
     def secret_values(self) -> tuple[str, ...]:
@@ -209,6 +234,10 @@ class Settings:
             )
         if self.youtube is not None:
             values += (self.youtube.client_id, self.youtube.client_secret)
+        if self.tiktok is not None:
+            values += (self.tiktok.client_key, self.tiktok.client_secret)
+            if self.tiktok.refresh_token:
+                values += (self.tiktok.refresh_token,)
         if self.threads is not None:
             values += (
                 self.threads.app_id,

@@ -35,3 +35,8 @@ jobs:
           LINKEDIN_SCOPES: ${{ secrets.LINKEDIN_SCOPES }}
           THREADS_APP_ID: ${{ secrets.THREADS_APP_ID }}
           THREADS_APP_SECRET: ${{ secrets.THREADS_APP_SECRET }}
+          TIKTOK_ENV: ${{ secrets.TIKTOK_ENV || 'sandbox' }}
+          TIKTOK_CLIENT_KEY: ${{ secrets.TIKTOK_CLIENT_KEY }}
+          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+          TIKTOK_SANDBOX_CLIENT_KEY: ${{ secrets.TIKTOK_SANDBOX_CLIENT_KEY }}
+          TIKTOK_SANDBOX_CLIENT_SECRET: ${{ secrets.TIKTOK_SANDBOX_CLIENT_SECRET }}

@@ -66,7 +66,9 @@ class RenewalHandler:
             )
             return True
 
-        label = {"linkedin": "LinkedIn", "threads": "Threads"}.get(provider, provider)
+        label = {"linkedin": "LinkedIn", "threads": "Threads", "tiktok": "TikTok"}.get(
+            provider, provider
+        )
         until = f" until {expiry.date().isoformat()}" if expiry is not None else ""
         try:
             self._api.send_message(chat_id, f"{label} token renewed{until}")

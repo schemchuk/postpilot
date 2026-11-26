@@ -9,6 +9,7 @@ from typing import Literal, Protocol
 from postpilot.notify.telegram import Notifier
 from postpilot.tokens.base import TokenManager, utc_datetime
 from postpilot.tokens.oauth_state import StateStore, make_state
+from postpilot.tokens.tiktok import TikTokTokenManager, TikTokTokenUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +34,26 @@ def _check_token(
 ) -> tuple[TokenStatus, str | None]:
     remaining = manager.days_left(now)
     if remaining is None:
-        return "missing", "token missing"
+        return "missing", None if isinstance(
+            manager, TikTokTokenManager
+        ) else "token missing"
     if remaining <= 0:
         return "expired", "token expired, items will be held"
 
     days = ceil(remaining)
     unit = "day" if days == 1 else "days"
     expiry_alert = f"token expires in {days} {unit}"
+    if isinstance(manager, TikTokTokenManager):
+        try:
+            manager.try_refresh()
+        except TikTokTokenUnavailable:
+            return "refresh_failed", "consent missing or revoked, items will be held"
+        except Exception as error:  # noqa: BLE001 - isolate provider refresh failures
+            logger.warning("Token refresh failed (%s)", type(error).__name__)
+            return "refresh_failed", "token refresh failed"
+        if remaining <= manager.refresh_under_days:
+            return "expiring", f"refresh {expiry_alert}"
+        return "healthy", None
     if remaining <= manager.refresh_under_days:
         try:
             if manager.try_refresh():
