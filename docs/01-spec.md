@@ -50,6 +50,8 @@ engineering: agents in production, CI/CD, tests, docs and decision records. It r
 - F3.1 A new bot with new secrets. Nothing is reused from handmake.
 - F3.2 Every item (text and video) is previewed. Actions: approve, edit, regenerate (S1 only), skip.
 - F3.3 No publishing without an explicit approval. This is enforced in the core, not by convention.
+  Exception (ADR 024): factory reels (source `factory`, created only by `factory-intake`) are approved by
+  the factory's script approval and publish at their release time without a tap.
 - F3.4 Only Volodymyr's Telegram user id may operate the bot; all other senders are ignored.
 
 ### F4. Quality and safety gates (ported from work_in_Linkedin)

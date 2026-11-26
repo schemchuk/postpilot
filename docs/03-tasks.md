@@ -223,7 +223,24 @@ outside 3-90 s. Accept: tests for item and targets (no LinkedIn/Threads publicat
 without label, preview buttons, duration refusal, Publisher and publish-reels handle empty text; live: one
 original video without description posted to IG and FB Reels.
 T25b DONE 2026-11-26 (PR #55).
+**T26a** Factory intake (ADR 024 decisions 1-5, 9): source `factory`, migration `factory_reels`, workflow
+`factory-intake` (workflow_dispatch, JSON input v1), `FACTORY_REPO` config, download of the release
+`reel/<episode>` assets from the public repo, validation (contract, slug, release_at window, sizes,
+3-90 s, UTF-8, Threads length), hashes stored, item APPROVED with `release_at`, core allows approval
+without Telegram only for this source and entry point, intake notice. Repeat rules: same hashes ->
+unchanged, changed before publish -> replaced, after publish -> refused. Touches a workflow: Volodymyr's
+OK before merge. Accept: tests for each validation error, the three repeat cases, notice text, no Claude
+call, other sources still need Approve; live: one test release dispatched, notice in Telegram, row in Neon.
+**T26b** Scheduled publish of factory items (ADR 024 decisions 6, 8): `publish-reels` publishes items with
+passed `release_at` to LinkedIn DE video, Threads, IG and FB Reels with the texts as written (+ AI label
+line), re-downloads and checks hashes, Threads skip rule, no publish before `release_at`, idempotent
+reruns, failures via ADR 022 Retry/Skip. Accept: tests for due/not-due, verbatim text per channel,
+hash mismatch, deleted asset, rerun after partial publish; live: test reel 002 published at a set time.
+**T26c** Covers (ADR 024 decision 7): LinkedIn `uploadThumbnail: true` + PNG upload, IG `cover_url` +
+`thumb_offset=0`, FB Reels thumbnail upload if the Graph API supports it for Reels (check first, else
+frame 0, write the finding into the ADR). Accept: tests for request payloads and the thumbnail upload
+step; live: the cover visible on LinkedIn, IG and FB for one reel.
 
 ## Order
-T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22 -> T23a -> T23b -> T24a -> T24b -> T25a -> T25b.
+T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22 -> T23a -> T23b -> T24a -> T24b -> T25a -> T25b -> T26a -> T26b -> T26c (due before 2026-12-14).
 First useful vertical slice after T11: Telegram text to approval to LinkedIn.
