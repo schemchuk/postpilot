@@ -13,8 +13,9 @@ from postpilot.channels.linkedin_video import LinkedInVideoChannel
 from postpilot.channels.own_video_reels import _fit_video
 from postpilot.channels.threads import ThreadsChannel
 from postpilot.core.models import Item, Variant
+from postpilot.projects import Projects
 from postpilot.sources.factory import FactoryRelease, Rejected
-from postpilot.store.factory_reels import Asset, FactoryReel, FactoryReelStore
+from postpilot.store.project_items import Asset, ProjectItem, ProjectItemStore
 from postpilot.video.label import AI_VIDEO_CAPTION_LABEL
 from postpilot.video.publisher import VideoChannel
 from postpilot.video.reel import ReelVideo
@@ -25,11 +26,11 @@ _COVER = "cover_de.png"
 
 class FactoryAssets:
     def __init__(
-        self, store: FactoryReelStore, client: httpx.Client, repo: str
+        self, store: ProjectItemStore, client: httpx.Client, projects: Projects
     ) -> None:
         self.store = store
         self.client = client
-        self.repo = repo
+        self.projects = projects
         # Keep the release and downloaded media for the current item only.
         self._key: tuple[UUID, str, dict[str, Asset]] | None = None
         self._release: FactoryRelease | None = None
@@ -37,13 +38,13 @@ class FactoryAssets:
         self._errors: dict[str, str] = {}
         self._fitted: bytes | None = None
 
-    def reel(self, item_id: UUID) -> FactoryReel:
+    def reel(self, item_id: UUID) -> ProjectItem:
         reel = self.store.get_by_item(item_id)
-        if reel is None:
+        if reel is None or reel.kind != "reel":
             raise ChannelError("Factory reel data is unavailable")
         return reel
 
-    def _release_for(self, item_id: UUID, reel: FactoryReel) -> FactoryRelease:
+    def _release_for(self, item_id: UUID, reel: ProjectItem) -> FactoryRelease:
         key = (item_id, reel.tag, reel.assets)
         if self._key != key:
             self._key = key
@@ -53,7 +54,10 @@ class FactoryAssets:
             self._fitted = None
         if self._release is None and "release" not in self._errors:
             try:
-                self._release = FactoryRelease(self.client, self.repo, reel.tag)
+                project = self.projects.get(reel.project)
+                if project is None:
+                    raise ChannelError("Project release repository is unavailable")
+                self._release = FactoryRelease(self.client, project.repo, reel.tag)
             except Rejected:
                 self._errors["release"] = f"Factory release {reel.tag} is unavailable"
         if self._release is None:
@@ -192,7 +196,7 @@ class FactoryReelsChannel:
         self._caption_limit = caption_limit
         self._use_release_video = use_release_video
 
-    def _caption(self, reel: FactoryReel) -> str:
+    def _caption(self, reel: ProjectItem) -> str:
         text = reel.post_de + (f"\n\n{AI_VIDEO_CAPTION_LABEL}" if reel.ai else "")
         if self._caption_limit is not None and len(text) > self._caption_limit:
             raise ChannelError(
@@ -217,6 +221,8 @@ class FactoryReelsChannel:
             raise ChannelHeld
         reel = self._assets.reel(item.id)
         caption = self._caption(reel)
+        if reel.duration is None:
+            raise ChannelError("Reel duration is unavailable")
         try:
             cover_url = (
                 None if self._use_release_video else self._assets.cover_url(item.id)

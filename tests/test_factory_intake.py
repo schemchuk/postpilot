@@ -7,10 +7,10 @@ import httpx
 import pytest
 
 from postpilot import cli
-from postpilot.config import DEFAULT_FACTORY_REPO, Settings
+from postpilot.config import Settings
 from postpilot.sources import factory
 
-REPO = DEFAULT_FACTORY_REPO
+REPO = "schemchuk/beekeeper-ai-integrator"
 NOW = datetime(2026, 11, 26, tzinfo=UTC)
 EPISODE = "002-medunko"
 TAG = f"reel/{EPISODE}"
@@ -248,7 +248,6 @@ def test_threads_skip_or_use_explicit_text():
 def test_cli_payload_with_no_encryption_key(monkeypatch, tmp_path, explicit):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("FACTORY_PAYLOAD", "from-env")
-    monkeypatch.setenv("FACTORY_REPO", "owner/factory")
     monkeypatch.setenv("DATABASE_URL", "postgresql://unused")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "unused")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
@@ -262,7 +261,6 @@ def test_cli_payload_with_no_encryption_key(monkeypatch, tmp_path, explicit):
     raw, settings = command.call_args.args
     assert raw == ("from-flag" if explicit else "from-env")
     assert isinstance(settings, Settings)
-    assert settings.factory_repo == "owner/factory"
 
 
 def test_core_publisher_rejects_factory_before_side_effects():
@@ -275,10 +273,10 @@ def test_core_publisher_rejects_factory_before_side_effects():
     item_id = uuid4()
     repo = Mock()
     repo.get_item.return_value = Item(
-        item_id, "factory", ItemState.APPROVED, NOW, NOW, None, NOW
+        item_id, "project", ItemState.APPROVED, NOW, NOW, None, NOW
     )
     channel = Mock()
-    with pytest.raises(IllegalTransition, match="factory publisher"):
+    with pytest.raises(IllegalTransition, match="project publisher"):
         Publisher(repo, [channel]).publish_item(item_id)
     repo.transition.assert_not_called()
     repo.claim_publication.assert_not_called()
@@ -381,3 +379,16 @@ def test_oversized_youtube_title_asset_keeps_factory_intake():
     assert "YouTube will use the default title." in message
     assert save.call_args.args[0].title_de == ""
     assert not any(url.endswith(name) for url in downloads)
+
+
+def test_cli_intake_uses_project_repo(monkeypatch, tmp_path):
+    projects = tmp_path / "projects.toml"
+    projects.write_text(
+        '[projects.beekeeper]\nrepo = "owner/repo"\nkinds = ["reel"]\n'
+        'channels = ["threads"]\napproval = "auto"\n'
+    )
+    monkeypatch.setenv("PROJECTS_FILE", str(projects))
+    intake = Mock(return_value=0)
+    monkeypatch.setattr(cli, "intake", intake)
+    assert cli._factory_intake("payload", Settings("db", "bot", 1, "")) == 0
+    assert intake.call_args.args[:2] == ("payload", "owner/repo")

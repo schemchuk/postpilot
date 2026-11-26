@@ -87,6 +87,7 @@ def test_migration_up_noop_and_down(conn):
         "own_video_updates",
         "telegram_inbox",
         "factory_reels",
+        "project_items",
     }
     assert table_names(conn) == latest_schema
     initial = applied_migrations(conn)
@@ -111,6 +112,7 @@ def test_migration_up_noop_and_down(conn):
         "0018_telegram_inbox",
         "0019_factory_reels",
         "0020_item_video_publications",
+        "0021_project_items",
     ]
     migrate.up(conn)
     assert applied_migrations(conn) == initial
@@ -121,13 +123,20 @@ def test_migration_up_noop_and_down(conn):
         )
         conn.execute("DELETE FROM items WHERE id = %s", (id,))
     migrate.down(conn)
+    assert applied_migrations(conn) == initial[:20]
+    assert "project_items" not in table_names(conn)
+    migrate.down(conn)
     assert applied_migrations(conn) == initial[:19]
     migrate.down(conn)
     assert applied_migrations(conn) == initial[:18]
     assert "factory_reels" not in table_names(conn)
     migrate.down(conn)
     assert applied_migrations(conn) == initial[:17]
-    assert table_names(conn) == latest_schema - {"telegram_inbox", "factory_reels"}
+    assert table_names(conn) == latest_schema - {
+        "telegram_inbox",
+        "factory_reels",
+        "project_items",
+    }
     migrate.down(conn)
     assert applied_migrations(conn) == initial[:16]
     migrate.down(conn)
@@ -373,14 +382,16 @@ def test_database_checks_state_and_status(conn, approved_item):
 @pytest.mark.parametrize("status", ["PUBLISHING", "PUBLISHED"])
 def test_factory_intake_repeats_and_publisher_isolation(conn, repo, status):
     from postpilot.core.publisher import Publisher
-    from postpilot.store.factory_reels import FactoryReel, FactoryReelStore
+    from postpilot.projects import FACTORY_PROJECT, Projects
+    from postpilot.store.project_items import ProjectItem, ProjectItemStore
     from postpilot.video.publications import VideoPublicationStore
     from postpilot.video.store import VideoStore
 
     episode = f"002-{uuid4().hex}"
-    store = FactoryReelStore(conn)
+    store = ProjectItemStore(conn)
+    projects = Projects.load()
     release_at = datetime.now(UTC)
-    reel = FactoryReel(
+    reel = ProjectItem(
         episode,
         release_at,
         True,
@@ -388,33 +399,35 @@ def test_factory_intake_repeats_and_publisher_isolation(conn, repo, status):
         None,
         {"post_de.txt": {"sha256": "a" * 64, "size": 13}},
         3.0,
+        FACTORY_PROJECT,
     )
-    with pytest.raises(ValueError, match="factory intake"):
-        repo.create_item("factory")
-    assert store.create_factory_item(reel) == "new"
+    with pytest.raises(ValueError, match="project intake"):
+        repo.create_item("project")
+    assert store.create_approved_reel(projects, reel) == "new"
 
     def persisted():
         with conn.transaction():
             return conn.execute(
                 "SELECT item_id, release_at, ai, assets, post_de, post_threads, "
-                "threads_skipped, updated_at FROM factory_reels WHERE episode = %s",
-                (episode,),
+                "threads_skipped, updated_at FROM project_items WHERE project = %s AND id = %s",
+                (FACTORY_PROJECT, episode),
             ).fetchone()
 
     initial = persisted()
     item_id = initial[0]
     item = repo.get_item(item_id)
-    assert item.source == "factory" and item.state == ItemState.APPROVED
+    assert item.source == "project" and item.state == ItemState.APPROVED
     assert item.approved_by is None and item.approved_at is not None
+    assert store.get_by_item(item_id).approval == "auto"
     assert initial[1:7] == (release_at, True, reel.assets, reel.post_de, None, True)
     assert repo.get_variants(item_id) == [Variant(item_id, "de", reel.post_de)]
     assert item_id not in repo.list_approved_item_ids()
-    assert repo.list_approved_item_ids(source="factory") == []
+    assert repo.list_approved_item_ids(source="project") == []
     assert (
         repo.next_video_variant() is None
         or repo.next_video_variant().item_id != item_id
     )
-    with pytest.raises(IllegalTransition, match="factory publisher"):
+    with pytest.raises(IllegalTransition, match="project publisher"):
         Publisher(repo, [object()]).publish_item(item_id)
 
     render_id = VideoStore(conn).claim(item_id, "de")
@@ -432,19 +445,19 @@ def test_factory_intake_repeats_and_publisher_isolation(conn, repo, status):
         video_publications.claim(render_id, "instagram", timedelta(minutes=5)) is None
     )
 
-    assert store.create_factory_item(reel) == "unchanged"
+    assert store.create_approved_reel(projects, reel) == "unchanged"
     assert persisted() == initial
     changed = replace(reel, release_at=release_at + timedelta(hours=1))
-    assert store.create_factory_item(changed) == "replaced"
+    assert store.create_approved_reel(projects, changed) == "replaced"
     changed = replace(changed, ai=False)
-    assert store.create_factory_item(changed) == "replaced"
+    assert store.create_approved_reel(projects, changed) == "replaced"
     changed = replace(
         changed,
         post_de="Fixed",
         post_threads="Threads",
         assets={"post_de.txt": {"sha256": "b" * 64, "size": 5}},
     )
-    assert store.create_factory_item(changed) == "replaced"
+    assert store.create_approved_reel(projects, changed) == "replaced"
     replacement = persisted()
     assert replacement[:7] == (
         item_id,
@@ -461,7 +474,7 @@ def test_factory_intake_repeats_and_publisher_isolation(conn, repo, status):
             "INSERT INTO publications (item_id, channel, status) VALUES (%s, 'threads', %s)",
             (item_id, status),
         )
-    assert store.create_factory_item(changed) == "unchanged"
-    assert store.create_factory_item(reel) == "refused"
+    assert store.create_approved_reel(projects, changed) == "unchanged"
+    assert store.create_approved_reel(projects, reel) == "refused"
     assert persisted() == replacement
     assert repo.get_variants(item_id) == [Variant(item_id, "de", "Fixed")]

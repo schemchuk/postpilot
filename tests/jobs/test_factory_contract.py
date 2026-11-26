@@ -20,24 +20,26 @@ from postpilot.config import FacebookSettings
 from postpilot.core.models import Item
 from postpilot.core.publisher import Publisher
 from postpilot.core.states import IllegalTransition, ItemState
-from postpilot.store.factory_reels import FactoryReel
+from postpilot.projects import FACTORY_PROJECT, Project, Projects
+from postpilot.store.project_items import ProjectItem
 
 NOW = datetime(2026, 12, 1, 7, tzinfo=UTC)
 VIDEO = b"video"
 COVER = b"\x89PNG\r\n\x1a\ncover"
 REPO = "owner/repo"
+PROJECTS = Projects((Project(FACTORY_PROJECT, REPO, ("reel",), ("threads",), "auto"),))
 URL = f"https://github.com/{REPO}/releases/download/reel/002-test/reel_de.mp4"
 
 
 COVER_URL = URL.replace("reel_de.mp4", "cover_de.png")
 
 
-def item(state, source="factory"):
+def item(state, source="project"):
     return Item(uuid4(), source, state, NOW, NOW, None, NOW)
 
 
 @pytest.mark.parametrize("state", [ItemState.APPROVED, ItemState.PUBLISHING])
-@pytest.mark.parametrize("release_at", [None, NOW + timedelta(seconds=1)])
+@pytest.mark.parametrize("release_at", [NOW, NOW + timedelta(seconds=1)])
 def test_factory_publisher_leaves_unreleased_items_untouched(state, release_at):
     row = item(state)
     repo = Mock(**{"get_item.return_value": row})
@@ -45,9 +47,12 @@ def test_factory_publisher_leaves_unreleased_items_untouched(state, release_at):
     report = Publisher(
         repo,
         [],
-        factory_channels=[channel],
-        factory_release_at=lambda _: release_at,
-        now=lambda: NOW,
+        project_channels=[channel],
+        projects=PROJECTS,
+        project_item=lambda _: ProjectItem(
+            "clip", release_at, False, "text", None, {}, 30, project=FACTORY_PROJECT
+        ),
+        now=lambda: NOW - timedelta(seconds=1),
     ).publish_item(row.id)
     assert not report.channels
     repo.transition.assert_not_called()
@@ -59,14 +64,13 @@ def test_factory_opt_in_does_not_bypass_approval_for_other_sources():
     telegram = item(ItemState.AWAITING_APPROVAL, "telegram")
     repo = Mock(**{"get_item.side_effect": [factory, telegram]})
     channel = Mock()
-    with pytest.raises(IllegalTransition, match="factory publisher"):
+    with pytest.raises(IllegalTransition, match="project publisher"):
         Publisher(repo, [channel]).publish_item(factory.id)
     with pytest.raises(IllegalTransition, match="AWAITING_APPROVAL"):
         Publisher(
             repo,
             [channel],
-            factory_channels=[channel],
-            factory_release_at=lambda _: NOW,
+            project_channels=[channel],
             now=lambda: NOW,
         ).publish_item(telegram.id)
     repo.transition.assert_not_called()
@@ -81,7 +85,7 @@ def assets(
     size=5,
     cover=COVER,
 ):
-    reel = FactoryReel(
+    reel = ProjectItem(
         "002-test",
         NOW,
         False,
@@ -92,8 +96,9 @@ def assets(
             "cover_de.png": {"sha256": sha256(cover).hexdigest(), "size": len(cover)},
         },
         30,
+        project=FACTORY_PROJECT,
     )
-    return FactoryAssets(Mock(**{"get_by_item.return_value": reel}), client, REPO)
+    return FactoryAssets(Mock(**{"get_by_item.return_value": reel}), client, PROJECTS)
 
 
 @pytest.mark.parametrize(

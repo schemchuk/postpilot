@@ -17,7 +17,8 @@ from postpilot.core.limits import (
     REELS_MAX_DURATION,
     REELS_MIN_DURATION,
 )
-from postpilot.store.factory_reels import Asset, FactoryReel, IntakeStatus
+from postpilot.projects import FACTORY_PROJECT
+from postpilot.store.project_items import Asset, IntakeStatus, ProjectItem
 from postpilot.video.label import AI_VIDEO_CAPTION_LABEL
 
 _EPISODE = re.compile(r"[0-9]{3}-[a-z0-9]+(?:-[a-z0-9]+)*")
@@ -203,7 +204,7 @@ def _download(
     release_at: datetime,
     ai: bool,
     probe: Callable[[bytes], float],
-) -> FactoryReel:
+) -> ProjectItem:
     release = FactoryRelease(client, repo, f"reel/{episode}")
     urls = {
         name: release.asset_url(name)
@@ -250,17 +251,25 @@ def _download(
                 raw_title = ""
             if "\0" not in raw_title:
                 title = fitting_title("", raw_title)
-    return FactoryReel(
-        episode, release_at, ai, post_de, threads, assets, duration, title_de=title
+    return ProjectItem(
+        episode,
+        release_at,
+        ai,
+        post_de,
+        threads,
+        assets,
+        duration,
+        FACTORY_PROJECT,
+        title_de=title,
     )
 
 
-def _notice(repo: str, reel: FactoryReel, status: IntakeStatus) -> str:
+def _notice(repo: str, reel: ProjectItem, status: IntakeStatus) -> str:
     local = reel.release_at.astimezone(ZoneInfo("Europe/Berlin"))
     threads = "" if reel.post_threads is None else "Threads, "
     lines = [
         (
-            f"Factory reel {reel.episode} · scheduled {_WEEKDAYS[local.weekday()]} "
+            f"Factory reel {reel.id} · scheduled {_WEEKDAYS[local.weekday()]} "
             f"{local:%d.%m %H:%M} · LinkedIn DE, {threads}IG, FB, YouTube, TikTok · AI label: "
             f"{'yes' if reel.ai else 'no'}"
         )
@@ -282,7 +291,7 @@ def intake(
     raw: str,
     repo: str,
     client: httpx.Client,
-    save: Callable[[FactoryReel], IntakeStatus],
+    save: Callable[[ProjectItem], IntakeStatus],
     notify: Callable[[str], None],
     *,
     now: datetime | None = None,

@@ -83,9 +83,6 @@ class ImapSettings:
     host: str = "imap.gmail.com"
 
 
-DEFAULT_FACTORY_REPO = "schemchuk/beekeeper-ai-integrator"
-
-
 @dataclass(frozen=True)
 class Settings:
     database_url: str = field(repr=False)
@@ -105,7 +102,6 @@ class Settings:
     facebook: FacebookSettings | None = None
     instagram: InstagramSettings | None = None
     imap: ImapSettings | None = None
-    factory_repo: str = DEFAULT_FACTORY_REPO
     youtube: YouTubeSettings | None = None
     tiktok: TikTokSettings | None = None
 
@@ -210,7 +206,6 @@ class Settings:
             )
             if imap_user and imap_password
             else None,
-            values.get("FACTORY_REPO") or DEFAULT_FACTORY_REPO,
             YouTubeSettings(youtube_id, youtube_secret)
             if youtube_id and youtube_secret
             else None,

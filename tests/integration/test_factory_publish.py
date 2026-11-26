@@ -20,7 +20,8 @@ from postpilot.config import (
 from postpilot.core.models import PublicationStatus
 from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.jobs import tasks
-from postpilot.store.factory_reels import FactoryReel, FactoryReelStore
+from postpilot.projects import FACTORY_PROJECT, Projects
+from postpilot.store.project_items import ProjectItem, ProjectItemStore
 from postpilot.video.label import AI_VIDEO_CAPTION_LABEL
 
 pytestmark = test_store.pytestmark
@@ -36,7 +37,7 @@ THREAD = "  Ein eigener Text.\n"
 
 
 def add_reel(conn, *, release_at=NOW - timedelta(seconds=1), ai=True, threads=THREAD):
-    reel = FactoryReel(
+    reel = ProjectItem(
         f"002-{uuid4().hex}",
         release_at,
         ai,
@@ -47,11 +48,13 @@ def add_reel(conn, *, release_at=NOW - timedelta(seconds=1), ai=True, threads=TH
             "cover_de.png": {"sha256": sha256(COVER).hexdigest(), "size": len(COVER)},
         },
         30,
+        FACTORY_PROJECT,
     )
-    assert FactoryReelStore(conn).create_factory_item(reel) == "new"
+    assert ProjectItemStore(conn).create_approved_reel(Projects.load(), reel) == "new"
     with conn.transaction():
         return conn.execute(
-            "SELECT item_id FROM factory_reels WHERE episode = %s", (reel.episode,)
+            "SELECT item_id FROM project_items WHERE project = %s AND id = %s",
+            (FACTORY_PROJECT, reel.id),
         ).fetchone()[0]
 
 
@@ -69,7 +72,8 @@ def job(monkeypatch, conn):
         facebook=FacebookSettings("fb"),
         instagram=InstagramSettings("ig"),
     )
-    asset_url = f"https://github.com/{state.settings.factory_repo}/releases/download/clip/reel_de.mp4"
+    project = Projects.load().get(FACTORY_PROJECT)
+    asset_url = f"https://github.com/{project.repo}/releases/download/clip/reel_de.mp4"
 
     cover_url = asset_url.replace("reel_de.mp4", "cover_de.png")
 
@@ -285,7 +289,7 @@ def test_partial_publish_can_retry_in_reels_job(repo, conn, job, monkeypatch):
     assert set(job.posts) == {"threads", "linkedin-video", "facebook-reels"}
     with job.client() as client:
         publisher = tasks._publisher(job.settings, repo, client)
-        with pytest.raises(IllegalTransition, match="factory publisher"):
+        with pytest.raises(IllegalTransition, match="project publisher"):
             publisher.publish_item(item_id)
     tasks.publish_due(job.settings, conn)
     assert repo.get_item(item_id).state == ItemState.FAILED

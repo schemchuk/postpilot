@@ -44,6 +44,7 @@ from postpilot.channels.threads import ThreadsChannel
 from postpilot.channels.tiktok import TikTokChannel
 from postpilot.channels.youtube import YouTubeChannel
 from postpilot.config import ConfigError, HeyGenSettings, Settings
+from postpilot.core.approval import ProjectApprovalError
 from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
 from postpilot.core.models import Item
 from postpilot.core.publisher import ChannelResult, Publisher
@@ -64,6 +65,7 @@ from postpilot.notify.approval import ApprovalHandler
 from postpilot.notify.poller import drain_inbox
 from postpilot.notify.renewal import RenewalHandler
 from postpilot.notify.telegram import Notifier, TelegramApi, TelegramError
+from postpilot.projects import Projects
 from postpilot.sources.github import (
     PROMPT_COMMIT_LIMIT,
     GitHubClient,
@@ -75,8 +77,8 @@ from postpilot.sources.series import SeriesStore
 from postpilot.sources.telegram import TelegramInbox
 from postpilot.stats import StatsStore
 from postpilot.store.bot_state import BotState
-from postpilot.store.factory_reels import FactoryReelStore
 from postpilot.store.own_videos import OwnVideo, OwnVideoStore
+from postpilot.store.project_items import ProjectItemStore
 from postpilot.store.repo import ItemRepo
 from postpilot.store.update_inbox import UpdateInbox
 from postpilot.store.weekly import WeeklyDraft, WeeklyStore
@@ -228,6 +230,8 @@ def _publish_items(
     for item_id in item_ids:
         try:
             report = publisher.publish_item(item_id)
+        except ProjectApprovalError as error:
+            logger.warning("Project item %s held: %s", item_id, error)
         except IllegalTransition:
             item = publisher.repo.get_item(item_id)
             if item is None or item.state != ItemState.PUBLISHED:
@@ -334,7 +338,7 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
 
     def retry_item(item_id: UUID) -> None:
         item = repo.get_item(item_id)
-        if item is not None and item.source == "factory":
+        if item is not None and item.source == "project":
             return
         try:
             publish([item_id])
@@ -532,6 +536,7 @@ def _own_video_reel_publisher(
 def publish_reels(
     settings: Settings, conn: Connection[TupleRow], *, retry: bool = False
 ) -> None:
+    projects = Projects.load()
     store = TokenStore(conn, TokenCipher(settings.token_encryption_key))
 
     with httpx.Client() as client:
@@ -637,10 +642,10 @@ def publish_reels(
             except _ChannelPublishingFailed:
                 own_video_failed = True
 
-        factory = FactoryReelStore(conn)
-        due = factory.list_due_item_ids(_now())
+        project_items = ProjectItemStore(conn)
+        due = project_items.list_due_item_ids(_now())
         if due:
-            assets = FactoryAssets(factory, client, settings.factory_repo)
+            assets = FactoryAssets(project_items, client, projects)
             targets: list[
                 FactoryLinkedInChannel | FactoryThreadsChannel | FactoryReelsChannel
             ] = [
@@ -670,22 +675,17 @@ def publish_reels(
             )
             permalinks.update({channel.name: channel.permalink for channel in targets})
 
-            def release_at(item_id: UUID) -> datetime | None:
-                reel = factory.get_by_item(item_id)
-                return reel.release_at if reel else None
-
-            def excluded(item_id: UUID) -> set[str]:
-                reel = factory.get_by_item(item_id)
-                return {"threads"} if reel and reel.threads_skipped else set()
-
             _publish_items(
                 Publisher(
                     repo,
                     [],
-                    factory_channels=list(targets),
-                    factory_release_at=release_at,
-                    factory_excluded_channels=excluded,
-                    factory_lock=factory.lock_item,
+                    project_channels=list(targets),
+                    project_item=project_items.get_by_item,
+                    projects=projects,
+                    project_exclusions=lambda reel: (
+                        {"threads"} if reel.threads_skipped else set()
+                    ),
+                    project_lock=project_items.lock_item,
                     now=_now,
                     token_guard=lambda provider: bool(read_token(provider)),
                 ),
