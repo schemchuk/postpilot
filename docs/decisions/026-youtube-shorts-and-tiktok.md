@@ -1,7 +1,7 @@
 # 026. YouTube Shorts and TikTok video channels
 
 Status: PROPOSED (Claude Code, 2026-11-26; Volodymyr's answers of 2026-11-26 included: factory reels go to
-TikTok and YouTube, category Science & Technology for all, YouTube skipped without a description, HeyGen
+TikTok and YouTube, category Science & Technology for all, YouTube also without a description (default title), HeyGen
 renders stay off both. Would amend the spec outputs and the video channel sets of ADRs 019, 023 and 024)
 
 ## Context
@@ -44,8 +44,8 @@ remote status (ADR 014).
 
 2. **Which items go where.**
    - S3 own videos: Instagram, Facebook, YouTube, TikTok.
-   - S3 videos without a description (ADR 023): Instagram, Facebook, TikTok (empty caption). YouTube is
-     skipped because it needs a title; the preview says so (Volodymyr, 2026-11-26).
+   - S3 videos without a description (ADR 023): Instagram, Facebook, TikTok (empty caption) and YouTube with
+     the default title (decision 3) (Volodymyr, 2026-11-26).
    - S4 factory reels (Volodymyr, 2026-11-26): LinkedIn DE, Threads, IG, FB as in ADR 024, plus YouTube and
      TikTok, with the verbatim text and the cover. Under ADR 025 these become the factory's allowlisted
      channels.
@@ -53,14 +53,15 @@ remote status (ADR 014).
    - The Telegram preview or the factory intake notice lists every target channel.
 
 3. **YouTube text.** Title = the first line of the German text if it fits 100 characters, else the first
-   sentence if it fits, else YouTube is skipped for that item with a note in the preview (no truncation, as
-   for Threads in ADR 024). Description = the full German text plus the AI label line when the item is AI
+   sentence if it fits, else the default title `Volodymyr Shemchuk · <DD.MM.YYYY>` (Berlin date of
+   publishing). The text is never truncated. Videos without a description get the default title and an empty
+   description (only the AI label line when AI generated). Description = the full German text plus the AI label line when the item is AI
    generated. `<` and `>` are replaced by `‹` `›` because YouTube rejects them. `privacyStatus=public`,
    `selfDeclaredMadeForKids=false`, `categoryId=28` (Science & Technology, also for the factory cartoons),
    `containsSyntheticMedia` from the item's AI flag.
    Factory reels: `post_de.txt` gives title and description by the same rule, so the text stays verbatim. An
    optional release asset `title_de.txt` (at most 100 characters), if the factory adds it, is used as the
-   title instead; without a fitting title YouTube is skipped and the intake notice says so.
+   title instead; without a fitting title the default title is used and the intake notice says so.
 
 4. **YouTube upload and idempotency.** Resumable upload of the bytes. The session URI is stored in
    `remote_ref` before the first byte is sent. Recovery queries the session: `308` resumes at the reported
