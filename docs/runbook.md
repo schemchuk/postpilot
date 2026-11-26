@@ -395,7 +395,10 @@ category Productivity, icon `docs/img/postpilot-icon-1024.png`.
 - Sandbox `postpilot-test` (cloned from the draft), target user
   `volodymyr.shemchuk`. `.env`: `TIKTOK_SANDBOX_CLIENT_KEY`,
   `TIKTOK_SANDBOX_CLIENT_SECRET`, `TIKTOK_SANDBOX_REFRESH_TOKEN` (365 days; access
-  token 24 h). Checked 2026-11-26: all three scopes granted, `creator_info/query` ok.
+  token 24 h). Checked 2026-11-26: all three scopes granted, `creator_info/query` ok;
+  Direct Post test (FILE_UPLOAD, one chunk, `SELF_ONLY`) reached `PUBLISH_COMPLETE`
+  after the account was switched to private (public account: 403
+  `unaudited_client_can_only_post_to_private_accounts`).
 
 Limits from the docs (2026-11-26): unaudited clients post only `SELF_ONLY` and the
 account must be private at posting time; audited review rejects apps "for private or
