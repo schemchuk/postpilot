@@ -259,3 +259,26 @@ def test_invalid_tiktok_environment(monkeypatch, environment):
     monkeypatch.setenv("TIKTOK_ENV", environment)
     with pytest.raises(ConfigError, match="TIKTOK_ENV must be sandbox or production"):
         Settings.from_env()
+
+
+@pytest.mark.parametrize("mode", [None, "draft", "direct", "", "other"])
+def test_tiktok_mode(monkeypatch, mode):
+    for name, value in REQUIRED.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("TIKTOK_ENV", "sandbox")
+    monkeypatch.setenv("TIKTOK_SANDBOX_CLIENT_KEY", "mock-key")
+    monkeypatch.setenv("TIKTOK_SANDBOX_CLIENT_SECRET", "mock-secret")
+    if mode is None:
+        monkeypatch.delenv("TIKTOK_MODE", raising=False)
+    else:
+        monkeypatch.setenv("TIKTOK_MODE", mode)
+    if mode in {None, "draft"}:
+        assert Settings.from_env().tiktok.mode == "draft"
+    else:
+        message = (
+            "TIKTOK_MODE=direct comes with T29c"
+            if mode == "direct"
+            else "TIKTOK_MODE must be draft"
+        )
+        with pytest.raises(ConfigError, match=message):
+            Settings.from_env()

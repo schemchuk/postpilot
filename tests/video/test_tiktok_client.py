@@ -151,5 +151,6 @@ def test_api_error_keeps_tiktok_error_code():
         api = TikTokClient(client, "access")
         with pytest.raises(TikTokAPIError) as caught:
             api.init_inbox(UploadPlan(10))
-    assert "unaudited_client_can_only_post_to_private_accounts" in str(caught.value)
+    assert caught.value.code == "unaudited_client_can_only_post_to_private_accounts"
+    assert caught.value.code in str(caught.value)
     assert "secret-ish" not in str(caught.value)

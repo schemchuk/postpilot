@@ -19,8 +19,12 @@ from postpilot.config import (
     InstagramSettings,
     LinkedInSettings,
     Settings,
+    TikTokSettings,
 )
+from postpilot.core.models import Variant
 from postpilot.jobs import tasks
+from postpilot.tokens.tiktok import TikTokTokenError, TikTokTokenUnavailable
+from postpilot.video.label import AI_VIDEO_CAPTION_LABEL
 from postpilot.video.publisher import publish_one
 from postpilot.video.store import VideoStatus
 
@@ -461,3 +465,162 @@ def test_youtube_routes_only_own_and_factory_and_shares_token_and_budget(
     assert own_youtube._read_token("youtube") == "access"
     assert factory_youtube._read_token("youtube") == "access"
     manager.return_value.access_token.assert_called_once_with()
+
+
+@pytest.mark.parametrize("paused", [False, True])
+@pytest.mark.parametrize("error", [None, TikTokTokenError, TikTokTokenUnavailable])
+def test_tiktok_routes_only_own_and_factory_and_caches_token(
+    monkeypatch, settings, paused, error
+):
+    settings = replace(
+        settings, tiktok=TikTokSettings("sandbox", "key", "secret", "callback")
+    )
+    conn = Mock()
+    conn.transaction.side_effect = nullcontext
+    conn.execute.return_value.fetchall.return_value = [(uuid4(),)]
+    monkeypatch.setattr(tasks, "TokenStore", Mock())
+    monkeypatch.setattr(tasks, "TokenCipher", Mock())
+    monkeypatch.setattr(tasks, "publish_one", Mock())
+    monkeypatch.setattr(tasks, "_publish_items", Mock())
+    monkeypatch.setattr(tasks, "is_paused", lambda name: paused and name == "tiktok")
+    manager = Mock(**{"return_value.access_token.return_value": "access"})
+    manager.return_value.access_token.side_effect = error
+    monkeypatch.setattr(tasks, "TikTokTokenManager", manager)
+    constructor = Mock(wraps=tasks.TikTokChannel)
+    constructor.name = "tiktok"
+    constructor.token_provider = "tiktok"
+    monkeypatch.setattr(tasks, "TikTokChannel", constructor)
+
+    tasks.publish_reels(settings, conn)
+
+    assert [channel.name for channel in tasks.publish_one.call_args.args[2]] == [
+        "facebook-reels"
+    ]
+    own, factory = [call.args[0] for call in tasks._publish_items.call_args_list]
+    assert "tiktok" in own.own_video_held_channels
+    if paused:
+        constructor.assert_not_called()
+        manager.assert_not_called()
+        assert all(ch.name != "tiktok" for ch in own.own_video_channels)
+        assert all(ch.name != "tiktok" for ch in factory.factory_channels)
+        return
+
+    constructor.assert_called_once()
+    own_tiktok = next(ch for ch in own.own_video_channels if ch.name == "tiktok")
+    factory_tiktok = next(ch for ch in factory.factory_channels if ch.name == "tiktok")
+    assert own_tiktok._channel is factory_tiktok._channel
+    assert own_tiktok._caption_limit is None
+    assert factory_tiktok._caption_limit is None
+    assert factory_tiktok._use_release_video
+    if error is None:
+        assert own_tiktok._read_token("tiktok") == "access"
+        assert factory.token_guard("tiktok")
+        assert factory_tiktok._read_token("tiktok") == "access"
+    else:
+        with pytest.raises(ChannelHeld):
+            own_tiktok.publish_with_ref(
+                Mock(), [], ref=None, claimed_at=datetime.now(UTC), save_ref=Mock()
+            )
+        assert not factory.token_guard("tiktok")
+    manager.return_value.access_token.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    ("source", "description", "ai"),
+    [
+        ("own_video", True, True),
+        ("own_video", False, True),
+        ("own_video", False, False),
+        ("factory", True, True),
+    ],
+)
+def test_tiktok_workflow_reports_caption_from_own_and_factory_adapters(
+    monkeypatch, settings, source, description, ai
+):
+    item_id = uuid4()
+    settings = replace(
+        settings, tiktok=TikTokSettings("sandbox", "key", "secret", "callback")
+    )
+    conn = Mock()
+    conn.transaction.side_effect = nullcontext
+    conn.execute.return_value.fetchall.return_value = [(item_id,)]
+    telegram = Mock()
+    text = "  " + "Auf Deutsch. " * 200
+    monkeypatch.setattr(tasks, "TokenStore", Mock())
+    monkeypatch.setattr(tasks, "TokenCipher", Mock())
+    monkeypatch.setattr(tasks, "publish_one", Mock())
+    monkeypatch.setattr(tasks, "TelegramApi", Mock(return_value=telegram))
+    monkeypatch.setattr(
+        tasks,
+        "TikTokTokenManager",
+        Mock(**{"return_value.access_token.return_value": "access"}),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "OwnVideoStore",
+        Mock(
+            **{
+                "return_value.get_by_item.return_value": SimpleNamespace(
+                    has_description=description, duration=10, ai_generated=ai
+                )
+            }
+        ),
+    )
+    assets = Mock()
+    assets.reel.return_value = SimpleNamespace(
+        post_de=text, duration=10, ai=ai, title_de=None
+    )
+    monkeypatch.setattr(tasks, "FactoryAssets", Mock(return_value=assets))
+    monkeypatch.setattr(
+        tasks.ItemRepo,
+        "list_publications",
+        Mock(return_value=[SimpleNamespace(channel="tiktok", remote_id="inbox-id")]),
+    )
+
+    def route(request):
+        assert request.url.path.endswith("/status/fetch/")
+        return httpx.Response(
+            200,
+            json={"data": {"status": "SEND_TO_USER_INBOX"}, "error": {"code": "ok"}},
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(route))
+    monkeypatch.setattr(tasks.httpx, "Client", lambda: client)
+
+    def publish(publisher, ids, *, on_result, notifier):
+        if source == "factory" and not publisher.factory_channels:
+            return
+        if source == "own_video" and not publisher.own_video_channels:
+            return
+        assert item_id in ids
+        channels = publisher.factory_channels or publisher.own_video_channels
+        channel = next(ch for ch in channels if ch.name == "tiktok")
+        save_ref = Mock()
+        assert (
+            channel.publish_with_ref(
+                SimpleNamespace(id=item_id),
+                [Variant(item_id, "de", text)] if description else [],
+                ref="inbox-id",
+                claimed_at=datetime.now(UTC),
+                save_ref=save_ref,
+            )
+            == "inbox-id"
+        )
+        save_ref.assert_not_called()
+        on_result(item_id, "tiktok", tasks.ChannelResult("published"))
+
+    monkeypatch.setattr(tasks, "_publish_items", publish)
+    tasks.publish_reels(settings, conn)
+
+    caption = text if description else ""
+    if ai:
+        caption = (
+            f"{caption}\n\n{AI_VIDEO_CAPTION_LABEL}"
+            if caption
+            else AI_VIDEO_CAPTION_LABEL
+        )
+    heading = "tiktok: in your TikTok inbox, finish in the TikTok app."
+    result = f"Caption to copy:\n{caption}" if caption else "No caption."
+    if len(caption) > 2200:
+        result += f"\nCaption is {len(caption)} chars, TikTok allows 2200."
+    telegram.send_message.assert_called_once_with(1, f"{heading}\n{result}")

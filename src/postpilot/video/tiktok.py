@@ -21,7 +21,12 @@ logging.getLogger("httpx").addFilter(_exclude_upload_requests)
 
 
 class TikTokAPIError(RuntimeError):
-    pass
+    def __init__(
+        self, message: str, *, code: str = "-", uncertain: bool = False
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.uncertain = uncertain
 
 
 @dataclass(frozen=True)
@@ -106,11 +111,17 @@ class TikTokClient:
                     timeout=120,
                     follow_redirects=False,
                 )
-                response.raise_for_status()
-            except (httpx.HTTPError, httpx.InvalidURL, httpx.StreamError):
-                raise TikTokAPIError("TikTok video upload failed") from None
+            except (httpx.RequestError, httpx.StreamError):
+                uncertain = True
+            except httpx.InvalidURL:
+                uncertain = False
+            else:
+                if response.is_success:
+                    continue
+                uncertain = response.status_code >= 500
             finally:
                 _uploading.reset(upload_logging)
+            raise TikTokAPIError("TikTok video upload failed", uncertain=uncertain)
 
     def status(self, publish_id: str) -> PublishStatus:
         data = self._post("status/fetch", {"publish_id": publish_id})
@@ -121,6 +132,7 @@ class TikTokClient:
 
     def _post(self, endpoint: str, body: dict[str, object]) -> dict[str, object]:
         code = "-"
+        uncertain = False
         try:
             response = self._client.post(
                 f"{_API}/{endpoint}/",
@@ -129,6 +141,7 @@ class TikTokClient:
                 timeout=30,
                 follow_redirects=False,
             )
+            uncertain = response.status_code >= 500
             payload = response.json()
             if isinstance(payload, dict):
                 error, data = payload.get("error"), payload.get("data")
@@ -141,6 +154,10 @@ class TikTokClient:
                     and isinstance(data, dict)
                 ):
                     return data
-        except (httpx.HTTPError, httpx.InvalidURL, httpx.StreamError, ValueError):
+        except (httpx.RequestError, httpx.StreamError):
+            uncertain = True
+        except (httpx.HTTPStatusError, httpx.InvalidURL, ValueError):
             pass
-        raise TikTokAPIError(f"TikTok {endpoint} failed ({code})")
+        raise TikTokAPIError(
+            f"TikTok {endpoint} failed ({code})", code=code, uncertain=uncertain
+        )

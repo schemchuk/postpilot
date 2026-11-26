@@ -216,7 +216,7 @@ def test_notice_and_verbatim_text(status, monkeypatch):
     assert code == int(status == "refused")
     status_line = "refused (already published)" if status == "refused" else status
     assert message == (
-        f"Factory reel {EPISODE} · scheduled Tue 01.12 08:00 · LinkedIn DE, Threads, IG, FB, YouTube · AI label: yes\n"
+        f"Factory reel {EPISODE} · scheduled Tue 01.12 08:00 · LinkedIn DE, Threads, IG, FB, YouTube, TikTok · AI label: yes\n"
         f"Status: {status_line}\n{URL}"
     )
     reel = save.call_args.args[0]
@@ -234,7 +234,7 @@ def test_threads_skip_or_use_explicit_text():
     code, message, save = run(raw, assets=assets)
     assert code == 0
     assert message == (
-        f"Factory reel {EPISODE} · scheduled Tue 01.12 08:00 · LinkedIn DE, IG, FB, YouTube · AI label: no\n"
+        f"Factory reel {EPISODE} · scheduled Tue 01.12 08:00 · LinkedIn DE, IG, FB, YouTube, TikTok · AI label: no\n"
         f"Threads skipped: post_de.txt is 2200 chars (max 500), no post_threads.txt\n"
         f"YouTube will use the default title.\nStatus: new\n{URL}"
     )

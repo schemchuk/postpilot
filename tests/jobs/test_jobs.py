@@ -373,6 +373,7 @@ def test_text_publisher_holds_only_reels_for_no_description(
         "instagram-reels": "held",
         "facebook-reels": "held",
         "youtube": "held",
+        "tiktok": "held",
     }
     repo.claim_publication.assert_not_called()
     read_token.assert_not_called()

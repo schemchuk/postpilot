@@ -16,6 +16,7 @@ from postpilot.config import (
     LinkedInSettings,
     Settings,
     ThreadsSettings,
+    TikTokSettings,
     YouTubeSettings,
 )
 from postpilot.core.models import PublicationStatus
@@ -82,6 +83,7 @@ def test_own_video_jobs_share_targets_and_resume_saved_ref(
         facebook=FacebookSettings("fb"),
         instagram=InstagramSettings("ig"),
         youtube=YouTubeSettings("id", "secret"),
+        tiktok=TikTokSettings("sandbox", "id", "secret", "uri"),
     )
     linkedin_validate = Mock()
     monkeypatch.setattr(LinkedInVideoChannel, "validate", linkedin_validate)
@@ -97,8 +99,26 @@ def test_own_video_jobs_share_targets_and_resume_saved_ref(
         tasks, "TokenStore", Mock(**{"return_value.get.return_value": token})
     )
     monkeypatch.setattr(tasks, "TokenCipher", Mock())
+    monkeypatch.setattr(
+        tasks,
+        "TikTokTokenManager",
+        Mock(**{"return_value.access_token.return_value": "tiktok-token"}),
+    )
     alerts = Mock()
-    monkeypatch.setattr(tasks, "Notifier", Mock(**{"return_value.send_alert": alerts}))
+    drafts = Mock()
+    monkeypatch.setattr(
+        tasks,
+        "Notifier",
+        Mock(
+            **{
+                "return_value.send_alert": alerts,
+                "return_value.send_tiktok_draft": drafts,
+            }
+        ),
+    )
+    tiktok_caption = (
+        text if described else AI_VIDEO_CAPTION_LABEL if ai_generated else ""
+    )
     reel_calls = []
     threads_calls = []
 
@@ -128,11 +148,34 @@ def test_own_video_jobs_share_targets_and_resume_saved_ref(
                 )
             with conn.transaction():
                 assert conn.execute(
-                    "SELECT remote_ref FROM video_publications WHERE item_id = %s",
+                    "SELECT remote_ref FROM video_publications WHERE item_id = %s AND channel = 'youtube'",
                     (item.id,),
                 ).fetchone() == (str(request.url),)
             assert request.content == b"test"
             return httpx.Response(201, json={"id": "youtube-id"})
+        if request.url.host == "open.tiktokapis.com":
+            assert duration == 30
+            assert request.headers["authorization"] == "Bearer tiktok-token"
+            body = json.loads(request.content)
+            if path.endswith("/init/"):
+                assert body["source_info"]["source"] == "FILE_UPLOAD"
+                data = {
+                    "publish_id": "tiktok-id",
+                    "upload_url": "https://upload.example.test/video?signature=mock",
+                }
+            else:
+                assert path.endswith("/status/fetch/")
+                assert body == {"publish_id": "tiktok-id"}
+                data = {"status": "SEND_TO_USER_INBOX"}
+            return httpx.Response(200, json={"data": data, "error": {"code": "ok"}})
+        if request.url.host == "upload.example.test":
+            with conn.transaction():
+                assert conn.execute(
+                    "SELECT remote_ref FROM video_publications WHERE item_id = %s AND channel = 'tiktok'",
+                    (item.id,),
+                ).fetchone() == ("tiktok-id",)
+            assert request.content == b"test"
+            return httpx.Response(201)
         form = parse_qs(request.content.decode())
         if request.url.host == "graph.threads.com":
             threads_calls.append(path)
@@ -220,7 +263,8 @@ def test_own_video_jobs_share_targets_and_resume_saved_ref(
     rows = repo.list_publications(item.id)
     targets = {"linkedin", "threads"} if described else set()
     if duration == 30:
-        targets.update(("instagram-reels", "facebook-reels", "youtube"))
+        targets.update(("instagram-reels", "facebook-reels", "youtube", "tiktok"))
+        drafts.assert_called_once_with(tiktok_caption)
         alerts.assert_any_call(
             "youtube: published https://www.youtube.com/shorts/youtube-id"
         )
@@ -234,6 +278,7 @@ def test_own_video_jobs_share_targets_and_resume_saved_ref(
     else:
         assert not reel_calls
         alerts.assert_not_called()
+        drafts.assert_not_called()
     assert {row.channel for row in rows} == targets
     assert all(row.status == PublicationStatus.PUBLISHED for row in rows)
     expected_threads = ["/v1.0/me/threads", "/v1.0/me/threads_publish"]

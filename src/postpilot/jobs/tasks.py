@@ -41,6 +41,7 @@ from postpilot.channels.own_video_reels import OwnVideoReelsChannel
 from postpilot.channels.paused import is_paused
 from postpilot.channels.registry import build_channels, build_own_video_channels
 from postpilot.channels.threads import ThreadsChannel
+from postpilot.channels.tiktok import TikTokChannel
 from postpilot.channels.youtube import YouTubeChannel
 from postpilot.config import ConfigError, HeyGenSettings, Settings
 from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
@@ -87,7 +88,7 @@ from postpilot.tokens.instagram import token_expiry
 from postpilot.tokens.linkedin import LinkedInTokenManager
 from postpilot.tokens.store import TokenStore
 from postpilot.tokens.threads import TOKEN_LIFETIME, ThreadsTokenManager
-from postpilot.tokens.tiktok import TikTokTokenManager
+from postpilot.tokens.tiktok import TikTokTokenError, TikTokTokenManager
 from postpilot.tokens.youtube import (
     REFRESH_TOKEN_STORAGE_EXPIRY,
     YouTubeRefreshError,
@@ -153,7 +154,12 @@ _TEXT_TARGETS = tuple(
 _INSTAGRAM_TARGET = InstagramReelsChannel.name
 _REELS_TARGETS = tuple(
     name
-    for name in (_INSTAGRAM_TARGET, FacebookReelsChannel.name, YouTubeChannel.name)
+    for name in (
+        _INSTAGRAM_TARGET,
+        FacebookReelsChannel.name,
+        YouTubeChannel.name,
+        TikTokChannel.name,
+    )
     if not is_paused(name)
 )
 
@@ -531,9 +537,11 @@ def publish_reels(
     with httpx.Client() as client:
         youtube_token: str | None = None
         youtube_checked = False
+        tiktok_token: str | None = None
+        tiktok_checked = False
 
         def read_token(provider: str) -> str | None:
-            nonlocal youtube_token, youtube_checked
+            nonlocal youtube_token, youtube_checked, tiktok_token, tiktok_checked
             if provider == YouTubeChannel.token_provider:
                 if not youtube_checked and settings.youtube is not None:
                     youtube_checked = True
@@ -544,6 +552,16 @@ def publish_reels(
                     except YouTubeRefreshError as error:
                         logger.warning("%s", error)
                 return youtube_token
+            if provider == TikTokChannel.token_provider:
+                if not tiktok_checked and settings.tiktok is not None:
+                    tiktok_checked = True
+                    try:
+                        tiktok_token = TikTokTokenManager(
+                            settings.tiktok, store, client, _now
+                        ).access_token()
+                    except TikTokTokenError as error:
+                        logger.warning("%s", error)
+                return tiktok_token
             token = store.get(provider)
             return token.access_token if token and token.expires_at > _now() else None
 
@@ -581,6 +599,10 @@ def publish_reels(
 
         if settings.youtube is not None and not is_paused(YouTubeChannel.name):
             reel_channels.append(YouTubeChannel(client, clock=_now))
+        tiktok = None
+        if settings.tiktok is not None and not is_paused(TikTokChannel.name):
+            tiktok = TikTokChannel(client, clock=_now)
+            reel_channels.append(tiktok)
         permalinks = {channel.name: channel.permalink for channel in reel_channels}
 
         def notify_result(item_id: UUID, name: str, result: ChannelResult) -> None:
@@ -590,8 +612,14 @@ def publish_reels(
                         publication.channel == name
                         and publication.remote_id is not None
                     ):
-                        link = permalinks[name](publication.remote_id)
-                        alert(notify, f"{name}: published {link}")
+                        if tiktok is not None and name == tiktok.name:
+                            alert(
+                                notifier.send_tiktok_draft,
+                                tiktok.caption(publication.remote_id),
+                            )
+                        else:
+                            link = permalinks[name](publication.remote_id)
+                            alert(notify, f"{name}: published {link}")
                         break
 
         own_video_failed = False
@@ -621,7 +649,8 @@ def publish_reels(
                     read_token,
                     assets,
                     caption_limit=2200 if channel.name == _INSTAGRAM_TARGET else None,
-                    use_release_video=channel.name == YouTubeChannel.name,
+                    use_release_video=channel.name
+                    in {YouTubeChannel.name, TikTokChannel.name},
                 )
                 for channel in reel_channels
             ]

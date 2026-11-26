@@ -318,7 +318,7 @@ def test_guided_no_description(bot, conn, repo, media, kind, duration, action, s
     label = "yes" if kind == "AI-generated" else "no"
     assert buttons(
         api,
-        f"Own video · no description · Instagram, Facebook, YouTube · AI label: {label}",
+        f"Own video · no description · Instagram, Facebook, YouTube, TikTok · AI label: {label}",
     ) == {
         "Approve": f"approve:{item_id}",
         "Skip": f"skip:{item_id}",
