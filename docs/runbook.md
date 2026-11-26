@@ -376,3 +376,31 @@ day; other calls share 10,000 units per day. Uploads from unverified API
 projects are not restricted to private, so no YouTube API audit is needed; the
 audit form (https://support.google.com/youtube/contact/yt_api_form) is only for
 more quota.
+
+## TikTok setup (connector)
+
+Account `@volodymyr.shemchuk` (created 2026-11-26, Google sign-in). Developer app
+"Shemchuk Postpilot" (name `postpilot` was taken), individual owner, type Other,
+category Productivity, icon `docs/img/postpilot-icon-1024.png`.
+
+- URLs (verified by URL prefix `https://schemchuk.github.io/postpilot/`, signature
+  file `site/tiktok*.txt`): website `/`, terms `/terms/`, privacy `/privacy/`.
+- Products: Login Kit (Web redirect `https://schemchuk.github.io/postpilot/callback/`,
+  the page shows `/renew <code> <state>`), Content Posting API with Direct Post on.
+  Scopes `user.info.basic`, `video.publish`, `video.upload`. No pull_by_url domain;
+  uploads use FILE_UPLOAD.
+- Production: Draft, not submitted. Review text is in place; the demo video is a
+  3-second placeholder that must be replaced by a real sandbox recording before
+  "Submit for review". `.env`: `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`.
+- Sandbox `postpilot-test` (cloned from the draft), target user
+  `volodymyr.shemchuk`. `.env`: `TIKTOK_SANDBOX_CLIENT_KEY`,
+  `TIKTOK_SANDBOX_CLIENT_SECRET`, `TIKTOK_SANDBOX_REFRESH_TOKEN` (365 days; access
+  token 24 h). Checked 2026-11-26: all three scopes granted, `creator_info/query` ok.
+
+Limits from the docs (2026-11-26): unaudited clients post only `SELF_ONLY` and the
+account must be private at posting time; audited review rejects apps "for private or
+personal use", so approval is uncertain. Draft upload (`video.upload`) lands in the
+TikTok inbox, caption and cover are set in the app, at most 5 pending shares per
+24 h. Direct Post supports `is_aigc` and `video_cover_timestamp_ms`; about 15 posts
+per day per creator. UX rules for review: no preselected privacy, comment, duet or
+stitch settings.
