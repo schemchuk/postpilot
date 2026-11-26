@@ -37,6 +37,7 @@ _DATABASE_COMMANDS = {
     "instagram-import-token": tasks.instagram_import_token,
     "threads-import-token": tasks.threads_import_token,
     "youtube-import-token": tasks.youtube_import_token,
+    "tiktok-import-token": tasks.tiktok_import_token,
 }
 _COMMANDS = (
     "factory-intake",
@@ -53,6 +54,8 @@ _COMMANDS = (
     "check-tokens",
     "threads-import-token",
     "youtube-import-token",
+    "tiktok-import-token",
+    "tiktok-sandbox-check",
 )
 
 
@@ -209,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
             subparser.add_argument(
                 "--payload", default=os.environ.get("FACTORY_PAYLOAD", "")
             )
-        if command == "series-import":
+        if command in {"series-import", "tiktok-sandbox-check"}:
             subparser.add_argument("path", type=Path)
         if command in {"render-video", "publish-reels"}:
             subparser.add_argument("--retry", action="store_true")
@@ -253,6 +256,8 @@ def main(argv: list[str] | None = None) -> int:
         database_job = partial(tasks.render_video, retry=args.retry)
     elif args.command == "publish-reels":
         database_job = partial(tasks.publish_reels, retry=args.retry)
+    elif args.command == "tiktok-sandbox-check":
+        database_job = partial(tasks.tiktok_sandbox_check, path=args.path)
     assert database_job is not None
     operation = partial(_with_database, database_job, settings)
     if args.command == "poll-engagement":

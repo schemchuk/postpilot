@@ -410,3 +410,39 @@ TikTok inbox, caption and cover are set in the app, at most 5 pending shares per
 24 h. Direct Post supports `is_aigc` and `video_cover_timestamp_ms`; about 15 posts
 per day per creator. UX rules for review: no preselected privacy, comment, duet or
 stitch settings.
+
+### TikTok tokens
+
+1. Set `TIKTOK_ENV=sandbox` in `.env` and fill in the three `TIKTOK_SANDBOX_*`
+   values listed above. Run `postpilot tiktok-import-token` from the repository
+   root. It exchanges the supplied refresh token once and stores the returned
+   refresh token encrypted in the database. The command prints the account's
+   `open_id`, scopes and refresh expiry date. Remove the import-only refresh
+   token from `.env` after a successful import.
+2. For assisted renewal, send `/renew tiktok` to the bot, open the Login Kit
+   link, and send the `/renew <code> <state>` command shown on the callback
+   page. The daily `check-tokens` job also offers renewal when the refresh
+   expiry is within 30 days or a refresh fails.
+3. To switch to production, set `TIKTOK_ENV=production` locally and in GitHub
+   Secrets with the production `TIKTOK_CLIENT_KEY` and `TIKTOK_CLIENT_SECRET`
+   configured. The database holds one TikTok grant. Import with
+   `TIKTOK_REFRESH_TOKEN` or renew via Telegram to replace the sandbox grant.
+   Use the same environment for local commands and both cloud jobs.
+
+From the repo root, copy the configured sandbox settings to GitHub Secrets
+for both `check-tokens` and `poll-telegram`:
+
+```sh
+for name in TIKTOK_ENV TIKTOK_SANDBOX_CLIENT_KEY TIKTOK_SANDBOX_CLIENT_SECRET; do
+  grep "^${name}=" .env | cut -d= -f2- | tr -d '\n' | gh secret set "$name"
+done
+gh secret list
+```
+
+For production use the same command with `TIKTOK_ENV TIKTOK_CLIENT_KEY
+TIKTOK_CLIENT_SECRET` in the loop.
+
+To check inbox delivery, run `postpilot tiktok-sandbox-check /path/to/video.mp4`
+with sandbox credentials and a stored sandbox grant. The command uploads once
+and prints the last status and failure reason. `SEND_TO_USER_INBOX` means the
+video can be opened in the TikTok app.

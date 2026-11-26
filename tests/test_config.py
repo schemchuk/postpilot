@@ -222,3 +222,40 @@ def test_youtube_settings_optional_and_redacted(monkeypatch, complete):
             assert value in settings.secret_values()
     else:
         assert settings.youtube is None
+
+
+@pytest.mark.parametrize(
+    ("environment", "prefix"),
+    [(None, "TIKTOK_SANDBOX"), ("sandbox", "TIKTOK_SANDBOX"), ("production", "TIKTOK")],
+)
+def test_tiktok_environment_selects_credentials(monkeypatch, environment, prefix):
+    for name, value in (REQUIRED | LINKEDIN).items():
+        monkeypatch.setenv(name, value)
+    if environment is None:
+        monkeypatch.delenv("TIKTOK_ENV", raising=False)
+    else:
+        monkeypatch.setenv("TIKTOK_ENV", environment)
+    for variant in ("TIKTOK", "TIKTOK_SANDBOX"):
+        for suffix in ("CLIENT_KEY", "CLIENT_SECRET", "REFRESH_TOKEN"):
+            monkeypatch.setenv(f"{variant}_{suffix}", f"mock-{variant}-{suffix}")
+    settings = Settings.from_env()
+    config = settings.tiktok
+    assert config is not None
+    assert config.environment == (environment or "sandbox")
+    assert config.client_key == f"mock-{prefix}-CLIENT_KEY"
+    assert config.client_secret == f"mock-{prefix}-CLIENT_SECRET"
+    assert config.refresh_token == f"mock-{prefix}-REFRESH_TOKEN"
+    assert config.redirect_uri == LINKEDIN["LINKEDIN_REDIRECT_URI"]
+    assert config.refresh_token in settings.secret_values()
+    assert config.refresh_token not in repr(settings)
+    monkeypatch.delenv(f"{prefix}_CLIENT_SECRET")
+    assert Settings.from_env().tiktok is None
+
+
+@pytest.mark.parametrize("environment", ["", "staging"])
+def test_invalid_tiktok_environment(monkeypatch, environment):
+    for name, value in REQUIRED.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("TIKTOK_ENV", environment)
+    with pytest.raises(ConfigError, match="TIKTOK_ENV must be sandbox or production"):
+        Settings.from_env()

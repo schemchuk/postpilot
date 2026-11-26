@@ -2,10 +2,12 @@ import json
 import logging
 import os
 import re
+import time
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from math import ceil
+from pathlib import Path
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -85,6 +87,7 @@ from postpilot.tokens.instagram import token_expiry
 from postpilot.tokens.linkedin import LinkedInTokenManager
 from postpilot.tokens.store import TokenStore
 from postpilot.tokens.threads import TOKEN_LIFETIME, ThreadsTokenManager
+from postpilot.tokens.tiktok import TikTokTokenManager
 from postpilot.tokens.youtube import (
     REFRESH_TOKEN_STORAGE_EXPIRY,
     YouTubeRefreshError,
@@ -96,6 +99,7 @@ from postpilot.video.pipeline import render_one
 from postpilot.video.publications import LINKEDIN_VIDEO_CHANNELS, VideoPublicationStore
 from postpilot.video.publisher import RenderChannel, VideoChannel, alert, publish_one
 from postpilot.video.store import VideoStore
+from postpilot.video.tiktok import TikTokClient, UploadPlan
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +131,8 @@ def _managers(
             client,
             _now,
         )
+    if settings.tiktok is not None:
+        managers["tiktok"] = TikTokTokenManager(settings.tiktok, store, client, _now)
     return managers
 
 
@@ -669,6 +675,7 @@ def check_tokens(settings: Settings, conn: Connection[TupleRow]) -> None:
         and settings.facebook is None
         and settings.instagram is None
         and settings.youtube is None
+        and settings.tiktok is None
     ):
         return
     state = ItemRepo(conn).bot_state
@@ -730,6 +737,8 @@ def check_tokens(settings: Settings, conn: Connection[TupleRow]) -> None:
             managers.values(), notifier.send_alert, state, now
         )
         for provider, status in report.statuses.items():
+            if provider == "tiktok" and status == "missing":
+                continue
             if status in {"expiring", "expired", "refresh_failed", "missing"}:
                 state.send_renewal_prompt_once(
                     provider,
@@ -1273,6 +1282,50 @@ def youtube_import_token(settings: Settings, conn: Connection[TupleRow]) -> None
         raise ValueError("YOUTUBE_REFRESH_TOKEN is required")
     TokenStore(conn, TokenCipher(settings.token_encryption_key)).save(
         "youtube", "", REFRESH_TOKEN_STORAGE_EXPIRY, token
+    )
+
+
+def tiktok_import_token(settings: Settings, conn: Connection[TupleRow]) -> None:
+    config = settings.tiktok
+    if config is None or not config.refresh_token:
+        raise ConfigError(
+            "TikTok client credentials and refresh token are required for TIKTOK_ENV"
+        )
+    store = TokenStore(conn, TokenCipher(settings.token_encryption_key))
+    with httpx.Client() as client:
+        grant = TikTokTokenManager(config, store, client, _now).import_token(
+            config.refresh_token
+        )
+    print(
+        f"open_id={grant.open_id}, scope={grant.scope}, "
+        f"refresh expiry={grant.refresh_expires_at.date().isoformat()}"
+    )
+
+
+def tiktok_sandbox_check(
+    settings: Settings, conn: Connection[TupleRow], *, path: Path
+) -> None:
+    config = settings.tiktok
+    if config is None or config.environment != "sandbox":
+        raise ConfigError(
+            "TikTok sandbox credentials and TIKTOK_ENV=sandbox are required"
+        )
+    store = TokenStore(conn, TokenCipher(settings.token_encryption_key))
+    with path.open("rb") as video, httpx.Client() as client:
+        plan = UploadPlan(os.fstat(video.fileno()).st_size)
+        access = TikTokTokenManager(config, store, client, _now).access_token()
+        api = TikTokClient(client, access)
+        upload = api.init_inbox(plan)
+        api.upload(upload, plan, video)
+        status = api.status(upload.publish_id)
+        for _ in range(9):
+            if status.finished:
+                break
+            time.sleep(6)
+            status = api.status(upload.publish_id)
+    print(
+        f"publish_id={upload.publish_id}, status={status.status}, "
+        f"fail_reason={status.fail_reason or '-'}"
     )
 
 

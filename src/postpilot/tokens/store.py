@@ -1,3 +1,5 @@
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -21,6 +23,15 @@ class TokenStore:
     def __init__(self, conn: Connection[TupleRow], cipher: TokenCipher) -> None:
         self.conn = conn
         self.cipher = cipher
+
+    @contextmanager
+    def lock_provider(self, provider: str) -> Iterator[None]:
+        with self.conn.transaction():
+            self.conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(current_schema()), hashtext(%s))",
+                (f"tokens:{provider}",),
+            )
+            yield
 
     def save(
         self,

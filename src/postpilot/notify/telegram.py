@@ -390,7 +390,9 @@ class Notifier:
         self.api.send_message(self.chat_id, _truncate(text))
 
     def send_renewal_prompt(self, provider: str, url: str) -> None:
-        label = {"linkedin": "LinkedIn", "threads": "Threads"}.get(provider, provider)
+        label = {"linkedin": "LinkedIn", "threads": "Threads", "tiktok": "TikTok"}.get(
+            provider, provider
+        )
         text = f"Renew {label} token"
         self.api.send_message(
             self.chat_id,

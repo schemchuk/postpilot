@@ -149,6 +149,16 @@ def test_scheduled_workflow(name, cron):
             )
         else:
             expected.update(channel_credentials)
+        if name in {"check-tokens", "poll-telegram"}:
+            expected.update(
+                {
+                    "TIKTOK_ENV",
+                    "TIKTOK_CLIENT_KEY",
+                    "TIKTOK_CLIENT_SECRET",
+                    "TIKTOK_SANDBOX_CLIENT_KEY",
+                    "TIKTOK_SANDBOX_CLIENT_SECRET",
+                }
+            )
         if name == "check-tokens":
             expected.update(
                 {
@@ -178,6 +188,9 @@ def test_scheduled_workflow(name, cron):
                         "GITHUB_OWNER": "schemchuk",
                     }[variable]
                 )
+                continue
+            if variable == "TIKTOK_ENV":
+                assert value == "${{ secrets.TIKTOK_ENV || 'sandbox' }}"
                 continue
             secret = "GH_TRAFFIC_TOKEN" if variable == "GITHUB_TOKEN" else variable
             assert value == "${{ secrets." + secret + " }}"
