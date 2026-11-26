@@ -431,3 +431,33 @@ def test_job_publishes_heygen_with_linkedin_only(monkeypatch, has_token):
         publish.assert_not_called()
         assert store.release.call_count == 1
         store.mark_published.assert_not_called()
+
+
+def test_youtube_routes_only_own_and_factory_and_shares_token_and_budget(
+    monkeypatch, settings
+):
+    from postpilot.config import YouTubeSettings
+
+    settings = replace(settings, youtube=YouTubeSettings("id", "secret"))
+    conn = Mock()
+    conn.transaction.side_effect = nullcontext
+    conn.execute.return_value.fetchall.return_value = [(uuid4(),)]
+    monkeypatch.setattr(tasks, "TokenStore", Mock())
+    monkeypatch.setattr(tasks, "TokenCipher", Mock())
+    monkeypatch.setattr(tasks, "publish_one", Mock())
+    monkeypatch.setattr(tasks, "_publish_items", Mock())
+    manager = Mock(**{"return_value.access_token.return_value": "access"})
+    monkeypatch.setattr(tasks, "YouTubeTokenManager", manager)
+    tasks.publish_reels(settings, conn)
+    assert [channel.name for channel in tasks.publish_one.call_args.args[2]] == [
+        "facebook-reels"
+    ]
+    own, factory = [call.args[0] for call in tasks._publish_items.call_args_list]
+    own_youtube = next(ch for ch in own.own_video_channels if ch.name == "youtube")
+    factory_youtube = next(
+        ch for ch in factory.factory_channels if ch.name == "youtube"
+    )
+    assert own_youtube._channel is factory_youtube._channel
+    assert own_youtube._read_token("youtube") == "access"
+    assert factory_youtube._read_token("youtube") == "access"
+    manager.return_value.access_token.assert_called_once_with()

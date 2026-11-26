@@ -39,6 +39,7 @@ from postpilot.channels.own_video_reels import OwnVideoReelsChannel
 from postpilot.channels.paused import is_paused
 from postpilot.channels.registry import build_channels, build_own_video_channels
 from postpilot.channels.threads import ThreadsChannel
+from postpilot.channels.youtube import YouTubeChannel
 from postpilot.config import ConfigError, HeyGenSettings, Settings
 from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
 from postpilot.core.models import Item
@@ -144,7 +145,11 @@ _TEXT_TARGETS = tuple(
     if not is_paused(name)
 )
 _INSTAGRAM_TARGET = InstagramReelsChannel.name
-_REELS_TARGETS = (_INSTAGRAM_TARGET, FacebookReelsChannel.name)
+_REELS_TARGETS = tuple(
+    name
+    for name in (_INSTAGRAM_TARGET, FacebookReelsChannel.name, YouTubeChannel.name)
+    if not is_paused(name)
+)
 
 
 def _excluded_own_video_channels(store: OwnVideoStore, item_id: UUID) -> set[str]:
@@ -517,11 +522,25 @@ def publish_reels(
 ) -> None:
     store = TokenStore(conn, TokenCipher(settings.token_encryption_key))
 
-    def read_token(provider: str) -> str | None:
-        token = store.get(provider)
-        return token.access_token if token and token.expires_at > _now() else None
-
     with httpx.Client() as client:
+        youtube_token: str | None = None
+        youtube_checked = False
+
+        def read_token(provider: str) -> str | None:
+            nonlocal youtube_token, youtube_checked
+            if provider == YouTubeChannel.token_provider:
+                if not youtube_checked and settings.youtube is not None:
+                    youtube_checked = True
+                    try:
+                        youtube_token = YouTubeTokenManager(
+                            settings.youtube, store, client
+                        ).access_token()
+                    except YouTubeRefreshError as error:
+                        logger.warning("%s", error)
+                return youtube_token
+            token = store.get(provider)
+            return token.access_token if token and token.expires_at > _now() else None
+
         reel_channels = _reel_channels(settings, client)
         repo = ItemRepo(conn)
         channels: list[VideoChannel | RenderChannel] = list(reel_channels)
@@ -554,6 +573,8 @@ def publish_reels(
             retry=retry,
         )
 
+        if settings.youtube is not None and not is_paused(YouTubeChannel.name):
+            reel_channels.append(YouTubeChannel(client, clock=_now))
         permalinks = {channel.name: channel.permalink for channel in reel_channels}
 
         def notify_result(item_id: UUID, name: str, result: ChannelResult) -> None:
@@ -594,6 +615,7 @@ def publish_reels(
                     read_token,
                     assets,
                     caption_limit=2200 if channel.name == _INSTAGRAM_TARGET else None,
+                    use_release_video=channel.name == YouTubeChannel.name,
                 )
                 for channel in reel_channels
             ]

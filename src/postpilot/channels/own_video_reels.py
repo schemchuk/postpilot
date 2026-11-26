@@ -1,6 +1,7 @@
 import subprocess
 from collections.abc import Callable
 from datetime import datetime
+from functools import cache, partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import UUID
@@ -111,6 +112,20 @@ class OwnVideoReelsChannel:
             label = f"\n\n{label}"
         if self._caption_limit is not None:
             text = shorten_text(text, self._caption_limit - len(label))
+        return self._channel.publish_with_ref(
+            ReelVideo(
+                cache(partial(self._video_bytes, video)),
+                text + label,
+                video.duration,
+                video.ai_generated,
+            ),
+            token,
+            ref,
+            save_ref,
+            claimed_at=claimed_at,
+        )
+
+    def _video_bytes(self, video: OwnVideo) -> bytes:
         try:
             content = self._telegram.download_file(
                 self._telegram.get_file(video.file_id)
@@ -120,7 +135,7 @@ class OwnVideoReelsChannel:
         if not content:
             raise ChannelError("Telegram video retrieval failed")
         width, height = video.width, video.height
-        content = _fit_video(
+        return _fit_video(
             content,
             scale=(
                 width is None
@@ -129,11 +144,4 @@ class OwnVideoReelsChannel:
                 or height < 960
                 or width * 16 != height * 9
             ),
-        )
-        return self._channel.publish_with_ref(
-            ReelVideo(content, text + label, video.duration, video.ai_generated),
-            token,
-            ref,
-            save_ref,
-            claimed_at=claimed_at,
         )

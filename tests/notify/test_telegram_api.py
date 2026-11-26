@@ -1,6 +1,7 @@
 import json
 import logging
 from datetime import UTC, datetime
+from unittest.mock import Mock
 from uuid import uuid4
 
 import httpx
@@ -15,6 +16,8 @@ from postpilot.notify.telegram import (
     approval_keyboard,
     render_preview,
 )
+from postpilot.sources.own_video import OwnVideoInbox
+from postpilot.store.own_videos import OwnVideo
 
 TOKEN = "123:private-test-token"
 URL = f"https://api.telegram.org/bot{TOKEN}"
@@ -195,3 +198,20 @@ def test_get_file_download_and_send_video_reference(caplog):
         assert api.download_file(api.get_file("document")).decode() == "Відповідь"
         api.send_video(12, "file")
     assert TOKEN not in caplog.text
+
+
+@pytest.mark.parametrize("interview", ["Interview", ""])
+def test_own_video_preview_lists_youtube(interview):
+    now = datetime.now(UTC)
+    item = Item(uuid4(), "own_video", ItemState.AWAITING_APPROVAL, now, now, None, None)
+    video = OwnVideo(uuid4(), item.id, 1, "file", 30, False, interview, "DONE")
+    api = Mock()
+    repo = Mock()
+    repo.get_variants.return_value = [Variant(item.id, "de", "Hallo")]
+    OwnVideoInbox(repo, api, None)._preview(video, item)
+    preview = api.send_message.call_args.args[1]
+    targets = "Instagram, Facebook, YouTube"
+    if interview:
+        assert f"Channels: LinkedIn DE, Threads, {targets}" in preview
+    else:
+        assert f"Own video · no description · {targets}" in preview

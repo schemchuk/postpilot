@@ -72,6 +72,10 @@ class _DuplicateInboxUpdate(Exception):
     pass
 
 
+def _publication_table(channel: str) -> str:
+    return "video_publications" if channel == "youtube" else "publications"
+
+
 class ItemRepo:
     def __init__(self, conn: Connection[TupleRow]) -> None:
         self.conn = conn
@@ -136,7 +140,7 @@ class ItemRepo:
                   AND (i.state = 'PUBLISHING' OR (
                     i.state = 'FAILED'
                     AND EXISTS (
-                        SELECT 1 FROM publications p WHERE p.item_id = i.id
+                        SELECT 1 FROM item_publications p WHERE p.item_id = i.id
                         AND p.status = 'FAILED'
                         HAVING bool_and(p.channel = ANY(%s::text[]))
                     )
@@ -306,7 +310,7 @@ class ItemRepo:
     def list_publications(self, item_id: UUID) -> list[Publication]:
         with self.conn.transaction():
             rows = self.conn.execute(
-                f"SELECT {_PUBLICATION_COLUMNS} FROM publications WHERE item_id = %s ORDER BY channel",
+                f"SELECT {_PUBLICATION_COLUMNS} FROM item_publications WHERE item_id = %s ORDER BY channel",
                 (item_id,),
             ).fetchall()
             return [_publication(row) for row in rows]
@@ -314,6 +318,7 @@ class ItemRepo:
     def claim_publication(
         self, item_id: UUID, channel: str, *, stale_after: timedelta | None = None
     ) -> Claim | None:
+        table = _publication_table(channel)
         with self.conn.transaction():
             state = self._lock_state(item_id)
             if state not in {ItemState.APPROVED, ItemState.PUBLISHING}:
@@ -322,7 +327,7 @@ class ItemRepo:
                 )
             row = self.conn.execute(
                 f"""
-                INSERT INTO publications (item_id, channel, status, updated_at)
+                INSERT INTO {table} (item_id, channel, status, updated_at)
                 VALUES (%s, %s, 'PUBLISHING', clock_timestamp())
                 ON CONFLICT (item_id, channel) DO NOTHING
                 RETURNING {_PUBLICATION_COLUMNS}
@@ -333,15 +338,15 @@ class ItemRepo:
                 return Claim(_publication(row), recovered=False)
 
             previous = self.conn.execute(
-                "SELECT status FROM publications WHERE item_id = %s AND channel = %s",
+                f"SELECT status FROM {table} WHERE item_id = %s AND channel = %s",
                 (item_id, channel),
             ).fetchone()
             row = self.conn.execute(
                 f"""
-                UPDATE publications SET status = 'PUBLISHING', error = NULL,
+                UPDATE {table} SET status = 'PUBLISHING', error = NULL,
                     remote_id = NULL, updated_at = clock_timestamp(),
-                    remote_ref = CASE WHEN status = 'PUBLISHING' THEN remote_ref END,
-                    remote_ref_claimed_at = CASE WHEN status = 'PUBLISHING'
+                    remote_ref = CASE WHEN status = 'PUBLISHING' OR %s THEN remote_ref END,
+                    remote_ref_claimed_at = CASE WHEN status = 'PUBLISHING' OR %s
                         THEN remote_ref_claimed_at END
                 WHERE item_id = %s AND channel = %s AND (
                     status = 'FAILED' OR (
@@ -351,7 +356,13 @@ class ItemRepo:
                 )
                 RETURNING {_PUBLICATION_COLUMNS}
                 """,
-                (item_id, channel, stale_after),
+                (
+                    table == "video_publications",
+                    table == "video_publications",
+                    item_id,
+                    channel,
+                    stale_after,
+                ),
             ).fetchone()
             if row is None:
                 return None
@@ -364,11 +375,12 @@ class ItemRepo:
 
     def save_publication_ref(self, claim: Claim, remote_ref: str) -> None:
         publication = claim.publication
+        table = _publication_table(publication.channel)
         with self.conn.transaction():
             self._lock_state(publication.item_id)
             result = self.conn.execute(
-                """
-                UPDATE publications SET remote_ref = %s,
+                f"""
+                UPDATE {table} SET remote_ref = %s,
                     remote_ref_claimed_at = CASE WHEN remote_ref = %s
                         THEN remote_ref_claimed_at ELSE updated_at END
                 WHERE item_id = %s AND channel = %s AND status = 'PUBLISHING'
@@ -387,11 +399,12 @@ class ItemRepo:
 
     def release_publication(self, claim: Claim) -> None:
         publication = claim.publication
+        table = _publication_table(publication.channel)
         with self.conn.transaction():
             self._lock_state(publication.item_id)
             self.conn.execute(
-                """
-                DELETE FROM publications
+                f"""
+                DELETE FROM {table}
                 WHERE item_id = %s AND channel = %s
                   AND status = 'PUBLISHING' AND updated_at = %s
                 """,
@@ -446,14 +459,15 @@ class ItemRepo:
         error: str | None,
         claim: Claim | None,
     ) -> None:
+        table = _publication_table(channel)
         with self.conn.transaction():
             claimed_at = None
             if claim is not None:
                 self._lock_state(item_id)
                 claimed_at = claim.publication.updated_at
             result = self.conn.execute(
-                """
-                UPDATE publications SET status = %s, remote_id = %s, error = %s, updated_at = now()
+                f"""
+                UPDATE {table} SET status = %s, remote_id = %s, error = %s, updated_at = now()
                 WHERE item_id = %s AND channel = %s AND status = 'PUBLISHING'
                     AND (%s::timestamptz IS NULL OR updated_at = %s)
                 """,
