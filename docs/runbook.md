@@ -338,8 +338,8 @@ attempt will report the missing release.
 
 ## YouTube Shorts setup (connector)
 
-One-time setup for the YouTube Shorts channel. No code uses it yet; the channel
-adapter follows its own ADR and task. A vertical video up to 3 minutes is
+One-time setup for the YouTube Shorts channel. The channel adapter follows its
+own ADR and task. A vertical video up to 3 minutes is
 classified as a Short by YouTube automatically; the API has no Shorts flag.
 
 1. Channel: Google account that owns the YouTube channel `shemchuk`
@@ -366,6 +366,9 @@ classified as a Short by YouTube automatically; the API has no Shorts flag.
 7. Refresh token: one local loopback consent run (PKCE, `access_type=offline`,
    `prompt=consent`), stored in `.env` as `YOUTUBE_REFRESH_TOKEN`. A repo command
    for re-consent comes with the channel task.
+8. Run `postpilot youtube-import-token` with `YOUTUBE_REFRESH_TOKEN` exported in
+   the environment to store it encrypted in the database. Repeat after re-consent;
+   `check-tokens` checks refresh daily and alerts if consent must be renewed.
 
 Done 2026-11-26: project `postpilot-515916`, client `postpilot-desktop`, app in
 production, refresh token in `.env` (refresh checked). Intermediate channel

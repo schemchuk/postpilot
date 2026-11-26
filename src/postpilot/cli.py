@@ -36,6 +36,7 @@ _DATABASE_COMMANDS = {
     "facebook-import-token": tasks.facebook_import_token,
     "instagram-import-token": tasks.instagram_import_token,
     "threads-import-token": tasks.threads_import_token,
+    "youtube-import-token": tasks.youtube_import_token,
 }
 _COMMANDS = (
     "factory-intake",
@@ -51,6 +52,7 @@ _COMMANDS = (
     "snapshot-traffic",
     "check-tokens",
     "threads-import-token",
+    "youtube-import-token",
 )
 
 
