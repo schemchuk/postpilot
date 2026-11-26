@@ -169,3 +169,36 @@ def test_scheduled_workflow(name, cron):
                 continue
             secret = "GH_TRAFFIC_TOKEN" if variable == "GITHUB_TOKEN" else variable
             assert value == "${{ secrets." + secret + " }}"
+
+
+def test_factory_intake_dispatch():
+    workflow = yaml.safe_load((WORKFLOWS / "factory-intake.yml").read_text())
+    triggers = workflow["on"] if "on" in workflow else workflow[True]
+    assert set(triggers) == {"workflow_dispatch"}
+    inputs = triggers["workflow_dispatch"]["inputs"]
+    assert set(inputs) == {"payload"}
+    assert inputs["payload"]["type"] == "string" and inputs["payload"]["required"]
+    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["concurrency"] == {
+        "group": "factory-intake",
+        "cancel-in-progress": False,
+    }
+    job = workflow["jobs"]["run"]
+    assert job["runs-on"] == "ubuntu-latest"
+    assert {
+        "uses": "actions/setup-python@v5",
+        "with": {"python-version": "3.12"},
+    } in job["steps"]
+    commands = [step for step in job["steps"] if "run" in step]
+    assert [step["run"] for step in commands] == [
+        "sudo apt-get update && sudo apt-get install -y ffmpeg",
+        "python -m pip install .",
+        "postpilot factory-intake",
+    ]
+    assert commands[-1]["env"] == {
+        "FACTORY_PAYLOAD": "${{ inputs.payload }}",
+        **{
+            name: "${{ secrets." + name + " }}"
+            for name in ["DATABASE_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]
+        },
+    }

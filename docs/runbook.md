@@ -319,3 +319,19 @@ the same way, replace the header in every cron-job.org job, delete the old PAT. 
   drafts. Each poll processes approvals and attempts publishing before generating advice.
   If advice fails, the bot attempts to reply `Advice failed` and the job still exits 0
   unless another part of the poll fails.
+
+## Factory reel intake
+
+After script approval, the factory publishes a public release tagged
+`reel/<episode>` in `FACTORY_REPO`. Attach `reel_de.mp4`, `cover_de.png`,
+`post_de.txt`, and optionally `post_threads.txt`. Dispatch from an authenticated
+checkout of postpilot, using a release time within the next 60 days.
+
+```sh
+gh workflow run factory-intake -f payload='{"v":1,"episode":"002-medunko-v-splyachtsi","release_at":"2026-12-01T08:00:00+01:00","ai":true}'
+```
+
+The Telegram notice reports whether intake stored, replaced, or refused the
+episode, or found it unchanged. Once scheduled publishing is available, cancel
+a reel by deleting its GitHub release before `release_at`. The next publish
+attempt will report the missing release.

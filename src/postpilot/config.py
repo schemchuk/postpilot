@@ -67,6 +67,9 @@ class ImapSettings:
     host: str = "imap.gmail.com"
 
 
+DEFAULT_FACTORY_REPO = "schemchuk/beekeeper-ai-integrator"
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str = field(repr=False)
@@ -86,9 +89,12 @@ class Settings:
     facebook: FacebookSettings | None = None
     instagram: InstagramSettings | None = None
     imap: ImapSettings | None = None
+    factory_repo: str = DEFAULT_FACTORY_REPO
 
     @classmethod
-    def from_env(cls, dotenv: Path | None = None) -> "Settings":
+    def from_env(
+        cls, dotenv: Path | None = None, *, require_token_key: bool = True
+    ) -> "Settings":
         values = _read_dotenv(dotenv) if dotenv is not None and dotenv.is_file() else {}
         values.update(os.environ)
         database_url = _require(values, "DATABASE_URL")
@@ -98,7 +104,7 @@ class Settings:
             chat_id = int(raw_chat_id)
         except ValueError:
             raise ConfigError("TELEGRAM_CHAT_ID") from None
-        key = _require(values, "TOKEN_ENCRYPTION_KEY")
+        key = _require(values, "TOKEN_ENCRYPTION_KEY") if require_token_key else ""
         client_id = values.get("LINKEDIN_CLIENT_ID", "")
         client_secret = values.get("LINKEDIN_CLIENT_SECRET", "")
         redirect_uri = values.get("LINKEDIN_REDIRECT_URI", "")
@@ -173,6 +179,7 @@ class Settings:
             )
             if imap_user and imap_password
             else None,
+            values.get("FACTORY_REPO") or DEFAULT_FACTORY_REPO,
         )
 
     def secret_values(self) -> tuple[str, ...]:

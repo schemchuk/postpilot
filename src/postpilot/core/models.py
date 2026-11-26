@@ -6,7 +6,7 @@ from uuid import UUID
 
 from postpilot.core.states import ItemState
 
-type Source = Literal["github", "telegram", "own_video"]
+type Source = Literal["github", "telegram", "own_video", "factory"]
 type Language = Literal["de", "ua"]
 
 
