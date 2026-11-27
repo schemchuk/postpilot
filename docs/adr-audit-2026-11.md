@@ -65,7 +65,7 @@ made the test fail.
 |---|---|---|---|
 | 025-1 | postpilot is the only publisher; projects hold no social credentials | process | `docs/publishing-contract.md`; nothing to test in postpilot |
 | 025-2a | Allowlist `config/projects.toml` validated, repo never from input | test | `tests/test_projects.py::test_invalid_field`, `test_invalid_key`, `test_duplicate_repo` |
-| 025-2b | PR adding `auto` or widening channels/kinds/limit needs Volodymyr's OK | process | AGENTS.md git rules; no CODEOWNERS or CI check (see gap G2) |
+| 025-2b | PR adding `auto` or widening channels/kinds/limit needs Volodymyr's OK | test | `tests/test_projects_widening.py`, `tests/test_workflows.py`, `.github/workflows/projects-guard.yml` |
 | 025-3 | Source `project` replaces `factory`, data migrated | test | `tests/integration/test_project_items_migration.py::test_project_items_migration_round_trip` |
 | 025-4a | Manifest v2: `ai` required, channels subset of allowlist, `release_at` window | test | `tests/sources/test_project_release.py::test_manifest_requires_each_field`, `test_manifest_rejects_invalid_fields`, `test_manifest_cannot_select_unallowed_kind` |
 | 025-4b | Reel and post asset rules, Threads 500 incl. label | test | `test_project_release.py::test_reel_rejects_invalid_content`, `test_reel_threads_label_counts_toward_limit`, `test_post_rejects_invalid_text` |
@@ -116,9 +116,8 @@ made the test fail.
 
 - **G1 (019-6d, ADR 006). Closed in T30.** `ReelVideo.validate` had no test; the invariant file now feeds an
   unlabelled AI caption to Instagram, Facebook, YouTube and TikTok (draft and direct) and expects a refusal.
-- **G2 (025-2b).** The "Volodymyr's OK for widening `config/projects.toml`" rule lives only in AGENTS.md. A CI
-  check could flag PRs that add `approval = "auto"` or widen a project. Optional; Volodymyr decides whether it
-  is worth a task.
+- **G2 (025-2b).** Closed in T31. Agents use Volodymyr's `gh` login, so the label is an audit trail
+  and a stop for honest mistakes, not a security boundary.
 
 Rows marked **code** (019-3a, 024-1, 025-8) are low risk: they are structural (no bytes column, no AI client in
 the intake module) and a change would be visible in review.

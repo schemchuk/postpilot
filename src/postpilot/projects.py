@@ -83,6 +83,36 @@ class Projects:
         return cls(tuple(projects))
 
 
+def widenings(base: Projects, head: Projects) -> list[str]:
+    """Describe policy widenings in project key and field order."""
+    changes: list[str] = []
+    for project in sorted(head, key=lambda entry: entry.key):
+        previous = base.get(project.key)
+        prefix = f"projects.{project.key}"
+        if previous is None:
+            if project.approval == "auto":
+                changes.append(f"{prefix}.approval: new auto project")
+            continue
+
+        if previous.approval == "tap" and project.approval == "auto":
+            changes.append(f"{prefix}.approval: tap -> auto")
+        channels = sorted(set(project.channels) - set(previous.channels))
+        if channels:
+            changes.append(f"{prefix}.channels: added {', '.join(channels)}")
+        if not previous.enabled and project.enabled and project.approval == "auto":
+            changes.append(f"{prefix}.enabled: false -> true")
+        kinds = sorted(set(project.kinds) - set(previous.kinds))
+        if kinds:
+            changes.append(f"{prefix}.kinds: added {', '.join(kinds)}")
+        if project.max_per_day > previous.max_per_day:
+            changes.append(
+                f"{prefix}.max_per_day: {previous.max_per_day} -> {project.max_per_day}"
+            )
+        if project.repo.lower() != previous.repo.lower():
+            changes.append(f"{prefix}.repo: {previous.repo} -> {project.repo}")
+    return changes
+
+
 def _parse_project(key: str, fields: object) -> Project:
     def error(field: str, message: str) -> ProjectsConfigError:
         return ProjectsConfigError(f"projects.{key}.{field}: {message}")

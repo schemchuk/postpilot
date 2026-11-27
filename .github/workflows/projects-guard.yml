@@ -1,0 +1,51 @@
+name: projects-guard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install .
+      - name: Check project policy changes
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HAS_OK: ${{ contains(github.event.pull_request.labels.*.name, 'projects-ok') }}
+        run: |
+          base_ref="origin/$BASE_REF"
+          config="config/projects.toml"
+          diff_status=0
+          git diff --quiet "$base_ref" HEAD -- "$config" || diff_status=$?
+          case "$diff_status" in
+            0) exit 0 ;;
+            1) ;;
+            *) exit "$diff_status" ;;
+          esac
+
+          base_file="$RUNNER_TEMP/base.toml"
+          if git cat-file -e "$base_ref:$config"; then
+            git show "$base_ref:$config" > "$base_file"
+          fi
+
+          status=0
+          python scripts/check_projects_widening.py "$base_file" "$config" || status=$?
+          if [[ "$status" == 1 ]]; then
+            if [[ "$HAS_OK" == true ]]; then
+              echo "::notice::Project policy widening approved via projects-ok."
+              exit 0
+            fi
+            echo "::error::Volodymyr must review the project policy widening and add projects-ok."
+          fi
+          exit "$status"

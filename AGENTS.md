@@ -71,6 +71,9 @@ Next step, Blocked on, Open questions for Volodymyr.
 - Docs commits may go to `main`. Code goes on `feat/<task-id>-<slug>`, one PR per task.
 - Reviewer merges after green CI and no blocking findings (`gh pr merge --squash --delete-branch`).
   PRs touching workflows or secret handling need Volodymyr's explicit OK first.
+- A PR that adds an `auto` project or widens `config/projects.toml` (ADR 025) fails `projects-guard`
+  until Volodymyr adds `projects-ok`. Agents never add or remove that label. Agents use Volodymyr's
+  `gh` login, so the label is an audit trail and a stop for honest mistakes, not a security boundary.
 - Non-blocking review findings go into the next task, the reviewer does not fix them itself.
 - Never force-push, never rewrite history, never commit `.env`. Check `git diff --staged` for secrets.
 
