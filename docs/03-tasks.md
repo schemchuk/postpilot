@@ -269,13 +269,26 @@ rotation written back, `tiktok-import-token`, `TIKTOK_ENV=sandbox|production`, `
 factory reels, inbox upload (`FILE_UPLOAD`, chunking), `publish_id` saved before upload, recovery via
 `status/fetch`, result line with the caption to copy, rate and spam errors held. Accept: tests for chunking,
 each status branch, caption line; live: one own video and one factory reel in the TikTok inbox.
-**T29c** TikTok `direct` mode (ADR 026 decisions 5, 7): Telegram TikTok row in the preview and in the factory
-intake notice (privacy from `creator_info`, comment/duet/stitch toggles, nothing preselected, Approve waits
-for privacy), per-item settings migration, Direct Post with caption, `is_aigc`, `video_cover_timestamp_ms=0`,
-factory fallback to the inbox when no choice by `release_at`. Then Claude records the sandbox demo, replaces the
-placeholder video, Volodymyr submits for review. Accept: tests for the row, defaults, the gate on Approve, the
-payload, the factory fallback; live: sandbox demo post (private), app submitted.
-ADRs: 026 (decisions 5, 7); AGENTS.md AI label (`is_aigc = true` for every AI video in direct mode, tested).
+**T29c** TikTok `direct` mode (ADR 026 decisions 5, 7). Split 2026-11-27 into two PRs to stay under ~400
+non-test lines; `TIKTOK_MODE=direct` stays rejected by config until T29c2 lands.
+**T29c1** Direct Post backend. Owner Codex, reviewer Claude. Client calls `creator_info/query` (privacy
+options, comment/duet/stitch disabled flags, max duration) and `video/init` (Direct Post, `FILE_UPLOAD`);
+migration `tiktok_settings` (per item: privacy level, allow comment/duet/stitch, chosen_at) with store
+functions; `TikTokChannel` direct path: caption = German text plus the AI label line when AI (over 2200
+skips TikTok with a note), `is_aigc` from the item's AI flag, `video_cover_timestamp_ms=0`, brand toggles
+false, the stored privacy and toggles; an item with no stored choice is not posted directly (factory reels
+fall back to the inbox and the notice says so; other items are held); same `publish_id` idempotency and
+recovery as `draft`. Accept: tests for creator_info parsing, the init payload (each field, `is_aigc` true for
+every AI video), the 2200 skip, the no-choice fallback, recovery, migration up/down.
+ADRs: 026 (decision 5); AGENTS.md AI label (`is_aigc = true` for every AI video in direct mode, tested).
+**T29c2** Telegram TikTok row and enabling `direct`. Owner Codex, reviewer Claude. TikTok row in every
+preview and factory intake notice that targets TikTok when `TIKTOK_MODE=direct`: privacy buttons from
+`creator_info.privacy_level_options`, comment/duet/stitch toggles (disabled ones not offered), nothing
+preselected, Approve refused until a privacy level is chosen, the choice saved per item; config accepts
+`TIKTOK_MODE=direct`. Then Claude records the sandbox demo, replaces the placeholder video, Volodymyr submits
+for review. Accept: tests for the row, defaults, the gate on Approve, callback handling, the factory notice
+row; live: sandbox demo post (private), app submitted.
+ADRs: 026 (decisions 5, 7).
 **T27a** Project allowlist (ADR 025 decisions 2, 3, 6): `config/projects.toml` with the factory entry
 (`beekeeper`, `reel`, LinkedIn DE, Threads, IG, FB, YouTube, TikTok, `auto`, `max_per_day = 2`), source
 `project`, migration `project_items` with the `factory_reels` data copied, F3.3 rule in the core keyed on
@@ -328,5 +341,5 @@ label (caption/text suffix, burned-in label or the platform flag such as YouTube
 once in review); audit table reviewed by Volodymyr.
 
 ## Order
-T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22 -> T23a -> T23b -> T24a -> T24b -> T25a -> T25b -> T26a -> T26b -> T26c (due before 2026-12-14) -> T28a -> T28b -> T28c -> T29a -> T29b -> T27a -> T27b -> T27c -> T27d -> T27e1 -> T27f -> T29c -> T30 -> T27e2.
+T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22 -> T23a -> T23b -> T24a -> T24b -> T25a -> T25b -> T26a -> T26b -> T26c (due before 2026-12-14) -> T28a -> T28b -> T28c -> T29a -> T29b -> T27a -> T27b -> T27c -> T27d -> T27e1 -> T27f -> T29c1 -> T29c2 -> T30 -> T27e2.
 First useful vertical slice after T11: Telegram text to approval to LinkedIn.
