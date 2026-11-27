@@ -45,4 +45,5 @@ def test_publication_statuses_are_item_states():
         ItemState.PUBLISHING,
         ItemState.PUBLISHED,
         ItemState.FAILED,
+        ItemState.SKIPPED,
     }

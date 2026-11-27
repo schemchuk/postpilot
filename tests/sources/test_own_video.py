@@ -225,3 +225,50 @@ def test_guided_intake_leaves_commands_available(monkeypatch):
     series.assert_called_once_with(12, "series", [])
     renewal.handle_message.assert_called_once_with(12, 4, "/renew")
     own.store.claim_update.assert_not_called()
+
+
+@pytest.mark.parametrize("description", ["", "My video"])
+@pytest.mark.parametrize("mode", ["draft", "direct", "unavailable"])
+def test_own_video_tiktok_preview(monkeypatch, description, mode):
+    from postpilot.core.tiktok import TikTokSelection
+    from postpilot.store.tiktok_settings import TikTokSettingsStore
+    from postpilot.video.tiktok import CreatorInfo
+
+    repo, api = MagicMock(), Mock()
+    now = datetime.now(UTC)
+    item = Item(uuid4(), "own_video", ItemState.AWAITING_APPROVAL, now, now, None, None)
+    video = OwnVideo(uuid4(), item.id, 12, "file", 30, True, description, "ready")
+    repo.get_variants.return_value = [Variant(item.id, "de", "Caption")]
+    creator = Mock(
+        return_value=(
+            CreatorInfo(["SELF_ONLY"], False, True, False, 90, "Creator")
+            if mode == "direct"
+            else None
+        )
+    )
+    monkeypatch.setattr(
+        TikTokSettingsStore, "get_partial", lambda *_: TikTokSelection()
+    )
+    inbox = OwnVideoInbox(
+        repo, api, None, tiktok_creator=None if mode == "draft" else creator
+    )
+    inbox.store = Mock()
+    inbox.store.get.return_value = video
+    inbox.preview(12, item)
+    _, text, markup = api.send_message.call_args.args
+    assert "AI label: yes" in text
+    rows = markup["inline_keyboard"]
+    if mode == "direct":
+        assert "TikTok account: Creator" in text
+        assert [button["text"] for row in rows[1:] for button in row] == [
+            "Only me",
+            "Comments: off",
+            "Stitch: off",
+        ]
+    else:
+        assert len(rows) == 1
+        assert (
+            "TikTok: settings unavailable, TikTok will be skipped for this item."
+            in text
+        ) == (mode == "unavailable")
+    assert creator.call_count == int(mode != "draft")

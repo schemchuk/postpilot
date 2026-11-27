@@ -14,6 +14,7 @@ class PublicationStatus(StrEnum):
     PUBLISHING = "PUBLISHING"
     PUBLISHED = "PUBLISHED"
     FAILED = "FAILED"
+    SKIPPED = "SKIPPED"
 
 
 @dataclass(frozen=True)

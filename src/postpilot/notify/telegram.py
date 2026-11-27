@@ -1,6 +1,6 @@
 import json
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 from uuid import UUID
 
@@ -15,8 +15,10 @@ from postpilot.core.models import (
     PublicationStatus,
     Variant,
 )
+from postpilot.core.tiktok import TikTokSelection, TikTokToggle
 from postpilot.video.publications import LINKEDIN_VIDEO_CHANNELS
 from postpilot.video.store import VideoRender
+from postpilot.video.tiktok import CreatorInfo
 
 _MESSAGE_LIMIT = 4096
 _VIDEO_LIMIT = 50_000_000
@@ -309,6 +311,78 @@ def approval_keyboard(
     }
 
 
+type KeyboardRows = list[list[dict[str, str]]]
+TIKTOK_PRIVACY = {
+    "pub": ("PUBLIC_TO_EVERYONE", "Public"),
+    "fri": ("MUTUAL_FOLLOW_FRIENDS", "Friends"),
+    "fol": ("FOLLOWER_OF_CREATOR", "Followers"),
+    "me": ("SELF_ONLY", "Only me"),
+}
+TIKTOK_TOGGLES: dict[str, tuple[TikTokToggle, str]] = {
+    "c": ("comment", "Comments"),
+    "d": ("duet", "Duet"),
+    "s": ("stitch", "Stitch"),
+}
+
+
+def tiktok_button_label(action: str, state: TikTokSelection) -> str | None:
+    kind, _, code = action.partition(":")
+    if kind == "ttp" and code in TIKTOK_PRIVACY:
+        privacy, label = TIKTOK_PRIVACY[code]
+        return f"✓ {label}" if state.privacy_level == privacy else label
+    if kind == "ttt" and code in TIKTOK_TOGGLES:
+        toggle, label = TIKTOK_TOGGLES[code]
+        return f"{label}: {'on' if getattr(state, f'allow_{toggle}') else 'off'}"
+    return None
+
+
+def tiktok_rows(
+    item_id: UUID, creator: CreatorInfo, state: TikTokSelection
+) -> KeyboardRows:
+    codes = {option: code for code, (option, _) in TIKTOK_PRIVACY.items()}
+    privacy = []
+    for option in dict.fromkeys(creator.privacy_level_options):
+        if option in codes:
+            privacy.append(f"ttp:{codes[option]}")
+        else:
+            logging.getLogger(__name__).warning("Unknown TikTok privacy option")
+    toggles = [
+        f"ttt:{code}"
+        for code, (toggle, _) in TIKTOK_TOGGLES.items()
+        if not getattr(creator, f"{toggle}_disabled")
+    ]
+    return [
+        [
+            {"text": label, "callback_data": f"{action}:{item_id}"}
+            for action in actions
+            if (label := tiktok_button_label(action, state)) is not None
+        ]
+        for actions in (privacy, toggles)
+        if actions
+    ]
+
+
+def tiktok_preview(
+    item_id: UUID,
+    creator_source: Callable[[], CreatorInfo | None] | None,
+    get_state: Callable[[UUID], TikTokSelection],
+    *,
+    inbox_fallback: bool = False,
+) -> tuple[str, KeyboardRows]:
+    if creator_source is None:
+        return "", []
+    creator = creator_source()
+    if creator is None:
+        fallback = (
+            "sent to the TikTok inbox" if inbox_fallback else "skipped for this item"
+        )
+        return f"\nTikTok: settings unavailable, TikTok will be {fallback}.", []
+    return (
+        f"\nTikTok account: {creator.creator_nickname}",
+        tiktok_rows(item_id, creator, get_state(item_id)),
+    )
+
+
 def send_callback_result(
     api: TelegramApi, chat_id: object, message_id: object, text: str
 ) -> None:
@@ -335,8 +409,10 @@ class Notifier:
         *,
         source_details: str = "",
         reels: bool = False,
+        extra_rows: KeyboardRows | None = None,
     ) -> int:
         markup = approval_keyboard(item.id, regenerate=item.source != "telegram")
+        markup["inline_keyboard"].extend(extra_rows or [])
         if item.source in {"telegram", "own_video"}:
             heading = _preview_heading(item, reels=reels)
             if item.source == "own_video" and source_details:
@@ -362,6 +438,9 @@ class Notifier:
         heading: str,
         post_de: str | None,
         threads: str | None,
+        *,
+        extra_rows: KeyboardRows | None = None,
+        tiktok_details: str = "",
     ) -> int:
         if cover is not None:
             self.api.send_photo(self.chat_id, cover)
@@ -373,20 +452,21 @@ class Notifier:
                 ]
             ]
         }
+        markup["inline_keyboard"].extend(extra_rows or [])
         sections = [heading]
         if post_de is not None:
             sections.append(f"LinkedIn DE\n{post_de}")
         if threads is not None:
             sections.append(f"Threads\n{threads}")
         preview = "\n\n".join(sections)
-        if len(preview.encode("utf-16-le")) // 2 <= _MESSAGE_LIMIT:
-            return self.api.send_message(self.chat_id, preview, markup)
+        if len((preview + tiktok_details).encode("utf-16-le")) // 2 <= _MESSAGE_LIMIT:
+            return self.api.send_message(self.chat_id, preview + tiktok_details, markup)
         # Keep every character when the preview needs multiple Telegram messages.
         for start in range(0, len(preview), 2000):
             end = start + 2000
             message_id = self.api.send_message(
                 self.chat_id,
-                preview[start:end],
+                preview[start:end] + (tiktok_details if end >= len(preview) else ""),
                 markup if end >= len(preview) else None,
             )
         return message_id
@@ -430,10 +510,21 @@ class Notifier:
             video_preview_markup(render.id, render.linkedin),
         )
 
-    def send_alert(self, text: str, *, photo: bytes | None = None) -> None:
+    def send_alert(
+        self,
+        text: str,
+        *,
+        photo: bytes | None = None,
+        extra_rows: KeyboardRows | None = None,
+    ) -> None:
         if photo is not None:
             self.api.send_photo(self.chat_id, photo)
-        self.api.send_message(self.chat_id, _truncate(text))
+        if extra_rows:
+            self.api.send_message(
+                self.chat_id, _truncate(text), {"inline_keyboard": extra_rows}
+            )
+        else:
+            self.api.send_message(self.chat_id, _truncate(text))
 
     def send_tiktok_draft(self, caption: str, *, fallback: bool = False) -> None:
         heading = (

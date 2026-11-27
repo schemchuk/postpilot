@@ -117,6 +117,7 @@ def test_migration_up_noop_and_down(conn):
         "0021_project_items",
         "0022_project_intake",
         "0023_tiktok_settings",
+        "0024_tiktok_partial_choice",
     ]
     migrate.up(conn)
     assert applied_migrations(conn) == initial
@@ -126,6 +127,8 @@ def test_migration_up_noop_and_down(conn):
             (id := uuid4(),),
         )
         conn.execute("DELETE FROM items WHERE id = %s", (id,))
+    migrate.down(conn)
+    assert applied_migrations(conn) == initial[:23]
     migrate.down(conn)
     assert applied_migrations(conn) == initial[:22]
     assert "tiktok_settings" not in table_names(conn)
@@ -522,7 +525,7 @@ def test_project_intake_migration_round_trip_with_data(conn):
     assert store.save_reel(projects, v2) == ("replaced", None)
     assert store.record_rejection(reel.project, reel.tag, "bad", "bad manifest")
     assert not store.record_rejection(reel.project, reel.tag, "bad", "bad manifest")
-    migrate.down(conn)
+    migrate.down(conn, 2)
     with conn.transaction():
         row = conn.execute(
             "SELECT to_jsonb(f) FROM project_items f WHERE item_id = %s", (item_id,)

@@ -5,7 +5,7 @@ import re
 import time
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
-from functools import partial
+from functools import cache, partial
 from math import ceil
 from pathlib import Path
 from uuid import UUID
@@ -108,7 +108,7 @@ from postpilot.video.pipeline import render_one
 from postpilot.video.publications import LINKEDIN_VIDEO_CHANNELS, VideoPublicationStore
 from postpilot.video.publisher import RenderChannel, VideoChannel, alert, publish_one
 from postpilot.video.store import VideoStore
-from postpilot.video.tiktok import TikTokClient, UploadPlan
+from postpilot.video.tiktok import CreatorInfo, TikTokAPIError, TikTokClient, UploadPlan
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +152,36 @@ def _read_token(
     if token is None or days_left(token.expires_at, _now()) <= 0:
         return None
     return token.access_token
+
+
+def tiktok_creator_source(
+    settings: Settings,
+    conn: Connection[TupleRow],
+    client: httpx.Client,
+    read_access: Callable[[], str | None] | None = None,
+) -> Callable[[], CreatorInfo | None] | None:
+    config = settings.tiktok
+    if config is None or config.mode != "direct" or is_paused("tiktok"):
+        return None
+
+    @cache
+    def creator() -> CreatorInfo | None:
+        try:
+            if read_access is not None:
+                access = read_access()
+            elif settings.token_encryption_key:
+                store = TokenStore(conn, TokenCipher(settings.token_encryption_key))
+                access = TikTokTokenManager(config, store, client, _now).access_token()
+            else:
+                access = None
+            if access:
+                return TikTokClient(client, access).creator_info()
+        except (TikTokTokenError, TikTokAPIError):
+            pass
+        logger.warning("TikTok creator settings unavailable")
+        return None
+
+    return creator
 
 
 _TEXT_TARGETS = tuple(
@@ -395,6 +425,7 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
                     "Regeneration recovery failed (%s)", type(error).__name__
                 )
 
+        tiktok_creator = tiktok_creator_source(settings, conn, client)
         handler = ApprovalHandler(
             repo,
             api,
@@ -414,7 +445,10 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
             github_owner=settings.github_owner,
             renewal=renewal,
             inbox=TelegramInbox(repo, api, model),
-            own_video=OwnVideoInbox(repo, api, model),
+            own_video=OwnVideoInbox(repo, api, model, tiktok_creator=tiktok_creator),
+            tiktok_settings=TikTokSettingsStore(conn)
+            if tiktok_creator is not None
+            else None,
             video_store=VideoStore(conn),
             project_store=ProjectItemStore(conn),
             engagement=EngagementStore(conn),
@@ -596,10 +630,6 @@ def publish_reels(
                     f"projects:disabled:{project.key}",
                     f"Project {project.key} is disabled",
                 )
-        scan_projects(
-            projects, client, project_items, notifier, now, token=settings.github_token
-        )
-
         youtube_token: str | None = None
         youtube_checked = False
         tiktok_token: str | None = None
@@ -629,6 +659,18 @@ def publish_reels(
                 return tiktok_token
             token = store.get(provider)
             return token.access_token if token and token.expires_at > _now() else None
+
+        scan_projects(
+            projects,
+            client,
+            project_items,
+            notifier,
+            now,
+            token=settings.github_token,
+            tiktok_creator=tiktok_creator_source(
+                settings, conn, client, partial(read_token, "tiktok")
+            ),
+        )
 
         reel_channels = _reel_channels(settings, client)
         channels: list[VideoChannel | RenderChannel] = list(reel_channels)

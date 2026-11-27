@@ -9,7 +9,6 @@ from test_tiktok_upload import COMPLETE, INBOX, NOW, PROCESSING, UPLOAD_URL, res
 
 from postpilot.channels.base import (
     ChannelError,
-    ChannelHeld,
     ChannelSkipped,
     UncertainPublication,
 )
@@ -150,7 +149,7 @@ def test_direct_payload(ai, allows, creator_disables, disables):
     ("changes", "error", "message", "queried"),
     [
         ({"caption": "ä" * 2201}, ChannelSkipped, "2200-character limit", False),
-        ({"tiktok": None}, ChannelHeld, None, False),
+        ({"tiktok": None}, ChannelSkipped, "no TikTok privacy choice", False),
         (
             {"tiktok": TikTokChoice("FRIENDS")},
             ChannelError,
@@ -185,8 +184,9 @@ def test_direct_rejection_before_upload(changes, error, message, queried):
 
 
 @pytest.mark.parametrize("ref", [None, "old"])
-def test_project_without_choice_goes_to_inbox_and_caption_is_available(ref):
-    reel = replace(REEL, tiktok=None, inbox_fallback=True)
+@pytest.mark.parametrize("caption", ["Beschreibung", "ä" * 2201])
+def test_project_without_choice_goes_to_inbox_and_caption_is_available(ref, caption):
+    reel = replace(REEL, tiktok=None, inbox_fallback=True, caption=caption)
     paths = []
 
     def route(request):
@@ -200,24 +200,21 @@ def test_project_without_choice_goes_to_inbox_and_caption_is_available(ref):
 
     with httpx.Client(transport=httpx.MockTransport(route)) as client:
         channel = TikTokChannel(client, mode="direct")
-        with pytest.raises(ChannelHeld):
-            channel.publish_with_ref(
-                replace(reel, inbox_fallback=False),
-                "access",
-                None,
-                Mock(),
-                claimed_at=NOW,
-            )
         published = channel.publish_with_ref(
             reel, "access", ref, Mock(), claimed_at=NOW
         )
         assert published == (ref or "new")
         api = Mock()
         Notifier(api, 1).send_tiktok_draft(channel.caption(published), fallback=True)
+        note = (
+            "\nCaption is 2201 chars, TikTok allows 2200."
+            if len(caption) > 2200
+            else ""
+        )
         api.send_message.assert_called_once_with(
             1,
             "tiktok: no TikTok choice by release time, sent to your TikTok inbox. "
-            "Finish in the TikTok app.\nCaption to copy:\nBeschreibung",
+            f"Finish in the TikTok app.\nCaption to copy:\n{caption}{note}",
         )
     assert paths == (
         ["/v2/post/publish/status/fetch/"]
@@ -372,4 +369,74 @@ def test_direct_telegram_result(monkeypatch, outcome, caption, expected):
         tiktok=TikTokSettings("sandbox", "id", "secret", "uri", mode="direct"),
     )
     tasks.publish_reels(settings, Mock())
+    if outcome == "skipped":
+        monkeypatch.setattr(
+            tasks,
+            "_publish_items",
+            lambda *_, on_result, **__: on_result(
+                item_id, "tiktok", ChannelResult("skipped")
+            ),
+        )
+        tasks.publish_reels(settings, Mock())
     api.send_message.assert_called_once_with(1, expected)
+
+
+@pytest.mark.parametrize("choice_offset", [-1, None, 1])
+def test_factory_reel_uses_only_the_choice_available_at_release(choice_offset):
+    from uuid import uuid4
+
+    from postpilot.channels.factory import FactoryReelsChannel
+    from postpilot.core.models import Item
+    from postpilot.core.states import ItemState
+    from postpilot.store.project_items import ProjectItem
+
+    item_id = uuid4()
+    item = Item(item_id, "project", ItemState.PUBLISHING, NOW, NOW, None, NOW)
+    assets = Mock()
+    assets.reel.return_value = ProjectItem(
+        "episode", NOW, True, "Beschreibung", None, {}, 60, "factory", item_id
+    )
+    assets.video.return_value = b"video"
+    choice = TikTokChoice("SELF_ONLY")
+
+    def at_cutoff(_item_id, cutoff):
+        if choice_offset is None:
+            return None
+        chosen_at = NOW + timedelta(seconds=choice_offset)
+        return choice if chosen_at <= cutoff else None
+
+    read_choice = Mock(side_effect=at_cutoff)
+    endpoint = "video/init" if choice_offset == -1 else "inbox/video/init"
+
+    def route(request):
+        if request.url.path.endswith("/query/"):
+            assert choice_offset == -1
+            return response(**CREATOR)
+        if request.url.path.endswith("/init/"):
+            assert request.url.path == f"/v2/post/publish/{endpoint}/"
+            payload = json.loads(request.content)
+            if choice_offset == -1:
+                assert payload["post_info"]["is_aigc"] is True
+                assert payload["post_info"]["privacy_level"] == "SELF_ONLY"
+            else:
+                assert "post_info" not in payload
+            return response(publish_id="new", upload_url=UPLOAD_URL)
+        if request.method == "PUT":
+            return httpx.Response(201)
+        return response(status=COMPLETE if choice_offset == -1 else INBOX)
+
+    with httpx.Client(transport=httpx.MockTransport(route)) as client:
+        adapter = FactoryReelsChannel(
+            TikTokChannel(client, mode="direct"),
+            lambda _: "access",
+            assets,
+            use_release_video=True,
+            tiktok_choice=read_choice,
+        )
+        assert (
+            adapter.publish_with_ref(
+                item, [], ref=None, claimed_at=NOW, save_ref=Mock()
+            )
+            == "new"
+        )
+    read_choice.assert_called_once_with(item_id, NOW)

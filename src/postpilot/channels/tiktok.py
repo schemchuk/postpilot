@@ -90,34 +90,33 @@ class TikTokChannel:
                     return None
 
             post_info = None
-            if self.mode == "direct":
-                if choice is None and not inbox:
-                    raise ChannelHeld
+            if not inbox:
+                if choice is None:
+                    raise ChannelSkipped("no TikTok privacy choice")
                 if len(reel.caption) > 2200:
                     raise ChannelSkipped(
                         "caption exceeds TikTok's 2200-character limit"
                     )
-                if choice is not None:
-                    self._attempted = True
-                    creator = api.creator_info()
-                    if choice.privacy_level not in creator.privacy_level_options:
-                        raise ChannelError(
-                            "Chosen TikTok privacy level is no longer offered"
-                        )
-                    reel.validate("TikTok", creator.max_video_post_duration_sec)
-                    post_info = {
-                        "title": reel.caption,
-                        "is_aigc": reel.ai_generated,
-                        "video_cover_timestamp_ms": 0,
-                        "brand_content_toggle": False,
-                        "brand_organic_toggle": False,
-                        "privacy_level": choice.privacy_level,
-                        "disable_comment": creator.comment_disabled
-                        or not choice.allow_comment,
-                        "disable_duet": creator.duet_disabled or not choice.allow_duet,
-                        "disable_stitch": creator.stitch_disabled
-                        or not choice.allow_stitch,
-                    }
+                self._attempted = True
+                creator = api.creator_info()
+                if choice.privacy_level not in creator.privacy_level_options:
+                    raise ChannelError(
+                        "Chosen TikTok privacy level is no longer offered"
+                    )
+                reel.validate("TikTok", creator.max_video_post_duration_sec)
+                post_info = {
+                    "title": reel.caption,
+                    "is_aigc": reel.ai_generated,
+                    "video_cover_timestamp_ms": 0,
+                    "brand_content_toggle": False,
+                    "brand_organic_toggle": False,
+                    "privacy_level": choice.privacy_level,
+                    "disable_comment": creator.comment_disabled
+                    or not choice.allow_comment,
+                    "disable_duet": creator.duet_disabled or not choice.allow_duet,
+                    "disable_stitch": creator.stitch_disabled
+                    or not choice.allow_stitch,
+                }
             if inbox:
                 reel.validate("TikTok", REELS_MAX_DURATION)
             video = reel.video_bytes()

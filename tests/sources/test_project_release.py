@@ -8,11 +8,13 @@ from unittest.mock import Mock
 import httpx
 import pytest
 
+from postpilot.core.tiktok import TikTokSelection
 from postpilot.notify.telegram import Notifier, TelegramApi
 from postpilot.projects import Project, Projects
 from postpilot.sources.factory import ProjectRelease, Rejected
 from postpilot.sources.project_release import _releases, read_manifest, scan_projects
 from postpilot.video.label import AI_IMAGE_CAPTION_LABEL, AI_VIDEO_CAPTION_LABEL
+from postpilot.video.tiktok import CreatorInfo
 
 NOW = datetime(2026, 11, 27, 8, tzinfo=UTC)
 PROJECT = Project("example", "owner/repo", ("reel",), ("linkedin-de", "threads"))
@@ -361,9 +363,27 @@ def test_scan_rejection_fingerprint_is_saved_and_notified_once():
 
 
 @pytest.mark.parametrize("approval", ["auto", "tap"])
-def test_scan_sends_notice_or_preview(monkeypatch, approval):
+@pytest.mark.parametrize("mode", ["draft", "direct"])
+@pytest.mark.parametrize("target", [True, False])
+def test_scan_sends_notice_or_preview(monkeypatch, approval, mode, target):
+    from uuid import uuid4
+
     files = release_files()
-    project = replace(PROJECT, approval=approval)
+    project = replace(
+        PROJECT,
+        approval=approval,
+        channels=(
+            *PROJECT.channels,
+            *(("tiktok",) if target else ()),
+        ),
+    )
+    creator = Mock(
+        return_value=CreatorInfo(["SELF_ONLY"], False, False, False, 90, "Creator")
+    )
+    monkeypatch.setattr(
+        "postpilot.store.tiktok_settings.TikTokSettingsStore.get_partial",
+        lambda *_: TikTokSelection(),
+    )
 
     def http(request):
         if request.url.host == "api.github.com":
@@ -382,15 +402,35 @@ def test_scan_sends_notice_or_preview(monkeypatch, approval):
     store.save_item.return_value = ("new", None)
     api = Mock(spec=TelegramApi)
     api.send_message.return_value = 17
+    store.preview_item_id.return_value = uuid4()
     with httpx.Client(transport=httpx.MockTransport(http)) as client:
-        assert scan_projects(Projects((project,)), client, store, Notifier(api, 7), NOW)
+        assert scan_projects(
+            Projects((project,)),
+            client,
+            store,
+            Notifier(api, 7),
+            NOW,
+            tiktok_creator=creator if mode == "direct" else None,
+        )
     assert store.save_item.call_args.args[1].approval == approval
     message = api.send_message.call_args.args
     assert "Fri 27.11 09:00 Berlin" in message[1]
     assert "AI label: yes" in message[1]
     assert f"Threads\n  Exact text.\n{VIDEO_LABEL}" in message[1]
+    has_row = mode == "direct" and target
+    assert ("TikTok account: Creator" in message[1]) == has_row
+    assert creator.call_count == int(has_row)
+    if has_row:
+        buttons = message[2]["inline_keyboard"]
+        assert buttons[-2] == [
+            {
+                "text": "Only me",
+                "callback_data": f"ttp:me:{store.preview_item_id.return_value}",
+            }
+        ]
+        assert len(buttons) == (2 if approval == "auto" else 3)
     if approval == "auto":
-        assert len(message) == 2
+        assert len(message) == (3 if has_row else 2)
         api.send_photo.assert_not_called()
     else:
         api.send_photo.assert_called_once_with(7, PNG)

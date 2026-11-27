@@ -272,13 +272,8 @@ def test_tiktok_mode(monkeypatch, mode):
         monkeypatch.delenv("TIKTOK_MODE", raising=False)
     else:
         monkeypatch.setenv("TIKTOK_MODE", mode)
-    if mode in {None, "draft"}:
-        assert Settings.from_env().tiktok.mode == "draft"
+    if mode in {None, "draft", "direct"}:
+        assert Settings.from_env().tiktok.mode == (mode or "draft")
     else:
-        message = (
-            "TIKTOK_MODE=direct comes with T29c2"
-            if mode == "direct"
-            else "TIKTOK_MODE must be draft"
-        )
-        with pytest.raises(ConfigError, match=message):
+        with pytest.raises(ConfigError, match="TIKTOK_MODE must be draft or direct"):
             Settings.from_env()

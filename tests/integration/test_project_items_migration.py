@@ -14,8 +14,8 @@ conn = test_store.conn
 
 
 def test_project_items_migration_round_trip(conn):
-    # Step back over 0023 and 0022 as well, to the schema before 0021.
-    migrate.down(conn, 3)
+    # Step back to the schema before 0021.
+    migrate.down(conn, 4)
     with conn.transaction():
         conn.execute(
             "INSERT INTO items (id, source, state) VALUES (%s, 'factory', 'APPROVED')",
@@ -64,7 +64,7 @@ def test_project_items_migration_round_trip(conn):
             "UPDATE project_items SET title_de = 'Changed' WHERE id = 'original'"
         )
 
-    migrate.down(conn, 3)
+    migrate.down(conn, 4)
     with conn.transaction():
         assert conn.execute(
             """
@@ -103,7 +103,7 @@ def test_down_refuses_unrepresentable_rows(conn, project, kind):
             (project, kind, f"{kind}/extra", item_id),
         )
     try:
-        migrate.down(conn, 2)  # 0023 and 0022
+        migrate.down(conn, 3)  # 0024 through 0022
         with pytest.raises(RaiseException, match="rows exist outside beekeeper reels"):
             migrate.down(conn)
         with conn.transaction():

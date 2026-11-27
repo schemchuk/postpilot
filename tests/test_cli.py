@@ -309,4 +309,8 @@ def test_project_intake_runs_selected_scan(monkeypatch):
     cli.migrate.up.assert_called_once_with(conn)
     assert scan.call_args.args[0] is projects
     assert scan.call_args.args[2].conn is conn
-    assert scan.call_args.kwargs == {"only": project.key, "token": "test-token"}
+    assert scan.call_args.kwargs == {
+        "only": project.key,
+        "token": "test-token",
+        "tiktok_creator": None,
+    }

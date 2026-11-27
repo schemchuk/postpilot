@@ -255,7 +255,7 @@ class ProjectItemStore:
                     (item_id,),
                 )
                 self.conn.execute(
-                    "DELETE FROM video_publications WHERE item_id = %s AND status = 'FAILED'",
+                    "DELETE FROM video_publications WHERE item_id = %s AND status IN ('FAILED', 'SKIPPED')",
                     (item_id,),
                 )
             if not auto or (

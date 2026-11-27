@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import UUID
 
-from postpilot.channels.base import ChannelError, ChannelHeld
+from postpilot.channels.base import ChannelError, ChannelHeld, ChannelSkipped
 from postpilot.core.limits import shorten_text
 from postpilot.core.models import Item, Variant
 from postpilot.core.tiktok import TikTokChoice
@@ -103,6 +103,9 @@ class OwnVideoReelsChannel:
         claimed_at: datetime,
         save_ref: Callable[[str], None],
     ) -> str | None:
+        choice = self._tiktok_choice(item.id) if self._tiktok_choice else None
+        if self._tiktok_choice is not None and choice is None and ref is None:
+            raise ChannelSkipped("no TikTok privacy choice")
         token = self._read_token(self._channel.token_provider)
         if not token:
             raise ChannelHeld
@@ -121,7 +124,7 @@ class OwnVideoReelsChannel:
                 text + label,
                 video.duration,
                 video.ai_generated,
-                tiktok=self._tiktok_choice(item.id) if self._tiktok_choice else None,
+                tiktok=choice,
             ),
             token,
             ref,

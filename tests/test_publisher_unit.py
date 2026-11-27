@@ -298,7 +298,7 @@ def test_publisher_stores_and_traces_one_sanitized_failure(capsys):
 
 
 def test_channel_skip_does_not_fail_or_block_other_channels():
-    from postpilot.channels.base import ChannelSkipped
+    from postpilot.channels.base import ChannelHeld, ChannelSkipped
 
     now = datetime.now(UTC)
     item = Item(uuid4(), "github", ItemState.PUBLISHING, now, now, 1, now)
@@ -313,16 +313,38 @@ def test_channel_skip_does_not_fail_or_block_other_channels():
             recovered=False,
         )
 
-    repo.claim_publication.side_effect = claim
+    skipped = set()
+
+    def claim_pending(item_id, name, **kwargs):
+        return None if name in skipped else claim(item_id, name, **kwargs)
+
+    def mark_skipped(publication_claim, error):
+        assert error == "caption exceeds limit"
+        skipped.add(publication_claim.publication.channel)
+
+    repo.claim_publication.side_effect = claim_pending
+    repo.mark_skipped.side_effect = mark_skipped
     tiktok = FakeChannel("tiktok")
     tiktok.publish = Mock(side_effect=ChannelSkipped("caption exceeds limit"))
     other = FakeChannel("other")
-    report = Publisher(repo, [tiktok, other]).publish_item(item.id)
+    other.publish = Mock(side_effect=ChannelHeld)
+    publisher = Publisher(repo, [tiktok, other])
+    report = publisher.publish_item(item.id)
+    repeated = publisher.publish_item(item.id)
 
     assert report.channels == {
         "tiktok": ChannelResult("skipped", "caption exceeds limit"),
-        "other": ChannelResult("published"),
+        "other": ChannelResult("held"),
     }
-    repo.release_publication.assert_called_once_with(claim(item.id, "tiktok"))
+    assert repeated.channels == {
+        "tiktok": ChannelResult("skipped"),
+        "other": ChannelResult("held"),
+    }
+    tiktok.publish.assert_called_once()
+    repo.mark_skipped.assert_called_once_with(
+        claim(item.id, "tiktok"), "caption exceeds limit"
+    )
     repo.mark_failed.assert_not_called()
-    repo.finish_publishing.assert_called_once_with(item.id, {"other"}, held=frozenset())
+    repo.finish_publishing.assert_called_with(
+        item.id, {"tiktok", "other"}, held=frozenset({"other"})
+    )
