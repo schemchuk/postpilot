@@ -81,6 +81,12 @@ the AI label, and nothing central enforces approval.
    and image URN. Threads saves the `IMAGE` container ID, waits for it to finish and uses it to
    recover publication.
 
+   **T27f notes (2026-11-27, Claude, Volodymyr asked to close the gaps).** Reel text on Threads gets the
+   video AI label when `ai` is true (the factory kept "AI label" for all four channels, ADR 024 context), counted
+   in 500 chars. Release scan pages through releases up to 61 days old (60-day `release_at` window plus margin),
+   at most 10 pages of 100. The 2200 caption check applies only to items targeting Instagram or TikTok. The
+   workflow keeps the name `publish-reels`: cron-job.org dispatches it by file name, a rename goes with T27e2.
+
 5. **Discovery by polling, dispatch optional.** The hourly `publish-reels` run (renamed `publish-projects`)
    first lists recent releases of every enabled project and takes in new `reel/*` and `post/*` tags with a
    `manifest.json`. A project needs no secret for this. `project-intake` (`workflow_dispatch`, input

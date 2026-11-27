@@ -298,6 +298,17 @@ after one factory release in v2 was published live (the factory session moves it
 the contract). Removes `factory-intake.yml`, the v1 source/channel code and v1 asset names, drops
 `factory_reels` (migration). Touches a workflow: Volodymyr's OK before merge.
 
+**T27f** ADR 025 gaps found in T27e1 (ADR 025 T27f notes). Owner Codex, reviewer Claude. No workflow change.
+(1) Reel text on Threads: with `ai: true` append `\n\nKI-generiertes Video / AI-generated video`, counted in
+the 500-char limit, both for `post_threads.txt` and for the `post_de.txt` fallback (fallback only when text plus
+label fit, else Threads skipped as today); v1 factory releases and v2 alike; intake notice and preview show it.
+(2) Release scan: `per_page=100`, follow pages (newest first) until a release created more than 61 days ago, an
+empty page, or 10 pages (then a warning in the log). (3) Reel caption limits: the 2200 check (text plus label)
+applies only when `instagram` or `tiktok` is in the item's effective channels; otherwise `post_de.txt` plus label
+must fit LinkedIn's 3000. Update `docs/publishing-contract.md` to match. Accept: tests for the Threads label
+(file, fallback, fallback that no longer fits, `ai: false`), pagination stops (age, empty, cap), the 2200 rule
+with and without IG/TikTok; contract text matches the code.
+
 ## Order
-T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22 -> T23a -> T23b -> T24a -> T24b -> T25a -> T25b -> T26a -> T26b -> T26c (due before 2026-12-14) -> T28a -> T28b -> T28c -> T29a -> T29b -> T27a -> T27b -> T27c -> T27d -> T27e1 -> T27e2 -> T29c.
+T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22 -> T23a -> T23b -> T24a -> T24b -> T25a -> T25b -> T26a -> T26b -> T26c (due before 2026-12-14) -> T28a -> T28b -> T28c -> T29a -> T29b -> T27a -> T27b -> T27c -> T27d -> T27e1 -> T27f -> T29c -> T27e2.
 First useful vertical slice after T11: Telegram text to approval to LinkedIn.
