@@ -3,5 +3,5 @@ repo = "schemchuk/beekeeper-ai-integrator"
 kinds = ["reel"]
 channels = ["linkedin-de", "threads", "instagram", "facebook", "youtube", "tiktok"]
 approval = "auto"
-max_per_day = 2
+max_per_day = 3
 enabled = true
