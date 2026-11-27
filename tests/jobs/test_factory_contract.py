@@ -23,6 +23,7 @@ from postpilot.core.publisher import Publisher
 from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.projects import FACTORY_PROJECT, Project, Projects
 from postpilot.store.project_items import ProjectItem
+from postpilot.video.label import AI_IMAGE_CAPTION_LABEL
 
 NOW = datetime(2026, 12, 1, 7, tzinfo=UTC)
 VIDEO = b"video"
@@ -599,3 +600,265 @@ def test_publisher_refuses_post_for_reel_only_project():
     with pytest.raises(IllegalTransition, match="cannot publish post"):
         publisher.publish_item(row.id)
     repo.transition.assert_not_called()
+
+
+IMAGE_FILES = POST_FILES | {"image.png": COVER}
+IMAGE_URL = f"https://github.com/{REPO}/releases/download/post/test-post/image.png"
+IMAGE_URN = "urn:li:image:new"
+OLD_IMAGE_URN = "urn:li:image:old"
+
+
+def image_post_store(ai=True):
+    store = Mock()
+    post = scheduled_post(ai=ai)
+    store.get_by_item.return_value = scheduled_post(
+        ai=ai,
+        assets=post.assets
+        | {"image.png": {"size": len(COVER), "sha256": sha256(COVER).hexdigest()}},
+    )
+    return store
+
+
+@pytest.mark.parametrize(
+    "resume", [None, "AVAILABLE", "WAITING_UPLOAD", "missing", "uncertain"]
+)
+@pytest.mark.parametrize("ai", [True, False])
+def test_linkedin_image_publication_and_recovery(resume, ai, caplog):
+    asset_route = post_asset_route(IMAGE_FILES, [])
+    row = item(ItemState.PUBLISHING)
+    save_ref = Mock()
+    uploaded = []
+    posts = []
+    text = LINKEDIN_COMMENTARY + ("\n\n" + AI_IMAGE_CAPTION_LABEL if ai else "")
+    expected_urn = OLD_IMAGE_URN if resume == "AVAILABLE" else IMAGE_URN
+
+    def route(request):
+        if request.url.host in {"api.github.com", "github.com"}:
+            return asset_route(request)
+        if request.url.path == "/v2/userinfo":
+            return httpx.Response(200, json={"sub": "person"})
+        if request.method == "PUT":
+            assert save_ref.call_args.args == (f"image:{IMAGE_URN}",)
+            assert request.headers["Authorization"] == "Bearer token"
+            assert request.content == COVER
+            uploaded.append(request)
+            return httpx.Response(201)
+        assert request.headers["LinkedIn-Version"] == "202607"
+        assert request.headers["X-Restli-Protocol-Version"] == "2.0.0"
+        if request.url.path == "/rest/images":
+            assert request.method == "POST"
+            assert dict(request.url.params) == {"action": "initializeUpload"}
+            assert json.loads(request.content) == {
+                "initializeUploadRequest": {"owner": "urn:li:person:person"}
+            }
+            return httpx.Response(
+                200,
+                json={
+                    "value": {
+                        "image": IMAGE_URN,
+                        "uploadUrl": "https://www.linkedin.com/upload?secret-signature=123",
+                    }
+                },
+            )
+        if request.url.path.startswith("/rest/images/"):
+            assert request.method == "GET"
+            if request.url.path.endswith(OLD_IMAGE_URN):
+                if resume == "missing":
+                    return httpx.Response(404)
+                return httpx.Response(200, json={"status": resume})
+            assert request.url.path.endswith(IMAGE_URN)
+            return httpx.Response(200, json={"status": "AVAILABLE"})
+        assert request.url.path == "/rest/posts"
+        if request.method == "POST":
+            posts.append(request)
+            content = json.loads(request.content)
+            assert content["commentary"] == text
+            assert content["visibility"] == "PUBLIC"
+            assert content["distribution"]["feedDistribution"] == "MAIN_FEED"
+            assert content["content"] == {"media": {"id": expected_urn}}
+            if resume == "uncertain":
+                return httpx.Response(503)
+            return httpx.Response(201, headers={"x-restli-id": "post"})
+        assert resume == "uncertain"
+        assert request.url.params["q"] == "author"
+        published_at = int(NOW.timestamp() * 1000)
+        return httpx.Response(
+            200,
+            json={
+                "elements": [
+                    {
+                        "id": "old",
+                        "commentary": text,
+                        "publishedAt": published_at - 1,
+                        "content": {"media": {"id": expected_urn}},
+                    },
+                    {
+                        "id": "wrong-image",
+                        "commentary": text,
+                        "publishedAt": published_at,
+                        "content": {"media": {"id": OLD_IMAGE_URN}},
+                    },
+                    {
+                        "id": "post",
+                        "commentary": text,
+                        "publishedAt": published_at,
+                        "content": {"media": {"id": expected_urn}},
+                    },
+                ]
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(route)) as client:
+        channel = FactoryLinkedInChannel(
+            LinkedInChannel(
+                "linkedin-video", "de", lambda: "token", client, version="202607"
+            ),
+            FactoryAssets(image_post_store(ai), client, POST_PROJECTS),
+        )
+        ref = f"image:{OLD_IMAGE_URN}" if resume not in {None, "uncertain"} else None
+        if resume == "uncertain":
+            with pytest.raises(UncertainPublication):
+                channel.publish_with_ref(
+                    row, [], ref=ref, claimed_at=NOW, save_ref=save_ref
+                )
+            ref = save_ref.call_args.args[0]
+            assert ref == f"image-posting:{IMAGE_URN}"
+        with caplog.at_level("INFO", logger="httpx"):
+            assert (
+                channel.publish_with_ref(
+                    row, [], ref=ref, claimed_at=NOW, save_ref=save_ref
+                )
+                == "post"
+            )
+    assert "secret-signature" not in caplog.text
+    assert len(posts) == 1
+    assert len(uploaded) == (0 if resume == "AVAILABLE" else 1)
+
+
+@pytest.mark.parametrize("ai", [True, False])
+@pytest.mark.parametrize("outcome", ["FINISHED", "ERROR", "PUBLISHED", "IN_PROGRESS"])
+def test_threads_image_publication_and_recovery(ai, outcome):
+    asset_route = post_asset_route(IMAGE_FILES, [])
+    save_ref = Mock()
+    sleep = Mock()
+    lookup_count = 0
+    text = THREAD_TEXT + ("\n\n" + AI_IMAGE_CAPTION_LABEL if ai else "")
+
+    def route(request):
+        nonlocal lookup_count
+        if request.url.host in {"api.github.com", "github.com"}:
+            return asset_route(request)
+        path = request.url.path
+        if path.endswith("/container"):
+            assert outcome == "PUBLISHED" or save_ref.call_args.args == ("container",)
+            assert request.url.params["fields"] == "status,error_message"
+            lookup_count += 1
+            return httpx.Response(
+                200,
+                json={
+                    "status": "IN_PROGRESS"
+                    if lookup_count == 1 and outcome != "PUBLISHED"
+                    else outcome,
+                    "error_message": "Failed downloading image",
+                },
+            )
+        if path.endswith("/me/threads") and request.method == "GET":
+            assert outcome == "PUBLISHED"
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"id": "post", "text": text, "timestamp": NOW.isoformat()},
+                    ]
+                },
+            )
+        assert request.method == "POST" and outcome != "PUBLISHED"
+        if path.endswith("/me/threads"):
+            assert parse_qs(request.content.decode()) == {
+                "media_type": ["IMAGE"],
+                "text": [text],
+                "image_url": [IMAGE_URL],
+            }
+            return httpx.Response(200, json={"id": "container"})
+        assert outcome == "FINISHED" and path.endswith("/me/threads_publish")
+        assert parse_qs(request.content.decode()) == {"creation_id": ["container"]}
+        return httpx.Response(200, json={"id": "post"})
+
+    with httpx.Client(transport=httpx.MockTransport(route)) as client:
+        channel = FactoryThreadsChannel(
+            lambda: "token",
+            client,
+            FactoryAssets(image_post_store(ai), client, POST_PROJECTS),
+            sleep=sleep,
+        )
+        kwargs = {
+            "ref": "container" if outcome == "PUBLISHED" else None,
+            "claimed_at": NOW,
+            "save_ref": save_ref,
+        }
+        row = item(ItemState.PUBLISHING)
+        if outcome == "ERROR":
+            with pytest.raises(ChannelError, match="Failed downloading image"):
+                channel.publish_with_ref(row, [], **kwargs)
+        else:
+            assert channel.publish_with_ref(row, [], **kwargs) == (
+                None if outcome == "IN_PROGRESS" else "post"
+            )
+    assert lookup_count == {"PUBLISHED": 1, "IN_PROGRESS": 6}.get(outcome, 2)
+    assert sleep.call_count == lookup_count - 1
+
+
+@pytest.mark.parametrize("name", ["linkedin-video", "threads"])
+@pytest.mark.parametrize("deleted", [False, True])
+def test_image_release_fails_before_channel_calls(name, deleted):
+    asset_route = post_asset_route(IMAGE_FILES | {"image.png": COVER[:-1] + b"!"}, [])
+
+    def route(request):
+        assert request.url.host in {"api.github.com", "github.com"}
+        if deleted:
+            return httpx.Response(404)
+        return asset_route(request)
+
+    with httpx.Client(transport=httpx.MockTransport(route)) as client:
+        reader = FactoryAssets(image_post_store(), client, POST_PROJECTS)
+        channel = (
+            FactoryLinkedInChannel(
+                LinkedInChannel(name, "de", lambda: "token", client), reader
+            )
+            if name == "linkedin-video"
+            else FactoryThreadsChannel(lambda: "token", client, reader)
+        )
+        save_ref = Mock()
+        reason = (
+            "release post/test-post is unavailable"
+            if deleted
+            else "image.png changed since intake"
+        )
+        with pytest.raises(ChannelError, match=reason):
+            channel.publish_with_ref(
+                item(ItemState.PUBLISHING),
+                [],
+                ref=None,
+                claimed_at=NOW,
+                save_ref=save_ref,
+            )
+        save_ref.assert_not_called()
+
+
+def test_threads_checks_image_again_after_linkedin_reads_it():
+    row = item(ItemState.PUBLISHING)
+    changed = False
+
+    def route(request):
+        assert request.url.host in {"api.github.com", "github.com"}
+        if changed and str(request.url) == IMAGE_URL:
+            return httpx.Response(200, content=COVER[:-1] + b"!")
+        return post_asset_route(IMAGE_FILES, [])(request)
+
+    with httpx.Client(transport=httpx.MockTransport(route)) as client:
+        assets = FactoryAssets(image_post_store(), client, POST_PROJECTS)
+        assets.check_release(row.id)
+        changed = True
+        channel = FactoryThreadsChannel(lambda: "token", client, assets)
+        with pytest.raises(ChannelError, match="image.png changed since intake"):
+            channel.publish_with_ref(row, [], ref=None, claimed_at=NOW, save_ref=Mock())

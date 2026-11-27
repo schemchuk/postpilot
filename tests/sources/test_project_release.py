@@ -2,6 +2,7 @@ import json
 from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime
+from hashlib import sha256
 from unittest.mock import Mock
 
 import httpx
@@ -11,6 +12,7 @@ from postpilot.notify.telegram import Notifier, TelegramApi
 from postpilot.projects import Project, Projects
 from postpilot.sources.factory import ProjectRelease, Rejected
 from postpilot.sources.project_release import read_manifest, scan_projects
+from postpilot.video.label import AI_IMAGE_CAPTION_LABEL
 
 NOW = datetime(2026, 11, 27, 8, tzinfo=UTC)
 PROJECT = Project("example", "owner/repo", ("reel",), ("linkedin-de", "threads"))
@@ -557,14 +559,71 @@ def test_post_scan_sends_text_only_notice_or_split_preview(approval):
         store.set_preview_message.assert_called_once_with(item_id, 18)
 
 
-@pytest.mark.parametrize("name", ["image.png", "image.jpg"])
-def test_post_scan_defers_image_without_intake_or_rejection(name, caplog):
-    store, notify = Mock(), Mock()
-    with caplog.at_level("INFO"):
-        assert scan_post(post_files() | {name: b"image"}, POST_PROJECT, store, notify)
-    assert "image post deferred to T27d" in caplog.text
-    assert not store.mock_calls
-    assert not notify.mock_calls
+@pytest.mark.parametrize(
+    ("name", "photo"), [("image.png", PNG), ("image.jpg", b"\xff\xd8\xff")]
+)
+@pytest.mark.parametrize("ai", [True, False])
+def test_image_post_intake_and_preview(name, photo, ai):
+    files = post_files(ai=ai) | {name: photo}
+    store = Mock()
+    store.conn.transaction.side_effect = nullcontext
+    store.seen.return_value = False
+    store.save_item.return_value = ("new", None)
+    api = Mock(spec=TelegramApi)
+    assert scan_post(files, POST_PROJECT, store, Notifier(api, 7))
+    stored = store.save_item.call_args.args[1]
+    assert stored.image_name == name
+    assert stored.assets[name] == {
+        "sha256": sha256(photo).hexdigest(),
+        "size": len(photo),
+    }
+    assert stored.post_de == files["post_de.txt"].decode()
+    assert stored.post_threads == stored.post_de
+    api.send_photo.assert_called_once_with(7, photo)
+    message = api.send_message.call_args.args[1]
+    assert "Image: yes" in message
+    assert f"AI label: {'yes' if ai else 'no'}" in message
+    suffix = "\n\n" + AI_IMAGE_CAPTION_LABEL if ai else ""
+    assert f"LinkedIn DE\n{stored.post_de}{suffix}" in message
+    assert message.endswith(f"Threads\n{stored.post_threads}{suffix}")
+
+
+@pytest.mark.parametrize(
+    ("images", "reason"),
+    [
+        ({"image.png": PNG, "image.jpg": b"\xff\xd8\xff"}, "only one"),
+        ({"image.png": PNG + b"x" * 8_000_000}, "exceeds 8000000 bytes"),
+        ({"image.png": b"\xff\xd8\xff"}, "invalid image signature"),
+        ({"image.jpg": PNG}, "invalid image signature"),
+    ],
+)
+def test_image_post_rejects_invalid_assets(images, reason):
+    with pytest.raises(Rejected, match=reason):
+        load_post(post_files() | images)
+
+
+@pytest.mark.parametrize(
+    ("name", "limit"), [("post_de.txt", 3000), ("post_threads.txt", 500)]
+)
+def test_image_label_counts_toward_text_limit(name, limit):
+    limit_with_label = limit - len(AI_IMAGE_CAPTION_LABEL) - 2
+    files = post_files() | {"image.png": PNG, name: b"x" * limit_with_label}
+    load_post(files)
+    files[name] += b"x"
+    with pytest.raises(
+        Rejected,
+        match=rf"{name} exceeds {limit} characters including the AI image label",
+    ):
+        load_post(files)
+    load_post(files | post_files(ai=False) | {name: files[name]})
+
+
+def test_image_label_counts_toward_threads_fallback_limit():
+    limit = 500 - len(AI_IMAGE_CAPTION_LABEL) - 2
+    files = post_files() | {"image.png": PNG, "post_de.txt": b"x" * limit}
+    assert load_post(files)[0].post_threads == "x" * limit
+    files["post_de.txt"] += b"x"
+    assert load_post(files)[0].post_threads is None
 
 
 def test_post_preview_shows_only_selected_channel():
@@ -579,3 +638,19 @@ def test_post_preview_shows_only_selected_channel():
     assert "\n\nThreads\nThread only.\n" in message
     assert "LinkedIn DE" not in message
     assert "Exact [text]" not in message
+
+
+def test_auto_image_post_sends_notice_with_photo_and_no_approval_buttons():
+    store = Mock()
+    store.conn.transaction.side_effect = nullcontext
+    store.seen.return_value = False
+    store.save_item.return_value = ("new", None)
+    api = Mock(spec=TelegramApi)
+    project = replace(POST_PROJECT, approval="auto")
+    assert scan_post(
+        post_files() | {"image.png": PNG}, project, store, Notifier(api, 7)
+    )
+    api.send_photo.assert_called_once_with(7, PNG)
+    chat_id, notice = api.send_message.call_args.args
+    assert chat_id == 7 and "Image: yes" in notice
+    store.set_preview_message.assert_not_called()

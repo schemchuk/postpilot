@@ -74,6 +74,13 @@ the AI label, and nothing central enforces approval.
    **T27c notes.** Text-only posts carry no AI label. Polling skips releases with an image asset
    until T27d without recording intake or rejection.
 
+   **T27d notes.** A post may include one `image.png` or `image.jpg` up to 8 MB. Intake checks
+   the file signature and stores the hash, which is verified again before publication. With
+   `ai: true`, both captions end with `KI-generiertes Bild / AI-generated image`. LinkedIn uses
+   the Images API and resumes an available image by URN, recovering uncertain posts by commentary
+   and image URN. Threads saves the `IMAGE` container ID, waits for it to finish and uses it to
+   recover publication.
+
 5. **Discovery by polling, dispatch optional.** The hourly `publish-reels` run (renamed `publish-projects`)
    first lists recent releases of every enabled project and takes in new `reel/*` and `post/*` tags with a
    `manifest.json`. A project needs no secret for this. `project-intake` (`workflow_dispatch`, input

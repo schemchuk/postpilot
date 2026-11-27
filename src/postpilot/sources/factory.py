@@ -26,6 +26,8 @@ _OFFSET = re.compile(r"(?:Z|[+-](?:[01][0-9]|2[0-3])(?::?[0-5][0-9])?)$")
 _LIMITS = {
     "manifest.json": 16_000,
     "video.mp4": 100_000_000,
+    "image.png": 8_000_000,
+    "image.jpg": 8_000_000,
     "cover.png": 10_000_000,
     "reel_de.mp4": 100_000_000,
     "cover_de.png": 10_000_000,
@@ -124,15 +126,16 @@ def _asset(client: httpx.Client, url: httpx.URL, repo: str, name: str) -> bytes:
     raise Rejected(f"too many download redirects for {name}")
 
 
-def _text(data: bytes, name: str, limit: int) -> str:
+def _text(data: bytes, name: str, limit: int, *, label_length: int = 0) -> str:
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         raise Rejected(f"{name} must be UTF-8") from None
     if not text.strip() or "\0" in text:
         raise Rejected(f"{name} must be non-empty text without NUL")
-    if len(text) > limit:
-        raise Rejected(f"{name} exceeds {limit} characters")
+    if len(text) + label_length > limit:
+        with_label = " including the AI image label" if label_length else ""
+        raise Rejected(f"{name} exceeds {limit} characters{with_label}")
     return text
 
 
@@ -141,12 +144,16 @@ def _asset_hash(data: bytes) -> Asset:
 
 
 def _threads_text(
-    post_de: str, names: Collection[str], download: Callable[[str], bytes]
+    post_de: str,
+    names: Collection[str],
+    download: Callable[[str], bytes],
+    *,
+    label_length: int = 0,
 ) -> str | None:
     name = "post_threads.txt"
     if name in names:
-        return _text(download(name), name, 500)
-    return post_de if len(post_de) <= 500 else None
+        return _text(download(name), name, 500, label_length=label_length)
+    return post_de if len(post_de) + label_length <= 500 else None
 
 
 def _probe_duration(video: bytes) -> float:

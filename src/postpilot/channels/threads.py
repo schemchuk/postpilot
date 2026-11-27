@@ -1,3 +1,4 @@
+import time
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from urllib.parse import quote
@@ -7,6 +8,7 @@ import httpx
 from postpilot.channels.base import (
     ChannelError,
     ChannelHeld,
+    ConfirmedPublicationFailure,
     TransientChannelError,
     UncertainPublication,
 )
@@ -16,6 +18,9 @@ from postpilot.core.models import Item, Variant
 _API = "https://graph.threads.com/v1.0"
 _MAX_LENGTH = 500
 _TIMESTAMP_MARGIN = timedelta(minutes=5)
+_IMAGE_FAILED = "image-failed"
+_POLL_ATTEMPTS = 6
+_POLL_INTERVAL = 5
 
 
 class ThreadsChannel:
@@ -24,10 +29,15 @@ class ThreadsChannel:
     recover_only = True
 
     def __init__(
-        self, token_source: Callable[[], str | None], client: httpx.Client
+        self,
+        token_source: Callable[[], str | None],
+        client: httpx.Client,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._token_source = token_source
         self._client = client
+        self._sleep = sleep
 
     def _text(self, item: Item, variants: list[Variant]) -> str:
         for variant in variants:
@@ -98,6 +108,38 @@ class ThreadsChannel:
     def _before_publish(self, item: Item) -> None:
         pass
 
+    def _image_name(self, item: Item) -> str | None:
+        return None
+
+    def _image_url(self, item: Item, name: str) -> str:
+        raise ChannelError("Threads image URL is unavailable")
+
+    def _container_status(
+        self, ref: str, token: str, image: bool, save_ref: Callable[[str], None]
+    ) -> object:
+        fields = "status,error_message" if image else "status"
+        for attempt in range(_POLL_ATTEMPTS):
+            result = self._request(
+                "GET", quote(ref, safe=""), token, params={"fields": fields}
+            )
+            status = result.get("status")
+            if image and status == "ERROR":
+                save_ref(_IMAGE_FAILED)
+                detail = result.get("error_message")
+                message = (
+                    detail.replace(token, "[redacted]")
+                    if isinstance(detail, str)
+                    else "unknown error"
+                )
+                raise ConfirmedPublicationFailure(
+                    f"Threads image processing failed: {message}"
+                )
+            if not image or status != "IN_PROGRESS" or attempt + 1 == _POLL_ATTEMPTS:
+                return status
+            self._sleep(_POLL_INTERVAL)
+            self._check_token(token)
+        raise AssertionError("Unreachable Threads polling state")
+
     def publish_with_ref(
         self,
         item: Item,
@@ -109,10 +151,11 @@ class ThreadsChannel:
     ) -> str | None:
         text = self._text(item, variants)
         token = self._token()
+        image = self._image_name(item)
+        if image and ref == _IMAGE_FAILED:
+            ref = None
         if ref is not None:
-            status = self._request(
-                "GET", quote(ref, safe=""), token, params={"fields": "status"}
-            ).get("status")
+            status = self._container_status(ref, token, image is not None, save_ref)
             if status == "PUBLISHED":
                 return self._find_published(text, claimed_at, token)
             if status == "IN_PROGRESS":
@@ -125,12 +168,24 @@ class ThreadsChannel:
         self._check_token(token)
         self._before_publish(item)
         if ref is None:
-            creation_id = self._request(
-                "POST", "me/threads", token, data={"media_type": "TEXT", "text": text}
-            ).get("id")
+            data = {"media_type": "TEXT", "text": text}
+            if image is not None:
+                data.update(media_type="IMAGE", image_url=self._image_url(item, image))
+            creation_id = self._request("POST", "me/threads", token, data=data).get(
+                "id"
+            )
             if not isinstance(creation_id, str) or not creation_id:
                 raise TransientChannelError("Threads did not return a container ID")
             ref = creation_id
+            if image is not None:
+                save_ref(ref)
+                status = self._container_status(ref, token, True, save_ref)
+                if status == "IN_PROGRESS":
+                    return None
+                if status == "PUBLISHED":
+                    return self._find_published(text, claimed_at, token)
+                if status != "FINISHED":
+                    raise ChannelError("Invalid Threads image container status")
 
         # Re-saving a FINISHED container also verifies ownership of the current claim.
         save_ref(ref)
