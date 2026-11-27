@@ -276,7 +276,7 @@ def test_tiktok_mode(monkeypatch, mode):
         assert Settings.from_env().tiktok.mode == "draft"
     else:
         message = (
-            "TIKTOK_MODE=direct comes with T29c"
+            "TIKTOK_MODE=direct comes with T29c2"
             if mode == "direct"
             else "TIKTOK_MODE must be draft"
         )

@@ -435,8 +435,13 @@ class Notifier:
             self.api.send_photo(self.chat_id, photo)
         self.api.send_message(self.chat_id, _truncate(text))
 
-    def send_tiktok_draft(self, caption: str) -> None:
-        heading = "tiktok: in your TikTok inbox, finish in the TikTok app."
+    def send_tiktok_draft(self, caption: str, *, fallback: bool = False) -> None:
+        heading = (
+            "tiktok: no TikTok choice by release time, sent to your TikTok inbox. "
+            "Finish in the TikTok app."
+            if fallback
+            else "tiktok: in your TikTok inbox, finish in the TikTok app."
+        )
         if not caption:
             self.send_alert(f"{heading}\nNo caption.")
             return

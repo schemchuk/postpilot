@@ -295,3 +295,34 @@ def test_publisher_stores_and_traces_one_sanitized_failure(capsys):
     ] == [
         f"trace publish failed item={item.id} channel=fake reason={reason.replace(' ', '_')}"
     ]
+
+
+def test_channel_skip_does_not_fail_or_block_other_channels():
+    from postpilot.channels.base import ChannelSkipped
+
+    now = datetime.now(UTC)
+    item = Item(uuid4(), "github", ItemState.PUBLISHING, now, now, 1, now)
+    repo = create_autospec(ItemRepo, instance=True)
+    repo.get_item.return_value = item
+    repo.list_publications.return_value = []
+    repo.get_variants.return_value = [Variant(item.id, "de", "Ein Beitrag")]
+
+    def claim(item_id, name, **kwargs):
+        return Claim(
+            Publication(item_id, name, PublicationStatus.PUBLISHING, None, None, now),
+            recovered=False,
+        )
+
+    repo.claim_publication.side_effect = claim
+    tiktok = FakeChannel("tiktok")
+    tiktok.publish = Mock(side_effect=ChannelSkipped("caption exceeds limit"))
+    other = FakeChannel("other")
+    report = Publisher(repo, [tiktok, other]).publish_item(item.id)
+
+    assert report.channels == {
+        "tiktok": ChannelResult("skipped", "caption exceeds limit"),
+        "other": ChannelResult("published"),
+    }
+    repo.release_publication.assert_called_once_with(claim(item.id, "tiktok"))
+    repo.mark_failed.assert_not_called()
+    repo.finish_publishing.assert_called_once_with(item.id, {"other"}, held=frozenset())

@@ -603,7 +603,7 @@ def test_tiktok_workflow_reports_caption_from_own_and_factory_adapters(
         save_ref = Mock()
         assert (
             channel.publish_with_ref(
-                SimpleNamespace(id=item_id),
+                SimpleNamespace(id=item_id, source=source),
                 [Variant(item_id, "de", text)] if description else [],
                 ref="inbox-id",
                 claimed_at=datetime.now(UTC),

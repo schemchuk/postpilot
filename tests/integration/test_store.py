@@ -89,6 +89,7 @@ def test_migration_up_noop_and_down(conn):
         "factory_reels",
         "project_items",
         "project_rejections",
+        "tiktok_settings",
     }
     assert table_names(conn) == latest_schema
     initial = applied_migrations(conn)
@@ -115,6 +116,7 @@ def test_migration_up_noop_and_down(conn):
         "0020_item_video_publications",
         "0021_project_items",
         "0022_project_intake",
+        "0023_tiktok_settings",
     ]
     migrate.up(conn)
     assert applied_migrations(conn) == initial
@@ -124,6 +126,9 @@ def test_migration_up_noop_and_down(conn):
             (id := uuid4(),),
         )
         conn.execute("DELETE FROM items WHERE id = %s", (id,))
+    migrate.down(conn)
+    assert applied_migrations(conn) == initial[:22]
+    assert "tiktok_settings" not in table_names(conn)
     migrate.down(conn)
     assert applied_migrations(conn) == initial[:21]
     assert "project_rejections" not in table_names(conn)
@@ -142,6 +147,7 @@ def test_migration_up_noop_and_down(conn):
         "factory_reels",
         "project_items",
         "project_rejections",
+        "tiktok_settings",
     }
     migrate.down(conn)
     assert applied_migrations(conn) == initial[:16]

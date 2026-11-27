@@ -58,6 +58,10 @@ class RefChannel(_Channel, Protocol):
 type Channel = MarkerChannel | RefChannel
 
 
+class ChannelSkipped(Exception):
+    """An unsupported item is intentionally omitted from this channel."""
+
+
 class ChannelHeld(Exception):
     """A channel is temporarily unavailable before sending."""
 
