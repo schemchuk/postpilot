@@ -12,7 +12,7 @@ import httpx
 from postpilot.channels.paused import is_paused
 from postpilot.channels.youtube import fitting_title
 from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
-from postpilot.notify.telegram import Notifier, TelegramError
+from postpilot.notify.telegram import Notifier, TelegramError, tiktok_preview
 from postpilot.projects import CHANNEL_NAMES, POST_CHANNELS, Project, Projects
 from postpilot.sources.factory import (
     _WEEKDAYS,
@@ -34,7 +34,9 @@ from postpilot.store.project_items import (
     ProjectItem,
     ProjectItemStore,
 )
+from postpilot.store.tiktok_settings import TikTokSettingsStore
 from postpilot.video.label import AI_IMAGE_CAPTION_LABEL, label_video_thread
+from postpilot.video.tiktok import CreatorInfo
 
 logger = logging.getLogger(__name__)
 _REQUIRED = {"v", "kind", "id", "release_at", "ai"}
@@ -280,6 +282,7 @@ def _intake(
     store: ProjectItemStore,
     notify: Notifier,
     now: datetime,
+    tiktok_creator: Callable[[], CreatorInfo | None] | None,
 ) -> None:
     fingerprint = _fingerprint(release)
     if store.seen(project.key, release.tag, fingerprint):
@@ -290,21 +293,35 @@ def _intake(
             status, reason = store.save_item(projects, item)
             if status == "refused":
                 raise Rejected(f"replacement refused: {reason}")
+            if project.approval != "auto" and status not in {"new", "replaced"}:
+                return
+            targets = item.channels or project.channels
+            item_id = store.preview_item_id(item)
+            tiktok_details, rows = tiktok_preview(
+                item_id,
+                tiktok_creator if item.kind == "reel" and "tiktok" in targets else None,
+                TikTokSettingsStore(store.conn).get_partial,
+                inbox_fallback=True,
+            )
             if project.approval == "auto":
-                notice = _notice(project, item, status)
+                notice = _notice(project, item, status) + tiktok_details
                 if (
                     item.kind == "reel"
                     and "threads" in (item.channels or project.channels)
                     and (threads := item.threads_text) is not None
                 ):
                     notice += f"\n\nThreads\n{threads}"
-                if item.image_name:
+                if rows:
+                    notify.send_alert(
+                        notice,
+                        photo=photo if item.image_name else None,
+                        extra_rows=rows,
+                    )
+                elif item.image_name:
                     notify.send_alert(notice, photo=photo)
                 else:
                     notify.send_alert(notice)
-            elif status in {"new", "replaced"}:
-                item_id = store.preview_item_id(item)
-                targets = item.channels or project.channels
+            else:
                 label = item.image_caption_suffix
                 message_id = notify.send_project_preview(
                     item_id,
@@ -314,6 +331,8 @@ def _intake(
                     if item.kind == "reel" or "linkedin-de" in targets
                     else None,
                     item.threads_text if "threads" in targets else None,
+                    extra_rows=rows,
+                    tiktok_details=tiktok_details,
                 )
                 store.set_preview_message(item_id, message_id)
     except DownloadFailed:
@@ -337,6 +356,7 @@ def scan_projects(
     only: str | None = None,
     *,
     token: str | None = None,
+    tiktok_creator: Callable[[], CreatorInfo | None] | None = None,
 ) -> bool:
     ok = True
     for project in projects:
@@ -345,7 +365,9 @@ def scan_projects(
         try:
             for release in _releases(project, client, token, now):
                 try:
-                    _intake(release, project, projects, store, notify, now)
+                    _intake(
+                        release, project, projects, store, notify, now, tiktok_creator
+                    )
                 except DownloadFailed as error:
                     logger.warning("Project %s %s: %s", project.key, release.tag, error)
                     ok = False

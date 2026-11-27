@@ -430,7 +430,8 @@ class ItemRepo:
                 self.transition(item_id, ItemState.FAILED)
                 return True
             if all(
-                statuses.get(channel) == PublicationStatus.PUBLISHED
+                statuses.get(channel)
+                in {PublicationStatus.PUBLISHED, PublicationStatus.SKIPPED}
                 for channel in channels - PAUSED_CHANNELS
             ):
                 self.transition(item_id, ItemState.PUBLISHED)
@@ -441,6 +442,17 @@ class ItemRepo:
     ) -> None:
         self._finish_publication(
             item_id, channel, PublicationStatus.PUBLISHED, remote_id, None, claim
+        )
+
+    def mark_skipped(self, claim: Claim, error: str) -> None:
+        publication = claim.publication
+        self._finish_publication(
+            publication.item_id,
+            publication.channel,
+            PublicationStatus.SKIPPED,
+            None,
+            error,
+            claim,
         )
 
     def mark_failed(

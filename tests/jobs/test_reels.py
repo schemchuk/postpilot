@@ -715,3 +715,44 @@ def test_invalid_projects_config_allows_own_video_job(monkeypatch, settings):
     notifier.send_alert.assert_called_once_with(
         "Project publishing held: config/projects.toml is invalid."
     )
+
+
+@pytest.mark.parametrize("result", ["ok", "missing", "error", "draft", "paused"])
+def test_tiktok_creator_is_lazy_and_cached_per_job(
+    monkeypatch, settings, result, caplog
+):
+    from postpilot.video.tiktok import CreatorInfo, TikTokAPIError
+
+    settings = replace(
+        settings,
+        tiktok=TikTokSettings(
+            "sandbox",
+            "key",
+            "secret",
+            "callback",
+            mode="draft" if result == "draft" else "direct",
+        ),
+    )
+    monkeypatch.setattr(
+        tasks, "is_paused", lambda name: name == "tiktok" and result == "paused"
+    )
+    creator_info = CreatorInfo(["SELF_ONLY"], False, False, False, 90, "Creator")
+    query = Mock(return_value=creator_info)
+    if result == "error":
+        query.side_effect = TikTokAPIError("private response body")
+    monkeypatch.setattr(tasks.TikTokClient, "creator_info", query)
+    access = Mock(return_value=None if result == "missing" else "private token")
+
+    source = tasks.tiktok_creator_source(settings, Mock(), Mock(), access)
+    access.assert_not_called()
+    if result in {"draft", "paused"}:
+        assert source is None
+        query.assert_not_called()
+        return
+    expected = creator_info if result == "ok" else None
+    assert source() == source() == expected
+    access.assert_called_once_with()
+    assert query.call_count == int(result != "missing")
+    assert caplog.messages == (
+        ["TikTok creator settings unavailable"] if expected is None else []
+    )

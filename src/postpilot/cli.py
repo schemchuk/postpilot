@@ -287,6 +287,9 @@ def main(argv: list[str] | None = None) -> int:
                         datetime.now(UTC),
                         only=key,
                         token=settings.github_token,
+                        tiktok_creator=tasks.tiktok_creator_source(
+                            settings, conn, client
+                        ),
                     )
                 )
 

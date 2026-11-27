@@ -44,7 +44,7 @@ def test_token_store_encrypts_and_upserts(conn):
 
 def test_token_migration_round_trip(conn):
     assert "tokens" in test_store.table_names(conn)
-    migrate.down(conn)  # 0023_tiktok_settings
+    migrate.down(conn, 2)  # 0024 and 0023
     migrate.down(conn)  # 0022_project_intake
     migrate.down(conn)  # 0021_project_items
     migrate.down(conn)  # 0020_item_video_publications

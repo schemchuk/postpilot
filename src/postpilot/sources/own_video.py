@@ -22,9 +22,12 @@ from postpilot.notify.telegram import (
     TelegramError,
     approval_keyboard,
     send_callback_result,
+    tiktok_preview,
 )
 from postpilot.store.own_videos import OwnVideo, OwnVideoIntake, OwnVideoStore
 from postpilot.store.repo import ItemRepo
+from postpilot.store.tiktok_settings import TikTokSettingsStore
+from postpilot.video.tiktok import CreatorInfo
 
 _LOG = logging.getLogger(__name__)
 
@@ -72,10 +75,12 @@ class OwnVideoInbox:
         model: TextModel | None,
         *,
         clock: Callable[[], float] = time,
+        tiktok_creator: Callable[[], CreatorInfo | None] | None = None,
     ) -> None:
         self.repo, self.api, self.model = repo, api, model
         self.store = OwnVideoStore(repo.conn)
         self.clock = clock
+        self.tiktok_creator = tiktok_creator
 
     def message(self, update_id: int, chat: int, message: dict[str, Any]) -> bool:
         text = message.get("text", "")
@@ -480,16 +485,24 @@ class OwnVideoInbox:
         except TelegramError:
             # Telegram document file IDs can only be reused as documents.
             self.api.send_document_ref(video.chat_id, video.file_id)
+        tiktok_details, rows = tiktok_preview(
+            item.id,
+            self.tiktok_creator if video.reels_eligible else None,
+            TikTokSettingsStore(self.repo.conn).get_partial,
+        )
         if not video.has_description:
+            markup = approval_keyboard(item.id, edit=False, regenerate=False)
+            markup["inline_keyboard"].extend(rows)
             self.api.send_message(
                 video.chat_id,
-                f"Own video · no description · Instagram, Facebook, YouTube, TikTok · AI label: {label}",
-                approval_keyboard(item.id, edit=False, regenerate=False),
+                f"Own video · no description · Instagram, Facebook, YouTube, TikTok · AI label: {label}{tiktok_details}",
+                markup,
             )
             return
         Notifier(self.api, video.chat_id).send_preview(
             item,
             self.repo.get_variants(item.id),
-            source_details="\n".join((details, *warnings)),
+            source_details="\n".join((details + tiktok_details, *warnings)),
             reels=video.reels_eligible,
+            extra_rows=rows,
         )

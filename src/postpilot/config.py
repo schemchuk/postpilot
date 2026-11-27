@@ -121,7 +121,11 @@ class Settings:
             chat_id = int(raw_chat_id)
         except ValueError:
             raise ConfigError("TELEGRAM_CHAT_ID") from None
-        key = _require(values, "TOKEN_ENCRYPTION_KEY") if require_token_key else ""
+        key = (
+            _require(values, "TOKEN_ENCRYPTION_KEY")
+            if require_token_key
+            else values.get("TOKEN_ENCRYPTION_KEY", "")
+        )
         client_id = values.get("LINKEDIN_CLIENT_ID", "")
         client_secret = values.get("LINKEDIN_CLIENT_SECRET", "")
         redirect_uri = values.get("LINKEDIN_REDIRECT_URI", "")
@@ -140,10 +144,8 @@ class Settings:
         youtube_id = values.get("YOUTUBE_CLIENT_ID")
         youtube_secret = values.get("YOUTUBE_CLIENT_SECRET")
         tiktok_mode = values.get("TIKTOK_MODE", "draft")
-        if tiktok_mode == "direct":
-            raise ConfigError("TIKTOK_MODE=direct comes with T29c2")
-        if tiktok_mode != "draft":
-            raise ConfigError("TIKTOK_MODE must be draft")
+        if tiktok_mode not in {"draft", "direct"}:
+            raise ConfigError("TIKTOK_MODE must be draft or direct")
         tiktok_env = values.get("TIKTOK_ENV", "sandbox")
         if tiktok_env not in {"sandbox", "production"}:
             raise ConfigError("TIKTOK_ENV must be sandbox or production")

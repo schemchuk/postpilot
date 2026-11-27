@@ -37,15 +37,16 @@ class UpdateInbox:
             ).fetchall()
             return cast(list[tuple[int, dict[str, Any]]], rows)
 
-    def mark_processed(self, update_id: int) -> None:
+    def mark_processed(self, update_id: int) -> bool:
         with self.conn.transaction():
-            self.conn.execute(
+            result = self.conn.execute(
                 """
                 UPDATE telegram_inbox SET processed_at = now()
                 WHERE update_id = %s AND processed_at IS NULL
                 """,
                 (update_id,),
             )
+            return result.rowcount == 1
 
     def record_failure(self, update_id: int) -> bool:
         with self.conn.transaction():

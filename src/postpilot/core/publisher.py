@@ -228,17 +228,18 @@ class Publisher:
             ],
         )
         variants = self.repo.get_variants(item_id)
-        published = {
+        completed = {
             publication.channel
             for publication in self.repo.list_publications(item_id)
-            if publication.status == PublicationStatus.PUBLISHED
+            if publication.status
+            in {PublicationStatus.PUBLISHED, PublicationStatus.SKIPPED}
         }
         results = {}
         for channel in channels:
             name = channel.name
             if name in excluded:
                 continue
-            if name in published:
+            if name in completed:
                 results[name] = ChannelResult("skipped")
             else:
                 results[name] = self._publish_channel(
@@ -251,7 +252,7 @@ class Publisher:
             ):
                 if name not in excluded:
                     results.setdefault(
-                        name, ChannelResult("skipped" if name in published else "held")
+                        name, ChannelResult("skipped" if name in completed else "held")
                     )
         for name, result in results.items():
             trace(
@@ -264,11 +265,7 @@ class Publisher:
             )
         transitioned_to_failed = self.repo.finish_publishing(
             item_id,
-            {
-                name
-                for name, result in results.items()
-                if not (result.outcome == "skipped" and result.error is not None)
-            },
+            set(results),
             held=frozenset(
                 name for name, result in results.items() if result.outcome == "held"
             ).union(excluded if project else ()),
@@ -322,7 +319,10 @@ class Publisher:
             try:
                 remote_id = self._send(channel, item, variants, claim)
             except ChannelSkipped as error:
-                self.repo.release_publication(claim)
+                try:
+                    self.repo.mark_skipped(claim, str(error))
+                except LostPublicationClaim:
+                    return ChannelResult("pending")
                 return ChannelResult("skipped", str(error))
             except ChannelHeld:
                 if not preserve_claim:

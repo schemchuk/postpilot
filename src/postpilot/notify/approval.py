@@ -25,10 +25,14 @@ from postpilot.engagement.threads import (
 )
 from postpilot.notify.renewal import RenewalHandler
 from postpilot.notify.telegram import (
+    TIKTOK_PRIVACY,
+    TIKTOK_TOGGLES,
+    KeyboardRows,
     Notifier,
     TelegramApi,
     TelegramError,
     send_callback_result,
+    tiktok_button_label,
     video_preview_markup,
 )
 from postpilot.sources.github import GitHubClient, GitHubError
@@ -44,6 +48,8 @@ from postpilot.stats import StatsStore, format_stats
 from postpilot.store.bot_state import PROFILE_LIMIT
 from postpilot.store.project_items import ProjectItemStore
 from postpilot.store.repo import EditTooLong, ItemRepo
+from postpilot.store.tiktok_settings import TikTokSettingsStore
+from postpilot.store.update_inbox import UpdateInbox
 from postpilot.trace import trace
 from postpilot.video.store import VideoStore
 
@@ -109,6 +115,7 @@ class ApprovalHandler:
         own_video: OwnVideoInbox | None = None,
         video_store: VideoStore | None = None,
         project_store: ProjectItemStore | None = None,
+        tiktok_settings: TikTokSettingsStore | None = None,
         engagement: EngagementStore | None = None,
         drafter: ReplyDrafter | None = None,
         stats: StatsStore | None = None,
@@ -128,6 +135,7 @@ class ApprovalHandler:
         self.own_video = own_video
         self.video_store = video_store
         self.project_store = project_store
+        self.tiktok_settings = tiktok_settings
         self.repo = repo
         self.api = api
         self.allowed_user_id = allowed_user_id
@@ -365,8 +373,10 @@ class ApprovalHandler:
             if action.startswith("own:intake:")
             else ""
         )
+        tiktok_action = action.startswith(("ttp:", "ttt:"))
         if (
-            not intake_action
+            not tiktok_action
+            and not intake_action
             and action not in _ACTIONS
             and action
             not in {
@@ -389,6 +399,13 @@ class ApprovalHandler:
         message = _object(event.get("message"))
         chat_id = _object(message.get("chat")).get("id")
         message_id = message.get("message_id")
+        keyboard = _object(message.get("reply_markup")).get("inline_keyboard", [])
+        if tiktok_action:
+            if chat_id == self.allowed_user_id and type(message_id) is int:
+                self._handle_tiktok(
+                    data, item_id, chat_id, message_id, keyboard, callback_id, update_id
+                )
+            return
         if action in _PROJECT_ACTIONS:
             if (
                 self.project_store is None
@@ -397,6 +414,8 @@ class ApprovalHandler:
             ):
                 return
             approve = action == "papprove"
+            if approve and self._needs_tiktok_privacy(item_id, keyboard, callback_id):
+                return
             changed = self.project_store.resolve_preview(
                 item_id, message_id, sender, approve
             )
@@ -460,7 +479,6 @@ class ApprovalHandler:
             store = self.video_store
             if store is None:
                 return
-            keyboard = _object(message.get("reply_markup")).get("inline_keyboard", [])
             if not isinstance(message.get("video"), dict) or not any(
                 _object(button).get("callback_data") == data
                 for row in keyboard
@@ -540,6 +558,13 @@ class ApprovalHandler:
             _reply(self.api.send_message, chat_id, f"Send the new {lang.upper()} text.")
             return
 
+        if (
+            action == "approve"
+            and item.source == "own_video"
+            and self._needs_tiktok_privacy(item_id, keyboard, callback_id)
+        ):
+            return
+
         state, label = _ACTIONS[action]
         try:
             self.repo.transition(
@@ -555,9 +580,121 @@ class ApprovalHandler:
         trace("approval", "transition", item=item_id, action=action, state=state)
 
         if type(chat_id) is int and type(message_id) is int:
-            _reply(self.api.edit_message_text, chat_id, message_id, label)
+            if (
+                action == "approve"
+                and item.source == "own_video"
+                and self.tiktok_settings
+            ):
+                _reply(
+                    self.api.edit_message_text,
+                    chat_id,
+                    message_id,
+                    label,
+                    reply_markup={"inline_keyboard": []},
+                )
+            else:
+                _reply(self.api.edit_message_text, chat_id, message_id, label)
         if action == "regen" and self.on_regenerate is not None:
             self.on_regenerate(item_id)
+
+    def _needs_tiktok_privacy(
+        self, item_id: UUID, keyboard: KeyboardRows, callback_id: str
+    ) -> bool:
+        if (
+            self.tiktok_settings is not None
+            and any(
+                button.get("callback_data", "").startswith("ttp:")
+                for row in keyboard
+                for button in row
+            )
+            and self.tiktok_settings.get(item_id) is None
+        ):
+            _reply(
+                self.api.answer_callback_query,
+                callback_id,
+                "Choose a TikTok privacy level first",
+            )
+            return True
+        return False
+
+    def _handle_tiktok(
+        self,
+        data: str,
+        item_id: UUID,
+        chat_id: int,
+        message_id: int,
+        keyboard: KeyboardRows,
+        callback_id: str,
+        update_id: object,
+    ) -> None:
+        store = self.tiktok_settings
+        if store is None or not any(
+            button.get("callback_data") == data for row in keyboard for button in row
+        ):
+            return
+        action, _, _ = data.rpartition(":")
+        kind, _, code = action.partition(":")
+        # Use the same row lock as project scheduling and item transitions.
+        projects = self.project_store or ProjectItemStore(store.conn)
+        with projects.lock_item(item_id):
+            item = self.repo.get_item(item_id)
+            project = (
+                projects.get_by_item(item_id)
+                if item and item.source == "project"
+                else None
+            )
+            now = datetime.now(UTC)
+            locked = project is not None and now >= project.release_at
+            open_for_choice = item is not None and (
+                (item.source == "own_video" and item.state == _AWAITING)
+                or (
+                    project is not None
+                    and item.state
+                    == (ItemState.APPROVED if project.approval == "auto" else _AWAITING)
+                )
+            )
+            if locked:
+                label = "TikTok choice locked at release time"
+                state = None
+            elif not open_for_choice:
+                _reply(self.api.answer_callback_query, callback_id, "Already handled")
+                return
+            else:
+                # Commit the mutation and inbox acknowledgement together.
+                if type(update_id) is int and not UpdateInbox(
+                    store.conn
+                ).mark_processed(update_id):
+                    return
+                if kind == "ttp" and code in TIKTOK_PRIVACY:
+                    store.set_privacy(item_id, TIKTOK_PRIVACY[code][0], now)
+                elif kind == "ttt" and code in TIKTOK_TOGGLES:
+                    store.flip_toggle(item_id, TIKTOK_TOGGLES[code][0], now)
+                else:
+                    return
+                label = None
+                state = store.get_partial(item_id)
+
+        rows = []
+        for row in keyboard:
+            buttons = []
+            for button in row:
+                action, _, id_text = button.get("callback_data", "").rpartition(":")
+                if id_text != str(item_id) or not action.startswith(("ttp:", "ttt:")):
+                    buttons.append(button)
+                elif (
+                    state is not None
+                    and (text := tiktok_button_label(action, state)) is not None
+                ):
+                    buttons.append({**button, "text": text})
+            if buttons:
+                rows.append(buttons)
+        _reply(self.api.answer_callback_query, callback_id, label)
+        _reply(
+            self.api.edit_message_reply_markup,
+            chat_id,
+            message_id,
+            {"inline_keyboard": rows},
+        )
 
     def _redraft(self, id: UUID, chat_id: int, message_id: int) -> None:
         store, drafter = self.engagement, self.drafter
