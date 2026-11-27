@@ -205,7 +205,7 @@ def test_poll_publishes_immediate_approval_after_marking_update_processed(
 ):
     approved_id, github_id = uuid4(), uuid4()
     repo.get_item.return_value = SimpleNamespace(
-        state=tasks.ItemState.AWAITING_APPROVAL
+        state=tasks.ItemState.AWAITING_APPROVAL, source=source
     )
 
     def list_approved(*, source=None):

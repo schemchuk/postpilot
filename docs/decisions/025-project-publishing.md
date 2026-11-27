@@ -122,3 +122,10 @@ the AI label, and nothing central enforces approval.
   - T27c `post` kind: text posts on LinkedIn DE and Threads.
   - T27d images for `post` (LinkedIn Images API, Threads image container).
   - T27e `docs/publishing-contract.md`, the AGENTS.md block, factory switched to v2, `factory-intake` removed.
+
+## Implementation notes (T27b)
+
+The scan runs at the start of every `publish-reels` run, scheduled every 15 minutes.
+It fingerprints asset metadata from the release list, so unchanged releases require no
+asset downloads. Rejection notices are deduplicated by project, tag and fingerprint.
+The workflow rename is deferred to T27e. Support for `post` tags is deferred to T27c.

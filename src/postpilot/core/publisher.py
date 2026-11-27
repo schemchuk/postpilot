@@ -18,13 +18,14 @@ from postpilot.channels.base import (
 from postpilot.channels.paused import PAUSED_CHANNELS
 from postpilot.core.approval import (
     ProjectApprovalError,
+    ProjectDailyLimitError,
     auto_approved_project,
     enabled_project,
 )
 from postpilot.core.models import Item, PublicationStatus, Variant
 from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.projects import CHANNEL_NAMES, Projects
-from postpilot.store.project_items import ProjectItem
+from postpilot.store.project_items import ProjectItem, ProjectItemStore
 from postpilot.store.repo import Claim, ItemRepo, LostPublicationClaim
 from postpilot.trace import describe_error, error_fields, trace
 
@@ -63,6 +64,7 @@ class Publisher:
         projects: Projects | None = None,
         project_exclusions: Callable[[ProjectItem], set[str]] | None = None,
         project_lock: Callable[[UUID], AbstractContextManager[None]] | None = None,
+        project_published_today: Callable[[str, datetime], int] | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self.project_channels = project_channels
@@ -70,6 +72,7 @@ class Publisher:
         self.projects = projects
         self.project_exclusions = project_exclusions
         self.project_lock = project_lock
+        self.project_published_today = project_published_today
         self.now = now
         self.repo = repo
         self.channels = channels
@@ -125,7 +128,8 @@ class Publisher:
                     raise ProjectApprovalError(
                         f"Project {policy.key!r} cannot publish {scheduled.kind}"
                     )
-                if scheduled.release_at > self.now() or item.state in {
+                now = self.now()
+                if scheduled.release_at > now or item.state in {
                     ItemState.FAILED,
                     ItemState.SKIPPED,
                 }:
@@ -134,6 +138,7 @@ class Publisher:
                 allowed = {
                     name
                     for logical in policy.channels
+                    if scheduled.channels is None or logical in scheduled.channels
                     for name in CHANNEL_NAMES[logical]
                 }
                 excluded = set(PAUSED_CHANNELS) | {
@@ -143,6 +148,16 @@ class Publisher:
                     excluded.update(self.project_exclusions(scheduled))
                 if all(channel.name in excluded for channel in channels):
                     return PublishReport({})
+                if item.state == ItemState.APPROVED:
+                    published_today = (
+                        self.project_published_today
+                        or ProjectItemStore(self.repo.conn).published_today
+                    )
+                    if published_today(policy.key, now) >= policy.max_per_day:
+                        raise ProjectDailyLimitError(
+                            f"Project {policy.key} daily limit {policy.max_per_day} reached; "
+                            f"{scheduled.tag} waits until tomorrow"
+                        )
             elif own_video:
                 if self.own_video_channels is None:
                     return PublishReport(

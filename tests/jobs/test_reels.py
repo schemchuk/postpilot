@@ -29,6 +29,11 @@ from postpilot.video.publisher import publish_one
 from postpilot.video.store import VideoStatus
 
 
+@pytest.fixture(autouse=True)
+def disable_project_scan(monkeypatch):
+    monkeypatch.setattr(tasks, "scan_projects", lambda *args, **kwargs: True)
+
+
 @pytest.fixture
 def settings():
     return Settings("db", "bot", 1, "key", facebook=FacebookSettings("123"))
@@ -587,7 +592,7 @@ def test_tiktok_workflow_reports_caption_from_own_and_factory_adapters(
     client = httpx.Client(transport=httpx.MockTransport(route))
     monkeypatch.setattr(tasks.httpx, "Client", lambda: client)
 
-    def publish(publisher, ids, *, on_result, notifier):
+    def publish(publisher, ids, *, on_result, notifier, on_project_hold=None):
         if source == "project" and not publisher.project_channels:
             return
         if source == "own_video" and not publisher.own_video_channels:
@@ -624,3 +629,89 @@ def test_tiktok_workflow_reports_caption_from_own_and_factory_adapters(
     if len(caption) > 2200:
         result += f"\nCaption is {len(caption)} chars, TikTok allows 2200."
     telegram.send_message.assert_called_once_with(1, f"{heading}\n{result}")
+
+
+def test_project_daily_notices_are_deduplicated_on_berlin_day(monkeypatch, settings):
+    from postpilot.core.approval import ProjectApprovalError, ProjectDailyLimitError
+    from postpilot.projects import Project, Projects
+    from postpilot.store.bot_state import BotState
+
+    now = datetime(2026, 11, 27, 22, 59, tzinfo=UTC)
+    monkeypatch.setattr(tasks, "_now", lambda: now)
+    project = Project("demo", "owner/repo", ("reel",), ("threads",))
+    disabled = replace(project, key="disabled", repo="owner/disabled", enabled=False)
+    monkeypatch.setattr(tasks.Projects, "load", lambda: Projects((project, disabled)))
+    conn = Mock()
+    conn.transaction.side_effect = nullcontext
+    seen = {}
+
+    def execute(_query, values):
+        key, day = values
+        if seen.get(key, "") >= day:
+            return Mock(rowcount=0)
+        seen[key] = day
+        return Mock(rowcount=1)
+
+    conn.execute.side_effect = execute
+    repo = Mock(bot_state=BotState(conn))
+    repo.list_approved_item_ids.return_value = []
+    repo.list_unfinished_item_ids.return_value = []
+    monkeypatch.setattr(tasks, "ItemRepo", Mock(return_value=repo))
+    store = Mock()
+    limited, held = uuid4(), uuid4()
+    store.list_due_item_ids.return_value = [limited, held]
+    monkeypatch.setattr(tasks, "ProjectItemStore", Mock(return_value=store))
+    message = "Project demo daily limit 1 reached; reel/demo waits until tomorrow"
+    errors = {
+        limited: ProjectDailyLimitError(message),
+        held: ProjectApprovalError("Project 'demo' needs a tap"),
+    }
+
+    def publish(item_id):
+        raise errors[item_id]
+
+    publisher = Mock()
+    publisher.publish_item.side_effect = publish
+    monkeypatch.setattr(tasks, "Publisher", Mock(return_value=publisher))
+    monkeypatch.setattr(tasks, "TokenCipher", Mock())
+    monkeypatch.setattr(tasks, "publish_one", Mock())
+    notifier = Mock()
+    monkeypatch.setattr(tasks, "Notifier", Mock(return_value=notifier))
+    tasks.publish_reels(settings, conn)
+    tasks.publish_reels(settings, conn)
+    assert [call.args[0] for call in notifier.send_alert.call_args_list] == [
+        "Project disabled is disabled",
+        message,
+        f"Project item {held.hex[:8]} held: Project 'demo' needs a tap",
+    ]
+    now += timedelta(minutes=1)
+    tasks.publish_reels(settings, conn)
+    assert notifier.send_alert.call_count == 6
+
+
+def test_invalid_projects_config_allows_own_video_job(monkeypatch, settings):
+    from postpilot.projects import ProjectsConfigError
+
+    monkeypatch.setattr(
+        tasks.Projects, "load", Mock(side_effect=ProjectsConfigError("invalid"))
+    )
+    own_video = uuid4()
+    repo = Mock()
+    repo.bot_state.send_daily_once.side_effect = lambda key, day, send: send()
+    repo.list_approved_item_ids.return_value = [own_video]
+    repo.list_unfinished_item_ids.return_value = []
+    monkeypatch.setattr(tasks, "ItemRepo", Mock(return_value=repo))
+    monkeypatch.setattr(tasks, "TokenCipher", Mock())
+    monkeypatch.setattr(tasks, "publish_one", Mock())
+    publish_items = Mock()
+    monkeypatch.setattr(tasks, "_publish_items", publish_items)
+    notifier = Mock()
+    monkeypatch.setattr(tasks, "Notifier", Mock(return_value=notifier))
+    tasks.publish_reels(settings, Mock())
+
+    tasks.publish_one.assert_called_once()
+    publish_items.assert_called_once()
+    assert list(publish_items.call_args.args[1]) == [own_video]
+    notifier.send_alert.assert_called_once_with(
+        "Project publishing held: config/projects.toml is invalid."
+    )

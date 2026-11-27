@@ -6,12 +6,20 @@ class ProjectApprovalError(IllegalTransition):
     pass
 
 
+class ProjectDisabledError(ProjectApprovalError):
+    pass
+
+
+class ProjectDailyLimitError(ProjectApprovalError):
+    pass
+
+
 def enabled_project(projects: Projects, key: str) -> Project:
     project = projects.get(key)
     if project is None:
         raise ProjectApprovalError(f"Unknown project {key!r}")
     if not project.enabled:
-        raise ProjectApprovalError(f"Project {key!r} is disabled")
+        raise ProjectDisabledError(f"Project {key!r} is disabled")
     return project
 
 

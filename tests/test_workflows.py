@@ -150,7 +150,7 @@ def test_scheduled_workflow(name, cron):
         else:
             expected.update(channel_credentials)
         if name == "publish-reels":
-            expected.add("TIKTOK_MODE")
+            expected.update({"TIKTOK_MODE", "GITHUB_TOKEN"})
         if name in {"check-tokens", "poll-telegram", "publish-reels"}:
             expected.update(
                 {
@@ -179,6 +179,7 @@ def test_scheduled_workflow(name, cron):
                 "draft-weekly",
                 "poll-engagement",
                 "poll-telegram",
+                "publish-reels",
             } and variable in {
                 "GITHUB_TOKEN",
                 "GITHUB_OWNER",
@@ -227,6 +228,32 @@ def test_factory_intake_dispatch():
     ]
     assert commands[-1]["env"] == {
         "FACTORY_PAYLOAD": "${{ inputs.payload }}",
+        **{
+            name: "${{ secrets." + name + " }}"
+            for name in ["DATABASE_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]
+        },
+    }
+
+
+def test_project_intake_dispatch():
+    workflow = yaml.safe_load((WORKFLOWS / "project-intake.yml").read_text())
+    triggers = workflow["on"] if "on" in workflow else workflow[True]
+    assert set(triggers) == {"workflow_dispatch"}
+    inputs = triggers["workflow_dispatch"]["inputs"]
+    assert set(inputs) == {"project"}
+    assert inputs["project"]["type"] == "string" and inputs["project"]["required"]
+    assert workflow["permissions"] == {"contents": "read"}
+    publish = yaml.safe_load((WORKFLOWS / "publish-reels.yml").read_text())
+    assert workflow["concurrency"] == publish["concurrency"]
+    commands = [step for step in workflow["jobs"]["run"]["steps"] if "run" in step]
+    assert [step["run"] for step in commands] == [
+        "sudo apt-get update && sudo apt-get install -y ffmpeg",
+        "python -m pip install .",
+        "postpilot project-intake",
+    ]
+    assert commands[-1]["env"] == {
+        "PROJECT_KEY": "${{ inputs.project }}",
+        "GITHUB_TOKEN": "${{ github.token }}",
         **{
             name: "${{ secrets." + name + " }}"
             for name in ["DATABASE_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]

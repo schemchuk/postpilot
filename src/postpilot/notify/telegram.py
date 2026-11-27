@@ -134,6 +134,11 @@ class TelegramApi:
             pass
         raise TelegramError("Telegram file download failed")
 
+    def send_photo(self, chat_id: int, photo: bytes) -> None:
+        self._request(
+            "sendPhoto", {"photo": ("cover.png", photo, "image/png")}, chat_id=chat_id
+        )
+
     def send_video(
         self,
         chat_id: int,
@@ -346,6 +351,39 @@ class Notifier:
         else:
             preview = render_preview(item, variants, source_details=source_details)
         return self.api.send_message(self.chat_id, preview, markup)
+
+    def send_project_preview(
+        self,
+        item_id: UUID,
+        cover: bytes,
+        heading: str,
+        post_de: str,
+        threads: str | None,
+    ) -> int:
+        self.api.send_photo(self.chat_id, cover)
+        markup = {
+            "inline_keyboard": [
+                [
+                    {"text": "Approve", "callback_data": f"papprove:{item_id}"},
+                    {"text": "Reject", "callback_data": f"preject:{item_id}"},
+                ]
+            ]
+        }
+        sections = [heading, f"LinkedIn DE\n{post_de}"]
+        if threads is not None:
+            sections.append(f"Threads\n{threads}")
+        preview = "\n\n".join(sections)
+        if len(preview.encode("utf-16-le")) // 2 <= _MESSAGE_LIMIT:
+            return self.api.send_message(self.chat_id, preview, markup)
+        # Keep every character when the preview needs multiple Telegram messages.
+        for start in range(0, len(preview), 2000):
+            end = start + 2000
+            message_id = self.api.send_message(
+                self.chat_id,
+                preview[start:end],
+                markup if end >= len(preview) else None,
+            )
+        return message_id
 
     def send_publish_failure(
         self, item: Item, publications: Iterable[Publication]

@@ -24,6 +24,9 @@ from postpilot.video.label import AI_VIDEO_CAPTION_LABEL
 _EPISODE = re.compile(r"[0-9]{3}-[a-z0-9]+(?:-[a-z0-9]+)*")
 _OFFSET = re.compile(r"(?:Z|[+-](?:[01][0-9]|2[0-3])(?::?[0-5][0-9])?)$")
 _LIMITS = {
+    "manifest.json": 16_000,
+    "video.mp4": 100_000_000,
+    "cover.png": 10_000_000,
     "reel_de.mp4": 100_000_000,
     "cover_de.png": 10_000_000,
     "post_de.txt": 4 * LINKEDIN_TEXT_LIMIT,
@@ -34,6 +37,10 @@ _WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 
 class Rejected(ValueError):
+    pass
+
+
+class DownloadFailed(Rejected):
     pass
 
 
@@ -110,7 +117,9 @@ def _asset(client: httpx.Client, url: httpx.URL, repo: str, name: str) -> bytes:
                         raise Rejected(f"{name} exceeds {limit} bytes")
                     data.extend(chunk)
                 return bytes(data)
-    except (httpx.HTTPError, httpx.InvalidURL):
+    except httpx.HTTPError:
+        raise DownloadFailed(f"could not download asset {name}") from None
+    except httpx.InvalidURL:
         raise Rejected(f"could not download asset {name}") from None
     raise Rejected(f"too many download redirects for {name}")
 
@@ -158,21 +167,37 @@ def _probe_duration(video: bytes) -> float:
         return float(media["format"]["duration"])
 
 
-class FactoryRelease:
-    def __init__(self, client: httpx.Client, repo: str, tag: str) -> None:
+class ProjectRelease:
+    def __init__(
+        self, client: httpx.Client, repo: str, tag: str, *, assets: object = None
+    ) -> None:
         self.client = client
         self.repo = repo
         self.tag = tag
         try:
-            response = client.get(
-                f"https://api.github.com/repos/{repo}/releases/tags/{quote(tag, safe='')}",
-                follow_redirects=False,
-            )
-            response.raise_for_status()
-            self.metadata = {
-                asset["name"]: asset for asset in response.json()["assets"]
-            }
-        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            if assets is None:
+                response = client.get(
+                    f"https://api.github.com/repos/{repo}/releases/tags/{quote(tag, safe='')}",
+                    follow_redirects=False,
+                )
+                response.raise_for_status()
+                assets = response.json()["assets"]
+            if not isinstance(assets, list):
+                raise TypeError
+            self.metadata: dict[str, dict[str, object]] = {}
+            for asset in assets:
+                if not isinstance(asset, dict) or not isinstance(
+                    name := asset.get("name"), str
+                ):
+                    raise TypeError
+                if name in self.metadata:
+                    raise Rejected("release contains duplicate asset names")
+                self.metadata[name] = asset
+        except Rejected:
+            raise
+        except httpx.HTTPError:
+            raise DownloadFailed(f"could not read release {tag}") from None
+        except (ValueError, KeyError, TypeError):
             raise Rejected(f"could not read release {tag}") from None
 
     def asset_url(self, name: str) -> httpx.URL:
@@ -197,21 +222,30 @@ class FactoryRelease:
         return _asset(self.client, url, self.repo, name)
 
 
-def _download(
-    client: httpx.Client,
-    repo: str,
+FactoryRelease = ProjectRelease
+
+
+def read_reel(
+    release: ProjectRelease,
     episode: str,
     release_at: datetime,
     ai: bool,
     probe: Callable[[bytes], float],
-) -> ProjectItem:
-    release = FactoryRelease(client, repo, f"reel/{episode}")
-    urls = {
-        name: release.asset_url(name)
-        for name in _LIMITS
-        if name != "title_de.txt"
-        and (name != "post_threads.txt" or name in release.metadata)
-    }
+    *,
+    project: str = FACTORY_PROJECT,
+    approval: str = "auto",
+    channels: tuple[str, ...] | None = None,
+    fingerprint: str | None = None,
+) -> tuple[ProjectItem, bytes]:
+    video_name, cover_name = (
+        ("reel_de.mp4", "cover_de.png")
+        if fingerprint is None
+        else ("video.mp4", "cover.png")
+    )
+    names = [video_name, cover_name, "post_de.txt"]
+    if "post_threads.txt" in release.metadata:
+        names.append("post_threads.txt")
+    urls = {name: release.asset_url(name) for name in names}
     assets: dict[str, Asset] = {}
 
     def download(name: str) -> bytes:
@@ -228,16 +262,17 @@ def _download(
     threads = post_de if len(post_de) <= 500 else None
     if "post_threads.txt" in urls:
         threads = _text(download("post_threads.txt"), "post_threads.txt", 500)
-    if not download("cover_de.png").startswith(b"\x89PNG\r\n\x1a\n"):
-        raise Rejected("cover_de.png must have a PNG signature")
-    video = download("reel_de.mp4")
+    cover = download(cover_name)
+    if not cover.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise Rejected(f"{cover_name} must have a PNG signature")
+    video = download(video_name)
     try:
         duration = probe(video)
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
-        raise Rejected("could not probe reel_de.mp4 duration") from None
+        raise Rejected(f"could not probe {video_name} duration") from None
     if not REELS_MIN_DURATION <= duration <= REELS_MAX_DURATION:
         raise Rejected(
-            f"reel_de.mp4 must be {REELS_MIN_DURATION}-{REELS_MAX_DURATION} seconds"
+            f"{video_name} must be {REELS_MIN_DURATION}-{REELS_MAX_DURATION} seconds"
         )
     title = None
     if (title_asset := release.metadata.get("title_de.txt")) is not None:
@@ -259,9 +294,12 @@ def _download(
         threads,
         assets,
         duration,
-        FACTORY_PROJECT,
+        project,
         title_de=title,
-    )
+        approval=approval,
+        channels=channels,
+        fingerprint=fingerprint,
+    ), cover
 
 
 def _notice(repo: str, reel: ProjectItem, status: IntakeStatus) -> str:
@@ -311,7 +349,8 @@ def intake(
         if not isinstance(ai, bool):
             raise Rejected("ai must be a boolean")
         release_at = _release_time(data["release_at"], now or datetime.now(UTC))
-        reel = _download(client, repo, episode, release_at, ai, probe)
+        release = FactoryRelease(client, repo, f"reel/{episode}")
+        reel, _ = read_reel(release, episode, release_at, ai, probe)
     except Rejected as error:
         notify(f"Factory reel {episode} rejected: {error}")
         return 1
