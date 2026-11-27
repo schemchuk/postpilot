@@ -348,7 +348,7 @@ ADRs: 025 (decision 2: a PR that adds a project with `approval = "auto"` or wide
 `projects.py` and prints one line per widening: new project with `approval = "auto"`, `tap` -> `auto`, a channel
 or kind added, `max_per_day` raised, `enabled` false -> true on an `auto` project, `repo` changed. Narrowing,
 a new `tap` project and unchanged files print nothing. Exit 1 on any widening, 0 otherwise; a missing base file
-(new file) counts as all projects added. (2) New job in `ci.yml`, `pull_request` only (types `opened`,
+(new file) counts as all projects added. (2) New workflow `projects-guard.yml` (separate so label events do not rerun the full CI), `pull_request` only (types `opened`,
 `synchronize`, `reopened`, `labeled`, `unlabeled`): when the PR touches `config/projects.toml`, run the script on
 `origin/<base>` vs HEAD; on widening the job fails unless the PR has the label `projects-ok`. (3) AGENTS.md git
 rules: only Volodymyr adds `projects-ok`; agents never add it. Known limit, written in the audit: agents use
