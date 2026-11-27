@@ -141,7 +141,7 @@ class FacebookReelsChannel:
                 f"{self._settings.graph_url}/{quote(ref, safe='')}/thumbnails",
                 token,
                 data={"is_preferred": "true"},
-                files={"source": ("cover_de.png", cover, "image/png")},
+                files={"source": ("cover.png", cover, "image/png")},
             )
             if result.get("success") is not True:
                 raise ChannelError("Facebook Reels did not confirm the thumbnail")

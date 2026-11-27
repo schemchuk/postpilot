@@ -28,7 +28,7 @@ or renew those tokens with the new key. A key change also invalidates pending re
 Open the Telegram **Publishing failed** message to see the errors for active
 channels. After addressing the error, press **Retry**. The bot resumes publishing
 in the same run and leaves any remaining own-video Reels for the next
-`publish-reels` run. Channels that already published are preserved. If the item
+`publish-projects` run. Channels that already published are preserved. If the item
 fails again, use the buttons on the new failure message.
 
 Press **Skip** to close the item and keep any posts already published. Both
@@ -80,7 +80,7 @@ grep '^FACEBOOK_PAGE_ID=' .env | cut -d= -f2- | tr -d '\n' | gh secret set FACEB
 gh secret list
 ```
 
-Scheduled `publish-reels` runs skip FAILED channel publications. To include
+Scheduled `publish-projects` runs skip FAILED channel publications. To include
 them when selecting the oldest eligible render, run `postpilot publish-reels
 --retry` or enable `retry` when dispatching the workflow manually. The job
 checks any saved video ID before attempting to publish again.
@@ -282,7 +282,7 @@ POST, body `{"ref":"main"}`, headers `Authorization: Bearer <PAT>`,
 |---|---|
 | poll-telegram.yml | hourly at :00 (`0 * * * *`) |
 | poll-engagement.yml | every 30 minutes |
-| publish-reels.yml | hourly at :00 (`0 * * * *`) |
+| publish-projects.yml | hourly at :00 (`0 * * * *`) |
 | check-tokens.yml | daily 07:00 |
 | snapshot-traffic.yml | daily 07:30 |
 | draft-weekly.yml | Wednesday 18:00 Europe/Berlin (job timezone Europe/Berlin) |
@@ -294,8 +294,8 @@ API key `CRONJOB_API_KEY` in `.env` only (created in cron-job.org Settings -> AP
 100 API requests a day). `GET /jobs` lists them; `GET /jobs/<id>` returns the headers including the
 PAT, so never print that response. To change all jobs (e.g. a new PAT), read one job, edit its
 `extendedData.headers` in memory and `PATCH /jobs/<id>` each job. Job IDs: poll-telegram 8905864,
-poll-engagement 8905882, publish-reels 8906005, check-tokens 8906007, snapshot-traffic 8906009,
-publish-due 8906013, render-video 8906015.
+poll-engagement 8905882, `publish-projects.yml` 8906005, check-tokens 8906007,
+snapshot-traffic 8906009, publish-due 8906013, render-video 8906015.
 
 Keep the intervals: the Neon free plan has 100 CU-hours a month and every database run keeps the
 compute awake ~6 minutes (ADR 017 decision 5). Each `poll-telegram` run opens the database
@@ -319,22 +319,6 @@ the same way, replace the header in every cron-job.org job, delete the old PAT. 
   drafts. Each poll processes approvals and attempts publishing before generating advice.
   If advice fails, the bot attempts to reply `Advice failed` and the job still exits 0
   unless another part of the poll fails.
-
-## Factory reel intake
-
-After script approval, the factory publishes a public release tagged
-`reel/<episode>` in `FACTORY_REPO`. Attach `reel_de.mp4`, `cover_de.png`,
-`post_de.txt`, and optionally `post_threads.txt`. Dispatch from an authenticated
-checkout of postpilot, using a release time within the next 60 days.
-
-```sh
-gh workflow run factory-intake -f payload='{"v":1,"episode":"002-medunko-v-splyachtsi","release_at":"2026-12-01T08:00:00+01:00","ai":true}'
-```
-
-The Telegram notice reports whether intake stored, replaced, or refused the
-episode, or found it unchanged. Once scheduled publishing is available, cancel
-a reel by deleting its GitHub release before `release_at`. The next publish
-attempt will report the missing release.
 
 ## YouTube Shorts setup (connector)
 
@@ -449,11 +433,10 @@ video can be opened in the TikTok app.
 
 ### Scan a project release
 
-The `publish-reels` workflow scans enabled projects every 15 minutes. To scan one
+The `publish-projects` workflow scans enabled projects every 15 minutes. To scan one
 project sooner, open **Actions → project-intake → Run workflow** and enter its key
 from `config/projects.toml`. The dispatch scans the configured public repository
-for `reel/*` releases with `manifest.json`. Factory v1 releases still use
-`factory-intake`.
+for `reel/*` and `post/*` releases with `manifest.json`.
 
 An automatic intake notice shows whether a reel was added, replaced or unchanged.
 For tap approval, review the cover and channel texts, then select **Approve** to

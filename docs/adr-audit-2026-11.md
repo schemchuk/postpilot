@@ -76,7 +76,7 @@ made the test fail.
 | 025-4g | Factory v1 asset names accepted until v2 | test | `test_project_release.py::test_publishing_reads_and_verifies_v2_asset_names`, v1 in `test_factory_intake.py` |
 | 025-5a | Hourly run scans enabled projects, pages up to 61 days | test | `test_project_release.py::test_release_scan_pagination`, `test_scan_filters_and_isolates_projects` |
 | 025-5b | `project-intake` dispatch carries no content | test | `tests/test_workflows.py::test_project_intake_dispatch` |
-| 025-5c | Workflow renamed `publish-projects`, `factory-intake` removed after v2 | deferred | T27e2 |
+| 025-5c | Workflow renamed `publish-projects`, `factory-intake` removed after v2 | test | `tests/test_workflows.py`, `tests/sources/test_project_release.py::test_scan_filters_and_isolates_projects` (T27e2) |
 | 025-6a | `tap`: preview with Approve/Reject, never published unapproved, replaced item needs a new tap | test | `tests/integration/test_store.py::test_project_tap_replacement_approval_and_refusal`, `tests/notify/test_project_approval.py::test_project_callback_checks_owner_chat_and_preview_revision` |
 | 025-6b | `auto`: created APPROVED, notice without buttons; exception enforced in core | test | `test_project_release.py::test_scan_sends_notice_or_preview`, `test_auto_image_post_sends_notice_with_photo_and_no_approval_buttons`, `test_projects.py::test_publish_checks_project_policy_and_channels` |
 | 025-7a | Text never rewritten; over-length refused at intake | test | `test_project_release.py::test_project_text_is_verbatim`, `test_post_rejects_invalid_text` |

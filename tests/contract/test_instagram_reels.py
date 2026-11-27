@@ -120,7 +120,7 @@ def status(ref, code):
 
 @pytest.mark.parametrize(
     "cover_url",
-    [None, "https://github.com/owner/repo/releases/download/reel/cover_de.png"],
+    [None, "https://github.com/owner/repo/releases/download/reel/cover.png"],
 )
 def test_create_upload_poll_publish_and_cache_link(render, cover_url):
     render = replace(render, cover_url=cover_url)

@@ -86,7 +86,6 @@ def test_migration_up_noop_and_down(conn):
         "own_videos",
         "own_video_updates",
         "telegram_inbox",
-        "factory_reels",
         "project_items",
         "project_rejections",
         "tiktok_settings",
@@ -118,6 +117,7 @@ def test_migration_up_noop_and_down(conn):
         "0022_project_intake",
         "0023_tiktok_settings",
         "0024_tiktok_partial_choice",
+        "0025_drop_factory_reels",
     ]
     migrate.up(conn)
     assert applied_migrations(conn) == initial
@@ -127,6 +127,11 @@ def test_migration_up_noop_and_down(conn):
             (id := uuid4(),),
         )
         conn.execute("DELETE FROM items WHERE id = %s", (id,))
+    migrate.down(conn)
+    assert applied_migrations(conn) == initial[:24]
+    assert "factory_reels" in table_names(conn)
+    with conn.transaction():
+        assert conn.execute("SELECT * FROM factory_reels").fetchall() == []
     migrate.down(conn)
     assert applied_migrations(conn) == initial[:23]
     migrate.down(conn)
@@ -147,7 +152,6 @@ def test_migration_up_noop_and_down(conn):
     assert applied_migrations(conn) == initial[:17]
     assert table_names(conn) == latest_schema - {
         "telegram_inbox",
-        "factory_reels",
         "project_items",
         "project_rejections",
         "tiktok_settings",
@@ -395,7 +399,7 @@ def test_database_checks_state_and_status(conn, approved_item):
 
 
 @pytest.mark.parametrize("status", ["PUBLISHING", "PUBLISHED"])
-def test_factory_intake_repeats_and_publisher_isolation(conn, repo, status):
+def test_project_reel_repeats_and_publisher_isolation(conn, repo, status):
     from postpilot.core.publisher import Publisher
     from postpilot.projects import FACTORY_PROJECT, Projects
     from postpilot.store.project_items import ProjectItem, ProjectItemStore
@@ -525,7 +529,10 @@ def test_project_intake_migration_round_trip_with_data(conn):
     assert store.save_reel(projects, v2) == ("replaced", None)
     assert store.record_rejection(reel.project, reel.tag, "bad", "bad manifest")
     assert not store.record_rejection(reel.project, reel.tag, "bad", "bad manifest")
-    migrate.down(conn, 2)
+    versions = [version for version, _ in applied_migrations(conn)]
+    target = "0021_project_items"
+    migrate.down(conn, len(versions) - versions.index(target) - 1)
+    assert applied_migrations(conn)[-1][0] == target
     with conn.transaction():
         row = conn.execute(
             "SELECT to_jsonb(f) FROM project_items f WHERE item_id = %s", (item_id,)

@@ -13,7 +13,7 @@ SCHEDULES = {
     "snapshot-traffic": "30 7 * * *",
     "publish-due": "0 9 * * 5",
     "render-video": "0 10 * * 5",
-    "publish-reels": "*/15 * * * *",
+    "publish-projects": "*/15 * * * *",
 }
 
 
@@ -57,7 +57,7 @@ def test_scheduled_workflow(name, cron):
                 }
             }
         }
-        if name in {"render-video", "publish-reels"}
+        if name in {"render-video", "publish-projects"}
         else None
     )
     assert triggers == {"schedule": [{"cron": cron}], "workflow_dispatch": dispatch}
@@ -78,7 +78,8 @@ def test_scheduled_workflow(name, cron):
         assert any(
             step.get("run") == "python -m pip install ." for step in job["steps"]
         )
-        expected_run = f"postpilot {name}"
+        command_name = "publish-reels" if name == "publish-projects" else name
+        expected_run = f"postpilot {command_name}"
         if dispatch is not None:
             expected_run += " ${{ inputs.retry && '--retry' || '' }}"
         command = next(step for step in job["steps"] if step.get("run") == expected_run)
@@ -111,7 +112,7 @@ def test_scheduled_workflow(name, cron):
                     "GITHUB_OWNER",
                 }
             )
-        elif name == "publish-reels":
+        elif name == "publish-projects":
             assert job["timeout-minutes"] == 15
             expected.update(
                 linkedin_credentials
@@ -149,9 +150,9 @@ def test_scheduled_workflow(name, cron):
             )
         else:
             expected.update(channel_credentials)
-        if name == "publish-reels":
+        if name == "publish-projects":
             expected.update({"TIKTOK_MODE", "GITHUB_TOKEN"})
-        if name in {"check-tokens", "poll-telegram", "publish-reels"}:
+        if name in {"check-tokens", "poll-telegram", "publish-projects"}:
             expected.update(
                 {
                     "TIKTOK_ENV",
@@ -179,7 +180,7 @@ def test_scheduled_workflow(name, cron):
                 "draft-weekly",
                 "poll-engagement",
                 "poll-telegram",
-                "publish-reels",
+                "publish-projects",
             } and variable in {
                 "GITHUB_TOKEN",
                 "GITHUB_OWNER",
@@ -202,39 +203,6 @@ def test_scheduled_workflow(name, cron):
             assert value == "${{ secrets." + secret + " }}"
 
 
-def test_factory_intake_dispatch():
-    workflow = yaml.safe_load((WORKFLOWS / "factory-intake.yml").read_text())
-    triggers = workflow["on"] if "on" in workflow else workflow[True]
-    assert set(triggers) == {"workflow_dispatch"}
-    inputs = triggers["workflow_dispatch"]["inputs"]
-    assert set(inputs) == {"payload"}
-    assert inputs["payload"]["type"] == "string" and inputs["payload"]["required"]
-    assert workflow["permissions"] == {"contents": "read"}
-    assert workflow["concurrency"] == {
-        "group": "factory-intake",
-        "cancel-in-progress": False,
-    }
-    job = workflow["jobs"]["run"]
-    assert job["runs-on"] == "ubuntu-latest"
-    assert {
-        "uses": "actions/setup-python@v5",
-        "with": {"python-version": "3.12"},
-    } in job["steps"]
-    commands = [step for step in job["steps"] if "run" in step]
-    assert [step["run"] for step in commands] == [
-        "sudo apt-get update && sudo apt-get install -y ffmpeg",
-        "python -m pip install .",
-        "postpilot factory-intake",
-    ]
-    assert commands[-1]["env"] == {
-        "FACTORY_PAYLOAD": "${{ inputs.payload }}",
-        **{
-            name: "${{ secrets." + name + " }}"
-            for name in ["DATABASE_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]
-        },
-    }
-
-
 def test_project_intake_dispatch():
     workflow = yaml.safe_load((WORKFLOWS / "project-intake.yml").read_text())
     triggers = workflow["on"] if "on" in workflow else workflow[True]
@@ -243,8 +211,16 @@ def test_project_intake_dispatch():
     assert set(inputs) == {"project"}
     assert inputs["project"]["type"] == "string" and inputs["project"]["required"]
     assert workflow["permissions"] == {"contents": "read"}
-    publish = yaml.safe_load((WORKFLOWS / "publish-reels.yml").read_text())
-    assert workflow["concurrency"] == publish["concurrency"]
+    publish = yaml.safe_load((WORKFLOWS / "publish-projects.yml").read_text())
+    assert publish["name"] == "publish-projects"
+    assert (
+        workflow["concurrency"]
+        == publish["concurrency"]
+        == {
+            "group": "publish-projects",
+            "cancel-in-progress": False,
+        }
+    )
     commands = [step for step in workflow["jobs"]["run"]["steps"] if "run" in step]
     assert [step["run"] for step in commands] == [
         "sudo apt-get update && sudo apt-get install -y ffmpeg",

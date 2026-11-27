@@ -30,10 +30,10 @@ VIDEO = b"video"
 COVER = b"\x89PNG\r\n\x1a\ncover"
 REPO = "owner/repo"
 PROJECTS = Projects((Project(FACTORY_PROJECT, REPO, ("reel",), ("threads",), "auto"),))
-URL = f"https://github.com/{REPO}/releases/download/reel/002-test/reel_de.mp4"
+URL = f"https://github.com/{REPO}/releases/download/reel/002-test/video.mp4"
 
 
-COVER_URL = URL.replace("reel_de.mp4", "cover_de.png")
+COVER_URL = URL.replace("video.mp4", "cover.png")
 
 
 def item(state, source="project"):
@@ -68,6 +68,8 @@ def test_factory_opt_in_does_not_bypass_approval_for_other_sources():
     channel = Mock()
     with pytest.raises(IllegalTransition, match="project publisher"):
         Publisher(repo, [channel]).publish_item(factory.id)
+    repo.claim_publication.assert_not_called()
+    assert not channel.mock_calls
     with pytest.raises(IllegalTransition, match="AWAITING_APPROVAL"):
         Publisher(
             repo,
@@ -95,8 +97,8 @@ def assets(
         text,
         thread,
         {
-            "reel_de.mp4": {"sha256": sha256(VIDEO).hexdigest(), "size": size},
-            "cover_de.png": {"sha256": sha256(cover).hexdigest(), "size": len(cover)},
+            "video.mp4": {"sha256": sha256(VIDEO).hexdigest(), "size": size},
+            "cover.png": {"sha256": sha256(cover).hexdigest(), "size": len(cover)},
         },
         30,
         project=FACTORY_PROJECT,
@@ -110,7 +112,7 @@ def assets(
         ("ok", None),
         ("size", "changed since intake"),
         ("missing-release", "Factory release reel/002-test is unavailable"),
-        ("missing-asset", "is missing reel_de.mp4"),
+        ("missing-asset", "is missing video.mp4"),
         ("disallowed", "disallowed download URL"),
         ("redirect", "disallowed download redirect"),
     ],
@@ -132,12 +134,12 @@ def test_factory_video_checks_and_caches_release_asset(mode, reason):
                     if mode == "missing-asset"
                     else [
                         {
-                            "name": "reel_de.mp4",
+                            "name": "video.mp4",
                             "size": len(VIDEO),
                             "browser_download_url": url,
                         },
                         {
-                            "name": "cover_de.png",
+                            "name": "cover.png",
                             "size": 5,
                             "browser_download_url": "https://evil.invalid",
                         },
@@ -233,7 +235,7 @@ def test_threads_only_checks_release_metadata_and_labels_stored_text(
                 json={
                     "assets": [
                         {
-                            "name": "reel_de.mp4",
+                            "name": "video.mp4",
                             "size": len(VIDEO),
                             "browser_download_url": URL,
                         }
@@ -308,7 +310,7 @@ def test_facebook_recovers_a_published_reference_without_loading_release_bytes()
         ("ok", COVER, None),
         ("hash", COVER[:-1] + b"X", "changed since intake"),
         ("size", COVER + b"X", "changed since intake"),
-        ("missing", COVER, "is missing cover_de.png"),
+        ("missing", COVER, "is missing cover.png"),
         ("signature", b"invalid", "PNG signature"),
     ],
 )
@@ -318,9 +320,9 @@ def test_factory_cover_checks_and_caches_release_asset(mode, content, reason):
     def route(request):
         requests.append(str(request.url))
         if request.url.host == "api.github.com":
-            files = [("reel_de.mp4", URL, VIDEO)]
+            files = [("video.mp4", URL, VIDEO)]
             if mode != "missing":
-                files.append(("cover_de.png", COVER_URL, content))
+                files.append(("cover.png", COVER_URL, content))
             return httpx.Response(
                 200,
                 json={

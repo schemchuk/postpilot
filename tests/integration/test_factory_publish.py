@@ -21,6 +21,8 @@ from postpilot.core.models import PublicationStatus
 from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.jobs import tasks
 from postpilot.projects import FACTORY_PROJECT, Projects
+from postpilot.sources import project_release
+from postpilot.sources.project_release import scan_projects
 from postpilot.store.project_items import ProjectItem, ProjectItemStore
 from postpilot.video.label import AI_VIDEO_CAPTION_LABEL
 
@@ -50,8 +52,8 @@ def add_reel(conn, *, release_at=NOW - timedelta(seconds=1), ai=True, threads=TH
         POST,
         threads,
         {
-            "reel_de.mp4": {"sha256": sha256(VIDEO).hexdigest(), "size": len(VIDEO)},
-            "cover_de.png": {"sha256": sha256(COVER).hexdigest(), "size": len(COVER)},
+            "video.mp4": {"sha256": sha256(VIDEO).hexdigest(), "size": len(VIDEO)},
+            "cover.png": {"sha256": sha256(COVER).hexdigest(), "size": len(COVER)},
         },
         30,
         FACTORY_PROJECT,
@@ -79,9 +81,9 @@ def job(monkeypatch, conn):
         instagram=InstagramSettings("ig"),
     )
     project = Projects.load().get(FACTORY_PROJECT)
-    asset_url = f"https://github.com/{project.repo}/releases/download/clip/reel_de.mp4"
+    asset_url = f"https://github.com/{project.repo}/releases/download/clip/video.mp4"
 
-    cover_url = asset_url.replace("reel_de.mp4", "cover_de.png")
+    cover_url = asset_url.replace("video.mp4", "cover.png")
 
     def post(channel, text):
         state.posts.setdefault(channel, []).append(text)
@@ -92,7 +94,7 @@ def job(monkeypatch, conn):
         if path.endswith("/fb-reel/thumbnails"):
             assert request.method == "POST"
             assert "facebook-reels" in state.posts
-            assert b'name="source"; filename="cover_de.png"' in request.content
+            assert b'name="source"; filename="cover.png"' in request.content
             assert COVER in request.content
             return httpx.Response(200, json={"success": True})
         form = parse_qs(request.content.decode()) if host.startswith("graph.") else {}
@@ -111,8 +113,8 @@ def job(monkeypatch, conn):
                             "browser_download_url": url,
                         }
                         for name, content, url, missing in [
-                            ("reel_de.mp4", VIDEO, asset_url, "asset"),
-                            ("cover_de.png", COVER, cover_url, "cover-asset"),
+                            ("video.mp4", VIDEO, asset_url, "asset"),
+                            ("cover.png", COVER, cover_url, "cover-asset"),
                         ]
                         if state.failure != missing
                     ]
@@ -244,7 +246,9 @@ def test_due_factory_reels_preserve_text_and_skip_threads(repo, conn, job, ai, t
         "facebook-reels": [caption],
     }
     if threads:
-        expected["threads"] = [threads]
+        expected["threads"] = [
+            threads + (f"\n\n{AI_VIDEO_CAPTION_LABEL}" if ai else "")
+        ]
     assert job.posts == expected
     assert all(
         row.status == PublicationStatus.PUBLISHED for row in repo.list_publications(due)
@@ -256,13 +260,110 @@ def test_due_factory_reels_preserve_text_and_skip_threads(repo, conn, job, ai, t
     job.ai.assert_not_called()
 
 
+def test_scan_refuses_changed_assets_for_published_reel(repo, conn, monkeypatch):
+    projects = Projects.load()
+    project = projects.get(FACTORY_PROJECT)
+    store = ProjectItemStore(conn)
+    episode = f"003-{uuid4().hex}"
+    tag = f"reel/{episode}"
+    release_url = f"https://github.com/{project.repo}/releases/download/{tag}"
+    files = {
+        "manifest.json": json.dumps(
+            {
+                "v": 2,
+                "kind": "reel",
+                "id": episode,
+                "release_at": NOW.isoformat(),
+                "ai": True,
+            }
+        ).encode(),
+        "video.mp4": VIDEO,
+        "cover.png": COVER,
+        "post_de.txt": POST.encode(),
+        "post_threads.txt": THREAD.encode(),
+    }
+    revision = 0
+
+    def route(request):
+        if request.url.host == "api.github.com":
+            assert request.url.path == f"/repos/{project.repo}/releases"
+            if request.url.params["page"] != "1":
+                return httpx.Response(200, json=[])
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "tag_name": tag,
+                        "created_at": NOW.isoformat(),
+                        "assets": [
+                            {
+                                "name": name,
+                                "size": len(data),
+                                "id": index + 100 * revision,
+                                "browser_download_url": f"{release_url}/{name}",
+                            }
+                            for index, (name, data) in enumerate(files.items())
+                        ],
+                    }
+                ],
+            )
+        return httpx.Response(200, content=files[request.url.path.rsplit("/", 1)[-1]])
+
+    probe = Mock(return_value=30)
+    read_manifest = project_release.read_manifest
+    monkeypatch.setattr(
+        project_release,
+        "read_manifest",
+        lambda release, project, now, fingerprint: read_manifest(
+            release, project, now, fingerprint, probe
+        ),
+    )
+    notify = Mock()
+
+    def scan():
+        with httpx.Client(transport=httpx.MockTransport(route)) as client:
+            assert scan_projects(projects, client, store, notify, NOW, project.key)
+
+    scan()
+    with conn.transaction():
+        (item_id,) = conn.execute(
+            "SELECT item_id FROM project_items WHERE project = %s AND id = %s",
+            (project.key, episode),
+        ).fetchone()
+    repo.transition(item_id, ItemState.PUBLISHING)
+    claim = repo.claim_publication(item_id, "threads")
+    assert claim is not None
+    repo.mark_published(item_id, "threads", "remote", claim=claim)
+    repo.transition(item_id, ItemState.PUBLISHED)
+    published = repo.list_publications(item_id)
+    original = store.get_by_item(item_id)
+
+    revision += 1  # New GitHub asset IDs with identical content.
+    scan()
+    assert probe.call_count == 2
+    assert "unchanged" in notify.send_alert.call_args.args[0]
+    assert store.get_by_item(item_id) == original
+    assert item_id not in store.list_due_item_ids(NOW)
+
+    revision += 1
+    files["video.mp4"] = b"changed mp4"
+    scan()
+    notify.send_alert.assert_called_with(
+        f"Project {project.key} {tag} rejected: replacement refused: publishing has already started"
+    )
+    assert store.get_by_item(item_id) == original
+    assert item_id not in store.list_due_item_ids(NOW)
+    assert repo.get_item(item_id).state == ItemState.PUBLISHED
+    assert repo.list_publications(item_id) == published
+
+
 @pytest.mark.parametrize(
     ("failure", "reason"),
     [
-        ("hash", "Factory asset reel_de.mp4 changed since intake"),
-        ("asset", "is missing reel_de.mp4"),
-        ("cover-hash", "Factory asset cover_de.png changed since intake"),
-        ("cover-asset", "is missing cover_de.png"),
+        ("hash", "Factory asset video.mp4 changed since intake"),
+        ("asset", "is missing video.mp4"),
+        ("cover-hash", "Factory asset cover.png changed since intake"),
+        ("cover-asset", "is missing cover.png"),
         ("release", "is unavailable"),
     ],
 )

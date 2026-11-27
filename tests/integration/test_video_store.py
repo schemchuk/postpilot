@@ -106,7 +106,7 @@ def test_render_lease_excludes_other_connections_and_reclaims_expired_owner(
 def test_linkedin_opt_in_migration_and_frozen_decisions(conn):
     renders = VideoStore(conn)
     items = ItemRepo(conn)
-    test_store.migrate.down(conn, 2)  # 0024 and 0023
+    test_store.migrate.down(conn, 3)  # 0025 through 0023
     test_store.migrate.down(conn)  # 0022_project_intake
     test_store.migrate.down(conn)  # 0021_project_items
     test_store.migrate.down(conn)  # 0020_item_video_publications
