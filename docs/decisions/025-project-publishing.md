@@ -71,6 +71,9 @@ the AI label, and nothing central enforces approval.
    The factory's v1 asset names (`reel_de.mp4`, `cover_de.png`) stay accepted for its releases until it
    switches to v2.
 
+   **T27c notes.** Text-only posts carry no AI label. Polling skips releases with an image asset
+   until T27d without recording intake or rejection.
+
 5. **Discovery by polling, dispatch optional.** The hourly `publish-reels` run (renamed `publish-projects`)
    first lists recent releases of every enabled project and takes in new `reel/*` and `post/*` tags with a
    `manifest.json`. A project needs no secret for this. `project-intake` (`workflow_dispatch`, input

@@ -36,14 +36,14 @@ def release_files(manifest=None):
     }
 
 
-def metadata(files):
+def metadata(files, tag=TAG):
     return [
         {
             "name": name,
             "size": len(content),
             "id": index,
             "updated_at": NOW.isoformat(),
-            "browser_download_url": f"https://github.com/owner/repo/releases/download/{TAG}/{name}",
+            "browser_download_url": f"https://github.com/owner/repo/releases/download/{tag}/{name}",
         }
         for index, (name, content) in enumerate(files.items(), start=1)
     ]
@@ -281,12 +281,12 @@ def test_scan_sends_notice_or_preview(monkeypatch, approval):
     store = Mock()
     store.conn.transaction.side_effect = nullcontext
     store.seen.return_value = False
-    store.save_reel.return_value = ("new", None)
+    store.save_item.return_value = ("new", None)
     api = Mock(spec=TelegramApi)
     api.send_message.return_value = 17
     with httpx.Client(transport=httpx.MockTransport(http)) as client:
         assert scan_projects(Projects((project,)), client, store, Notifier(api, 7), NOW)
-    assert store.save_reel.call_args.args[1].approval == approval
+    assert store.save_item.call_args.args[1].approval == approval
     message = api.send_message.call_args.args
     assert "Fri 27.11 09:00 Berlin" in message[1]
     assert "AI label: yes" in message[1]
@@ -387,12 +387,12 @@ def test_scan_retries_failed_download_with_same_fingerprint(
     store = Mock()
     store.conn.transaction.side_effect = transaction
     store.seen.return_value = False
-    store.save_reel.side_effect = save
+    store.save_item.side_effect = save
     notify = Mock()
     projects = Projects((PROJECT,))
     with httpx.Client(transport=httpx.MockTransport(http)) as client:
         assert not scan_projects(projects, client, store, notify, NOW)
-        store.save_reel.assert_not_called()
+        store.save_item.assert_not_called()
         store.record_rejection.assert_not_called()
         assert not notify.mock_calls
         assert "could not download asset video.mp4" in caplog.text
@@ -400,6 +400,182 @@ def test_scan_retries_failed_download_with_same_fingerprint(
         assert scan_projects(projects, client, store, notify, NOW)
 
     assert store.seen.call_args_list[0] == store.seen.call_args_list[1]
-    store.save_reel.assert_called_once()
+    store.save_item.assert_called_once()
     notify.send_project_preview.assert_called_once()
     store.record_rejection.assert_not_called()
+
+
+POST_TAG = "post/sample-1"
+POST_PROJECT = replace(
+    PROJECT, kinds=("reel", "post"), channels=("linkedin-de", "threads", "instagram")
+)
+
+
+def post_files(**manifest_fields):
+    return {
+        "manifest.json": json.dumps(
+            MANIFEST | {"kind": "post"} | manifest_fields
+        ).encode(),
+        "post_de.txt": b"  Exact [text].\n",
+    }
+
+
+def load_post(files, project=POST_PROJECT):
+    with httpx.Client(transport=httpx.MockTransport(download(files))) as client:
+        return read_manifest(
+            ProjectRelease(
+                client, project.repo, POST_TAG, assets=metadata(files, POST_TAG)
+            ),
+            project,
+            NOW,
+            "fingerprint",
+            Mock(side_effect=AssertionError("a post has no video")),
+        )
+
+
+@pytest.mark.parametrize(
+    ("text", "explicit_thread", "expected"),
+    [
+        (b" " + b"x" * 498 + b"\n", None, " " + "x" * 498 + "\n"),
+        (b"x" * 501, None, None),
+        (b"x" * 3000, b"  A thread.\n", "  A thread.\n"),
+    ],
+)
+def test_post_manifest_preserves_text_and_applies_threads_fallback(
+    text, explicit_thread, expected
+):
+    from hashlib import sha256
+
+    files = post_files() | {"post_de.txt": text}
+    if explicit_thread is not None:
+        files["post_threads.txt"] = explicit_thread
+    item, cover = load_post(files)
+    assert item.kind == "post"
+    assert item.ai
+    assert item.channels == ("linkedin-de", "threads")
+    assert item.post_de == text.decode()
+    assert item.post_threads == expected
+    assert item.threads_skipped == (expected is None)
+    assert item.duration is item.title_de is cover is None
+    assert item.assets == {
+        name: {"sha256": sha256(data).hexdigest(), "size": len(data)}
+        for name, data in files.items()
+        if name != "manifest.json"
+    }
+
+
+@pytest.mark.parametrize(
+    ("fields", "project", "error"),
+    [
+        ({}, PROJECT, "kind post is not allowed"),
+        ({"channels": ["instagram"]}, POST_PROJECT, "not supported for post"),
+        ({"channels": ["youtube"]}, POST_PROJECT, "not supported for post"),
+        (
+            {"channels": ["threads"]},
+            replace(POST_PROJECT, channels=("linkedin-de",)),
+            "outside the project's allowlist",
+        ),
+        (
+            {},
+            replace(POST_PROJECT, channels=("instagram",)),
+            "no allowed channels for post",
+        ),
+    ],
+)
+def test_post_rejects_disallowed_kind_or_targets(fields, project, error):
+    with pytest.raises(Rejected, match=error):
+        load_post(post_files(**fields), project)
+
+
+@pytest.mark.parametrize(
+    ("name", "data", "error"),
+    [
+        ("post_de.txt", None, "missing post_de.txt"),
+        ("post_de.txt", b" \n", "non-empty"),
+        ("post_de.txt", b"\xff", "UTF-8"),
+        ("post_de.txt", b"x" * 3001, "exceeds 3000 characters"),
+        ("post_threads.txt", b"", "non-empty"),
+        ("post_threads.txt", b"x" * 501, "exceeds 500 characters"),
+    ],
+)
+def test_post_rejects_invalid_text(name, data, error):
+    files = post_files()
+    if data is None:
+        del files[name]
+    else:
+        files[name] = data
+    with pytest.raises(Rejected, match=error):
+        load_post(files)
+
+
+def scan_post(files, project, store, notify):
+    def http(request):
+        if request.url.host == "api.github.com":
+            return httpx.Response(
+                200, json=[{"tag_name": POST_TAG, "assets": metadata(files, POST_TAG)}]
+            )
+        return download(files)(request)
+
+    with httpx.Client(transport=httpx.MockTransport(http)) as client:
+        return scan_projects(Projects((project,)), client, store, notify, NOW)
+
+
+@pytest.mark.parametrize("approval", ["auto", "tap"])
+def test_post_scan_sends_text_only_notice_or_split_preview(approval):
+    post_de = "😀" * 2300
+    files = post_files() | {"post_de.txt": post_de.encode()}
+    store = Mock()
+    store.conn.transaction.side_effect = nullcontext
+    store.seen.return_value = False
+    store.save_item.return_value = ("new", None)
+    api = Mock(spec=TelegramApi)
+    api.send_message.side_effect = [17, 18]
+    project = replace(POST_PROJECT, approval=approval)
+    assert scan_post(files, project, store, Notifier(api, 7))
+    stored = store.save_item.call_args.args[1]
+    assert stored.kind == "post" and stored.approval == approval
+    assert stored.post_threads is None
+    api.send_photo.assert_not_called()
+    store.record_rejection.assert_not_called()
+    messages = [call.args for call in api.send_message.call_args_list]
+    heading = messages[0][1]
+    assert "Threads skipped: post_de.txt is 2300 chars" in heading
+    assert "AI label: no" in heading
+    assert "YouTube" not in heading
+    if approval == "auto":
+        assert len(messages) == 1 and len(messages[0]) == 2
+        store.set_preview_message.assert_not_called()
+    else:
+        assert len(messages) == 2 and messages[0][2] is None
+        assert "".join(message[1] for message in messages).endswith(post_de)
+        buttons = messages[1][2]["inline_keyboard"][0]
+        item_id = store.preview_item_id.return_value
+        assert [button["callback_data"] for button in buttons] == [
+            f"papprove:{item_id}",
+            f"preject:{item_id}",
+        ]
+        store.set_preview_message.assert_called_once_with(item_id, 18)
+
+
+@pytest.mark.parametrize("name", ["image.png", "image.jpg"])
+def test_post_scan_defers_image_without_intake_or_rejection(name, caplog):
+    store, notify = Mock(), Mock()
+    with caplog.at_level("INFO"):
+        assert scan_post(post_files() | {name: b"image"}, POST_PROJECT, store, notify)
+    assert "image post deferred to T27d" in caplog.text
+    assert not store.mock_calls
+    assert not notify.mock_calls
+
+
+def test_post_preview_shows_only_selected_channel():
+    files = post_files(channels=["threads"]) | {"post_threads.txt": b"Thread only.\n"}
+    store = Mock()
+    store.conn.transaction.side_effect = nullcontext
+    store.seen.return_value = False
+    store.save_item.return_value = ("new", None)
+    api = Mock(spec=TelegramApi)
+    assert scan_post(files, POST_PROJECT, store, Notifier(api, 7))
+    message = api.send_message.call_args.args[1]
+    assert "\n\nThreads\nThread only.\n" in message
+    assert "LinkedIn DE" not in message
+    assert "Exact [text]" not in message

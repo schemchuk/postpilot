@@ -289,8 +289,9 @@ def test_factory_thumbnail_upload(mode, caplog):
     if mode == "missing-url":
         server.thumbnail_url = None
     assets = Mock()
-    assets.reel.return_value.post_de = "Deutsch"
-    assets.reel.return_value.ai = False
+    assets.item.return_value.kind = "reel"
+    assets.item.return_value.post_de = "Deutsch"
+    assets.item.return_value.ai = False
     assets.video.side_effect = server.fetch
     assets.cover.return_value = PNG
     with httpx.Client(

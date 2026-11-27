@@ -24,7 +24,7 @@ from postpilot.core.approval import (
 )
 from postpilot.core.models import Item, PublicationStatus, Variant
 from postpilot.core.states import IllegalTransition, ItemState
-from postpilot.projects import CHANNEL_NAMES, Projects
+from postpilot.projects import CHANNEL_NAMES, POST_CHANNELS, Projects
 from postpilot.store.project_items import ProjectItem, ProjectItemStore
 from postpilot.store.repo import Claim, ItemRepo, LostPublicationClaim
 from postpilot.trace import describe_error, error_fields, trace
@@ -124,7 +124,10 @@ class Publisher:
                         raise ProjectApprovalError(
                             f"Project {policy.key!r} needs a tap"
                         )
-                if scheduled.kind != "reel" or scheduled.kind not in policy.kinds:
+                if (
+                    scheduled.kind not in {"reel", "post"}
+                    or scheduled.kind not in policy.kinds
+                ):
                     raise ProjectApprovalError(
                         f"Project {policy.key!r} cannot publish {scheduled.kind}"
                     )
@@ -138,7 +141,14 @@ class Publisher:
                 allowed = {
                     name
                     for logical in policy.channels
-                    if scheduled.channels is None or logical in scheduled.channels
+                    if (scheduled.channels is None or logical in scheduled.channels)
+                    and (
+                        scheduled.kind != "post"
+                        or (
+                            logical in POST_CHANNELS
+                            and not (logical == "threads" and scheduled.threads_skipped)
+                        )
+                    )
                     for name in CHANNEL_NAMES[logical]
                 }
                 excluded = set(PAUSED_CHANNELS) | {

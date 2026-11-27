@@ -98,20 +98,27 @@ class ProjectItemStore:
     def save_reel(
         self, projects: Projects, reel: ProjectItem
     ) -> tuple[IntakeStatus, str | None]:
-        key = reel.project
+        if reel.kind != "reel":
+            raise IllegalTransition("Expected a reel")
+        return self.save_item(projects, reel)
+
+    def save_item(
+        self, projects: Projects, item: ProjectItem
+    ) -> tuple[IntakeStatus, str | None]:
+        key = item.project
         project = enabled_project(projects, key)
-        if reel.kind != "reel" or "reel" not in project.kinds:
-            raise IllegalTransition(f"Project {key!r} does not allow reels")
-        if reel.approval != project.approval:
+        if item.kind not in project.kinds:
+            raise IllegalTransition(f"Project {key!r} does not allow {item.kind}s")
+        if item.approval != project.approval:
             raise IllegalTransition(f"Project {key!r} has a different approval mode")
         auto = project.approval == "auto"
         state = "APPROVED" if auto else "AWAITING_APPROVAL"
-        channels = list(reel.channels) if reel.channels is not None else None
+        channels = list(item.channels) if item.channels is not None else None
         with self.conn.transaction():
             # Serialize concurrent first inserts before there is a project item row to lock.
             self.conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtext(current_schema()), hashtext(%s))",
-                (f"project:{key}:{reel.id}",),
+                (f"project:{key}:{item.id}",),
             )
             previous = self.conn.execute(
                 """
@@ -121,19 +128,19 @@ class ProjectItemStore:
                 JOIN items i ON i.id = f.item_id
                 WHERE f.project = %s AND f.id = %s FOR UPDATE OF i
                 """,
-                (key, reel.id),
+                (key, item.id),
             ).fetchone()
             values = (
-                reel.release_at,
-                reel.ai,
-                Jsonb(reel.assets),
-                reel.post_de,
-                reel.post_threads,
-                reel.post_threads is None,
-                reel.duration,
-                reel.title_de,
+                item.release_at,
+                item.ai,
+                Jsonb(item.assets),
+                item.post_de,
+                item.post_threads,
+                item.post_threads is None,
+                item.duration,
+                item.title_de,
                 channels,
-                reel.fingerprint,
+                item.fingerprint,
             )
             repo = ItemRepo(self.conn)
             if previous is None:
@@ -147,11 +154,19 @@ class ProjectItemStore:
                     """
                     INSERT INTO project_items (project, kind, id, tag, item_id, approval, release_at, ai,
                         assets, post_de, post_threads, threads_skipped, duration, title_de, channels, fingerprint)
-                    VALUES (%s, 'reel', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (key, reel.id, reel.tag, item_id, project.approval, *values),
+                    (
+                        key,
+                        item.kind,
+                        item.id,
+                        item.tag,
+                        item_id,
+                        project.approval,
+                        *values,
+                    ),
                 )
-                repo.add_variant(item_id, "de", reel.post_de)
+                repo.add_variant(item_id, "de", item.post_de)
                 return "new", None
 
             (
@@ -165,28 +180,28 @@ class ProjectItemStore:
                 previous_channels,
                 previous_state,
             ) = previous
-            if kind != reel.kind or approval != project.approval:
+            if kind != item.kind or approval != project.approval:
                 return (
                     "refused",
                     "the existing item has a different kind or approval mode",
                 )
-            if reel.fingerprint is not None and previous_state == "SKIPPED":
+            if item.fingerprint is not None and previous_state == "SKIPPED":
                 return "refused", "the existing item was skipped"
             if (release_at, ai, assets, title_de, previous_channels) == (
-                reel.release_at,
-                reel.ai,
-                reel.assets,
-                reel.title_de,
+                item.release_at,
+                item.ai,
+                item.assets,
+                item.title_de,
                 channels,
             ):
-                if reel.fingerprint is not None:
+                if item.fingerprint is not None:
                     self.conn.execute(
                         "UPDATE project_items SET fingerprint = %s WHERE item_id = %s",
-                        (reel.fingerprint, item_id),
+                        (item.fingerprint, item_id),
                     )
                 return "unchanged", None
             if (
-                reel.fingerprint is not None and previous_state == "PUBLISHED"
+                item.fingerprint is not None and previous_state == "PUBLISHED"
             ) or self.conn.execute(
                 "SELECT 1 FROM item_publications WHERE item_id = %s "
                 "AND (status IN ('PUBLISHED', 'PUBLISHING') "
@@ -202,13 +217,13 @@ class ProjectItemStore:
                     updated_at = now()
                 WHERE project = %s AND id = %s
                 """,
-                (*values, key, reel.id),
+                (*values, key, item.id),
             )
             self.conn.execute(
                 "UPDATE variants SET text = %s WHERE item_id = %s AND lang = 'de'",
-                (reel.post_de, item_id),
+                (item.post_de, item_id),
             )
-            if reel.fingerprint is not None:
+            if item.fingerprint is not None:
                 self.conn.execute(
                     "DELETE FROM publications WHERE item_id = %s AND status = 'FAILED'",
                     (item_id,),
@@ -218,7 +233,7 @@ class ProjectItemStore:
                     (item_id,),
                 )
             if not auto or (
-                reel.fingerprint is not None
+                item.fingerprint is not None
                 and previous_state in {"FAILED", "PUBLISHING"}
             ):
                 self.conn.execute(
