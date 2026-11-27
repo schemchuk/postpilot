@@ -639,3 +639,53 @@ def test_project_daily_count_uses_first_publication_and_berlin_day(conn):
     )
     assert store.published_today(project.key, berlin_midnight) == 1
     assert store.published_today(project.key, berlin_midnight + timedelta(days=1)) == 0
+
+
+def test_project_post_save_replace_and_refuse_reel_clash(conn, repo):
+    from hashlib import sha256
+
+    from postpilot.projects import Project, Projects
+    from postpilot.store.project_items import ProjectItem, ProjectItemStore
+
+    def assets(text):
+        data = text.encode()
+        return {"post_de.txt": {"sha256": sha256(data).hexdigest(), "size": len(data)}}
+
+    project = Project("writer", "owner/writer", ("reel", "post"), ("linkedin-de",))
+    projects = Projects((project,))
+    store = ProjectItemStore(conn)
+    post = ProjectItem(
+        "sample",
+        datetime.now(UTC),
+        True,
+        "  Original.\n",
+        None,
+        assets("  Original.\n"),
+        None,
+        project.key,
+        approval="tap",
+        kind="post",
+        channels=("linkedin-de",),
+        fingerprint="original",
+    )
+    assert store.save_item(projects, post) == ("new", None)
+    with conn.transaction():
+        item_id = store.preview_item_id(post)
+        store.set_preview_message(item_id, 42)
+    assert store.resolve_preview(item_id, 42, 7, True)
+    assert store.save_item(projects, post) == ("unchanged", None)
+    assert repo.get_item(item_id).state == ItemState.APPROVED
+    changed = replace(
+        post, post_de="Revision", assets=assets("Revision"), fingerprint="revision"
+    )
+    assert store.save_item(projects, changed) == ("replaced", None)
+    assert store.get_by_item(item_id) == replace(
+        changed, item_id=item_id, threads_skipped=True
+    )
+    assert store.seen(project.key, "post/sample", "revision")
+    assert repo.get_variants(item_id)[0].text == "Revision"
+    assert repo.get_item(item_id).state == ItemState.AWAITING_APPROVAL
+    assert store.save_item(projects, replace(changed, kind="reel", duration=10)) == (
+        "refused",
+        "the existing item has a different kind or approval mode",
+    )

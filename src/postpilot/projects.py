@@ -10,6 +10,7 @@ from postpilot.video.publications import LINKEDIN_VIDEO_CHANNELS
 
 FACTORY_PROJECT = "beekeeper"
 DEFAULT_PROJECTS_FILE = Path(__file__).resolve().parents[2] / "config/projects.toml"
+POST_CHANNELS = frozenset({"linkedin-de", "threads"})
 CHANNEL_NAMES = {
     "linkedin-de": tuple(
         name for name, lang in LINKEDIN_VIDEO_CHANNELS.items() if lang == "de"

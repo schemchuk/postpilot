@@ -11,26 +11,35 @@ import httpx
 
 from postpilot.channels.paused import is_paused
 from postpilot.channels.youtube import fitting_title
+from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
 from postpilot.notify.telegram import Notifier, TelegramError
-from postpilot.projects import CHANNEL_NAMES, Project, Projects
+from postpilot.projects import CHANNEL_NAMES, POST_CHANNELS, Project, Projects
 from postpilot.sources.factory import (
     _WEEKDAYS,
     DownloadFailed,
     ProjectRelease,
     Rejected,
+    _asset_hash,
     _payload,
     _probe_duration,
     _release_time,
+    _text,
+    _threads_text,
     read_reel,
 )
-from postpilot.store.project_items import IntakeStatus, ProjectItem, ProjectItemStore
+from postpilot.store.project_items import (
+    Asset,
+    IntakeStatus,
+    ProjectItem,
+    ProjectItemStore,
+)
 
 logger = logging.getLogger(__name__)
 _REQUIRED = {"v", "kind", "id", "release_at", "ai"}
 _SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 
 
-def _channels(value: object, project: Project) -> tuple[str, ...]:
+def _channels(value: object, project: Project, kind: str) -> tuple[str, ...]:
     if not isinstance(value, list) or not value:
         raise Rejected("channels must be a non-empty list")
     names: set[str] = set()
@@ -41,6 +50,8 @@ def _channels(value: object, project: Project) -> tuple[str, ...]:
             raise Rejected(f"channel {name} is paused")
         if not isinstance(name, str) or name not in CHANNEL_NAMES:
             raise Rejected("channels contains an unknown channel")
+        if kind == "post" and name not in POST_CHANNELS:
+            raise Rejected(f"channel {name} is not supported for post releases")
         if name not in project.channels:
             raise Rejected(f"channel {name} is outside the project's allowlist")
         if name in names:
@@ -55,7 +66,7 @@ def read_manifest(
     now: datetime,
     fingerprint: str,
     probe: Callable[[bytes], float] = _probe_duration,
-) -> tuple[ProjectItem, bytes]:
+) -> tuple[ProjectItem, bytes | None]:
     raw = release.download("manifest.json", release.asset_url("manifest.json"))
     try:
         data = _payload(raw.decode("utf-8"))
@@ -75,7 +86,7 @@ def read_manifest(
     prefix, _, suffix = release.tag.partition("/")
     if data["kind"] != prefix:
         raise Rejected("kind must match the release tag prefix")
-    if prefix != "reel" or prefix not in project.kinds:
+    if prefix not in {"reel", "post"} or prefix not in project.kinds:
         raise Rejected(f"kind {prefix} is not allowed for project {project.key}")
     item_id = data["id"]
     if (
@@ -90,7 +101,38 @@ def read_manifest(
     if not isinstance(ai, bool):
         raise Rejected("ai must be a boolean")
     release_at = _release_time(data["release_at"], now)
-    channels = _channels(data["channels"], project) if "channels" in data else None
+    channels = (
+        _channels(data["channels"], project, prefix) if "channels" in data else None
+    )
+    if prefix == "post":
+        if channels is None:
+            channels = tuple(name for name in project.channels if name in POST_CHANNELS)
+        if not channels:
+            raise Rejected("project has no allowed channels for post releases")
+        assets: dict[str, Asset] = {}
+
+        def download(name: str) -> bytes:
+            content = release.download(name, release.asset_url(name))
+            assets[name] = _asset_hash(content)
+            return content
+
+        post_de = _text(download("post_de.txt"), "post_de.txt", LINKEDIN_TEXT_LIMIT)
+        threads = _threads_text(post_de, release.metadata, download)
+        return ProjectItem(
+            item_id,
+            release_at,
+            ai,
+            post_de,
+            threads,
+            assets,
+            None,
+            project.key,
+            approval=project.approval,
+            kind=prefix,
+            threads_skipped=threads is None,
+            channels=channels,
+            fingerprint=fingerprint,
+        ), None
     return read_reel(
         release,
         item_id,
@@ -133,7 +175,7 @@ def _releases(
         if data.get("draft") or data.get("prerelease"):
             continue
         prefix = tag.partition("/")[0]
-        if prefix != "reel" or prefix not in project.kinds:
+        if prefix not in {"reel", "post"} or prefix not in project.kinds:
             logger.info("Project %s ignored tag %s", project.key, tag)
             continue
         assets = data.get("assets")
@@ -149,32 +191,32 @@ def _releases(
             yield release
 
 
-def _notice(project: Project, reel: ProjectItem, status: IntakeStatus) -> str:
-    local = reel.release_at.astimezone(ZoneInfo("Europe/Berlin"))
-    channels = reel.channels if reel.channels is not None else project.channels
+def _notice(project: Project, item: ProjectItem, status: IntakeStatus) -> str:
+    local = item.release_at.astimezone(ZoneInfo("Europe/Berlin"))
+    channels = item.channels if item.channels is not None else project.channels
     lines = [
         (
-            f"Project {project.key} {reel.tag} · scheduled {_WEEKDAYS[local.weekday()]} "
+            f"Project {project.key} {item.tag} · scheduled {_WEEKDAYS[local.weekday()]} "
             f"{local:%d.%m %H:%M} Berlin · {status}"
         ),
-        f"Channels: {', '.join(channels)} · AI label: {'yes' if reel.ai else 'no'}",
+        f"Channels: {', '.join(channels)} · AI label: {'yes' if item.ai and item.kind == 'reel' else 'no'}",
     ]
     if "threads" not in channels:
-        lines.append("Threads skipped: channel outside this reel's targets.")
-    elif reel.post_threads is None:
+        lines.append(f"Threads skipped: channel outside this {item.kind}'s targets.")
+    elif item.post_threads is None:
         lines.append(
-            f"Threads skipped: post_de.txt is {len(reel.post_de)} chars (max 500), no post_threads.txt"
+            f"Threads skipped: post_de.txt is {len(item.post_de)} chars (max 500), no post_threads.txt"
         )
-    if "youtube" in channels:
-        title = fitting_title(reel.post_de, reel.title_de)
+    if item.kind == "reel" and "youtube" in channels:
+        title = fitting_title(item.post_de, item.title_de)
         lines.append(
             f"YouTube title: {title}"
             if title
             else "YouTube will use the default title."
         )
-    else:
+    elif item.kind == "reel":
         lines.append("YouTube title: channel omitted.")
-    lines.append(f"https://github.com/{project.repo}/releases/tag/{quote(reel.tag)}")
+    lines.append(f"https://github.com/{project.repo}/releases/tag/{quote(item.tag)}")
     return "\n".join(lines)
 
 
@@ -186,27 +228,36 @@ def _intake(
     notify: Notifier,
     now: datetime,
 ) -> None:
+    if (
+        release.tag.startswith("post/")
+        and {"image.png", "image.jpg"} & release.metadata.keys()
+    ):
+        logger.info(
+            "Project %s %s image post deferred to T27d", project.key, release.tag
+        )
+        return
     fingerprint = _fingerprint(release)
     if store.seen(project.key, release.tag, fingerprint):
         return
     try:
-        reel, cover = read_manifest(release, project, now, fingerprint)
+        item, cover = read_manifest(release, project, now, fingerprint)
         with store.conn.transaction():
-            status, reason = store.save_reel(projects, reel)
+            status, reason = store.save_item(projects, item)
             if status == "refused":
                 raise Rejected(f"replacement refused: {reason}")
             if project.approval == "auto":
-                notify.send_alert(_notice(project, reel, status))
+                notify.send_alert(_notice(project, item, status))
             elif status in {"new", "replaced"}:
-                item_id = store.preview_item_id(reel)
+                item_id = store.preview_item_id(item)
+                targets = item.channels or project.channels
                 message_id = notify.send_project_preview(
                     item_id,
                     cover,
-                    _notice(project, reel, status),
-                    reel.post_de,
-                    reel.post_threads
-                    if "threads" in (reel.channels or project.channels)
+                    _notice(project, item, status),
+                    item.post_de
+                    if item.kind == "reel" or "linkedin-de" in targets
                     else None,
+                    item.post_threads if "threads" in targets else None,
                 )
                 store.set_preview_message(item_id, message_id)
     except DownloadFailed:

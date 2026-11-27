@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from unittest.mock import Mock
@@ -7,7 +8,7 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from postpilot.channels.base import ChannelError
+from postpilot.channels.base import ChannelError, UncertainPublication
 from postpilot.channels.facebook_reels import FacebookReelsChannel
 from postpilot.channels.factory import (
     FactoryAssets,
@@ -339,3 +340,262 @@ def test_factory_cover_checks_and_caches_release_asset(mode, content, reason):
                 assert fetcher.cover(item_id) == COVER
     assert len(requests) == (2 if mode == "missing" else 3)
     assert requests[1:] == ([URL] if mode == "missing" else [URL, COVER_URL])
+
+
+POST_TEXT = "  (Klammern) [x] *y*\r\n"
+LINKEDIN_COMMENTARY = r"  \(Klammern\) \[x\] \*y\*" + "\r\n"
+THREAD_TEXT = "  Ein Thread.\n"
+POST_FILES = {
+    "post_de.txt": POST_TEXT.encode(),
+    "post_threads.txt": THREAD_TEXT.encode(),
+}
+POST_PROJECTS = Projects(
+    (
+        Project(
+            FACTORY_PROJECT,
+            REPO,
+            ("reel", "post"),
+            ("linkedin-de", "threads", "instagram"),
+            "auto",
+        ),
+    )
+)
+
+
+def scheduled_post(**changes):
+    from dataclasses import replace
+
+    return replace(
+        ProjectItem(
+            "test-post",
+            NOW,
+            True,
+            POST_TEXT,
+            THREAD_TEXT,
+            {
+                name: {"size": len(data), "sha256": sha256(data).hexdigest()}
+                for name, data in POST_FILES.items()
+            },
+            None,
+            FACTORY_PROJECT,
+            kind="post",
+        ),
+        **changes,
+    )
+
+
+def post_asset_route(files, requests):
+    urls = {
+        f"https://github.com/{REPO}/releases/download/post/test-post/{name}": data
+        for name, data in files.items()
+    }
+
+    def route(request):
+        if request.url.host == "api.github.com":
+            assert request.url.path.endswith("/tags/post/test-post")
+            return httpx.Response(
+                200,
+                json={
+                    "assets": [
+                        {
+                            "name": url.rsplit("/", 1)[1],
+                            "size": len(data),
+                            "browser_download_url": url,
+                        }
+                        for url, data in urls.items()
+                    ]
+                },
+            )
+        requests.append(request.url.path.rsplit("/", 1)[1])
+        return httpx.Response(200, content=urls[str(request.url)])
+
+    return route
+
+
+@pytest.mark.parametrize("name", ["linkedin-video", "threads"])
+def test_publish_project_post_verbatim_after_checking_text_assets(name):
+    downloads = []
+    asset_route = post_asset_route(POST_FILES, downloads)
+    store = Mock()
+    store.get_by_item.return_value = scheduled_post()
+    remote = []
+
+    def route(request):
+        if request.url.host in {"api.github.com", "github.com"}:
+            return asset_route(request)
+        assert downloads == ["post_de.txt", "post_threads.txt"]
+        remote.append(request.url.path)
+        if request.url.path == "/v2/userinfo":
+            return httpx.Response(200, json={"sub": "person"})
+        assert request.method == "POST"
+        if name == "linkedin-video":
+            assert request.url.path == "/rest/posts"
+            payload = json.loads(request.content)
+            assert payload["commentary"] == LINKEDIN_COMMENTARY
+            assert "content" not in payload
+            return httpx.Response(201, headers={"x-restli-id": "post"})
+        if request.url.path.endswith("/me/threads"):
+            assert parse_qs(request.content.decode()) == {
+                "media_type": ["TEXT"],
+                "text": [THREAD_TEXT],
+            }
+            return httpx.Response(200, json={"id": "container"})
+        assert request.url.path.endswith("/me/threads_publish")
+        assert parse_qs(request.content.decode()) == {"creation_id": ["container"]}
+        return httpx.Response(200, json={"id": "post"})
+
+    with httpx.Client(transport=httpx.MockTransport(route)) as client:
+        reader = FactoryAssets(store, client, POST_PROJECTS)
+        channel = (
+            FactoryLinkedInChannel(
+                LinkedInChannel(name, "de", lambda: "token", client), reader
+            )
+            if name == "linkedin-video"
+            else FactoryThreadsChannel(lambda: "token", client, reader)
+        )
+        assert channel.name == name
+        save_ref = Mock()
+        assert (
+            channel.publish_with_ref(
+                item(ItemState.PUBLISHING),
+                [],
+                ref=None,
+                claimed_at=NOW,
+                save_ref=save_ref,
+            )
+            == "post"
+        )
+    assert len(remote) == 2
+    save_ref.assert_called_once_with(
+        "text-posting" if name == "linkedin-video" else "container"
+    )
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_project_post_release_check_rejects_changed_or_missing_text(missing):
+    files = POST_FILES.copy()
+    name = "post_threads.txt"
+    if missing:
+        del files[name]
+    else:
+        files[name] = b"x" * len(files[name])
+    store = Mock()
+    store.get_by_item.return_value = scheduled_post()
+    with httpx.Client(
+        transport=httpx.MockTransport(post_asset_route(files, []))
+    ) as client:
+        reader = FactoryAssets(store, client, POST_PROJECTS)
+        error = f"missing {name}" if missing else f"{name} changed since intake"
+        with pytest.raises(ChannelError, match=error):
+            reader.check_release(uuid4())
+
+
+@pytest.mark.parametrize("match_count", [0, 1, 2])
+def test_uncertain_linkedin_text_post_only_looks_up_on_retry(match_count):
+    store = Mock()
+    store.get_by_item.return_value = scheduled_post()
+    asset_route = post_asset_route(POST_FILES, [])
+    posts_sent = []
+    published_at = int(NOW.timestamp() * 1000)
+
+    def route(request):
+        if request.url.host in {"api.github.com", "github.com"}:
+            return asset_route(request)
+        if request.url.path == "/v2/userinfo":
+            return httpx.Response(200, json={"sub": "person"})
+        assert request.url.path == "/rest/posts"
+        if request.method == "POST":
+            posts_sent.append(request)
+            return httpx.Response(503)
+        assert request.url.params["q"] == "author"
+        return httpx.Response(
+            200,
+            json={
+                "elements": [
+                    {
+                        "id": "old",
+                        "commentary": LINKEDIN_COMMENTARY,
+                        "publishedAt": published_at - 1,
+                    },
+                    {
+                        "id": "video",
+                        "commentary": LINKEDIN_COMMENTARY,
+                        "publishedAt": published_at,
+                        "content": {"media": {"id": "video"}},
+                    },
+                    *[
+                        {
+                            "id": f"remote-{index}",
+                            "commentary": LINKEDIN_COMMENTARY,
+                            "publishedAt": published_at,
+                        }
+                        for index in range(match_count)
+                    ],
+                ]
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(route)) as client:
+        channel = FactoryLinkedInChannel(
+            LinkedInChannel("linkedin-video", "de", lambda: "token", client),
+            FactoryAssets(store, client, POST_PROJECTS),
+        )
+        row = item(ItemState.PUBLISHING)
+        save_ref = Mock()
+        with pytest.raises(UncertainPublication):
+            channel.publish_with_ref(
+                row, [], ref=None, claimed_at=NOW, save_ref=save_ref
+            )
+        save_ref.assert_called_once_with("text-posting")
+        assert channel.publish_with_ref(
+            row, [], ref=save_ref.call_args.args[0], claimed_at=NOW, save_ref=save_ref
+        ) == ("remote-0" if match_count == 1 else None)
+    assert len(posts_sent) == 1
+
+
+@pytest.mark.parametrize("threads_skipped", [False, True])
+def test_publisher_limits_post_to_text_channels(monkeypatch, threads_skipped):
+    from types import SimpleNamespace
+
+    from postpilot.core.publisher import ChannelResult
+
+    row = item(ItemState.PUBLISHING)
+    repo = Mock()
+    repo.get_item.return_value = row
+    repo.list_publications.return_value = []
+    channels = [
+        SimpleNamespace(name=name)
+        for name in ("linkedin-video", "threads", "instagram-reels")
+    ]
+    publisher = Publisher(
+        repo,
+        [],
+        project_channels=channels,
+        project_item=lambda _: scheduled_post(threads_skipped=threads_skipped),
+        projects=POST_PROJECTS,
+        now=lambda: NOW,
+    )
+    send = Mock(return_value=ChannelResult("published"))
+    monkeypatch.setattr(publisher, "_publish_channel", send)
+    expected = channels[:1] if threads_skipped else channels[:2]
+    assert set(publisher.publish_item(row.id).channels) == {
+        target.name for target in expected
+    }
+    assert [call.args[0] for call in send.call_args_list] == expected
+
+
+def test_publisher_refuses_post_for_reel_only_project():
+    row = item(ItemState.APPROVED)
+    repo = Mock()
+    repo.get_item.return_value = row
+    publisher = Publisher(
+        repo,
+        [],
+        project_channels=[Mock()],
+        project_item=lambda _: scheduled_post(),
+        projects=PROJECTS,
+        now=lambda: NOW,
+    )
+    with pytest.raises(IllegalTransition, match="cannot publish post"):
+        publisher.publish_item(row.id)
+    repo.transition.assert_not_called()

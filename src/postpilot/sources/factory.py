@@ -2,7 +2,7 @@ import hashlib
 import json
 import re
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -136,6 +136,19 @@ def _text(data: bytes, name: str, limit: int) -> str:
     return text
 
 
+def _asset_hash(data: bytes) -> Asset:
+    return {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+
+
+def _threads_text(
+    post_de: str, names: Collection[str], download: Callable[[str], bytes]
+) -> str | None:
+    name = "post_threads.txt"
+    if name in names:
+        return _text(download(name), name, 500)
+    return post_de if len(post_de) <= 500 else None
+
+
 def _probe_duration(video: bytes) -> float:
     with TemporaryDirectory() as directory:
         path = Path(directory) / "reel_de.mp4"
@@ -250,7 +263,7 @@ def read_reel(
 
     def download(name: str) -> bytes:
         data = release.download(name, urls[name])
-        assets[name] = {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+        assets[name] = _asset_hash(data)
         return data
 
     post_de = _text(download("post_de.txt"), "post_de.txt", LINKEDIN_TEXT_LIMIT)
@@ -259,9 +272,7 @@ def read_reel(
         raise Rejected(
             "post_de.txt exceeds the 2200-character Instagram caption limit (including any AI label)"
         )
-    threads = post_de if len(post_de) <= 500 else None
-    if "post_threads.txt" in urls:
-        threads = _text(download("post_threads.txt"), "post_threads.txt", 500)
+    threads = _threads_text(post_de, urls, download)
     cover = download(cover_name)
     if not cover.startswith(b"\x89PNG\r\n\x1a\n"):
         raise Rejected(f"{cover_name} must have a PNG signature")

@@ -1,6 +1,6 @@
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from hashlib import sha256
 from uuid import UUID
 
@@ -78,8 +78,8 @@ class LinkedInChannel:
             text += "\n\n" + label
         if len(text) > self._limit or len(text) + len(suffix) > _MAX_LENGTH:
             raise ChannelError("Text exceeds the LinkedIn length limit")
-        escaped = _LITTLE_TEXT.sub(lambda match: match[1] or "\\" + match[2], text)
-        return escaped + suffix
+        text = _LITTLE_TEXT.sub(lambda match: match[1] or "\\" + match[2], text)
+        return text + suffix
 
     def validate(self, item: Item, variants: list[Variant]) -> None:
         self._commentary(item, variants)
@@ -200,9 +200,47 @@ class LinkedInChannel:
     def _find_existing(
         self, item_id: UUID, token: str, *, video: str | None = None
     ) -> str | None:
+        suffix = self._suffix(item_id)
+        for post in self._author_posts(token):
+            commentary = post.get("commentary")
+            content = post.get("content")
+            media = content.get("media") if isinstance(content, dict) else None
+            matches = (
+                isinstance(media, dict) and media.get("id") == video
+                if video is not None
+                else isinstance(commentary, str) and commentary.endswith(suffix)
+            )
+            if matches:
+                return self._post_id(post)
+        return None
+
+    def _find_text_post(self, text: str, token: str, since_ms: int) -> str | None:
+        match = None
+        for post in self._author_posts(token):
+            published_at = post.get("publishedAt")
+            if (
+                post.get("commentary") != text
+                or post.get("content") is not None
+                or type(published_at) is not int
+                or published_at < since_ms
+            ):
+                continue
+            found_id = self._post_id(post)
+            if match is not None and match != found_id:
+                return None
+            match = found_id
+        return match
+
+    @staticmethod
+    def _post_id(post: dict[str, object]) -> str:
+        found_id = post.get("id")
+        if not isinstance(found_id, str) or not found_id:
+            raise ChannelError("LinkedIn post ID is unavailable")
+        return found_id
+
+    def _author_posts(self, token: str) -> Iterator[dict[str, object]]:
         author = self._author(token)
         start = 0
-        suffix = self._suffix(item_id)
         while True:
             response = self._request(
                 "GET",
@@ -222,26 +260,15 @@ class LinkedInChannel:
             for post in elements:
                 if not isinstance(post, dict):
                     raise ChannelError("Invalid LinkedIn post response")
-                commentary, found_id = post.get("commentary"), post.get("id")
-                content = post.get("content")
-                media = content.get("media") if isinstance(content, dict) else None
-                matches = (
-                    isinstance(media, dict) and media.get("id") == video
-                    if video is not None
-                    else isinstance(commentary, str) and commentary.endswith(suffix)
-                )
-                if matches:
-                    if not isinstance(found_id, str) or not found_id:
-                        raise ChannelError("LinkedIn post ID is unavailable")
-                    return found_id
+                yield post
             if not elements:
-                return None
+                return
             paging = result.get("paging")
             links = paging.get("links") if isinstance(paging, dict) else None
             if isinstance(links, list) and not any(
                 isinstance(link, dict) and link.get("rel") == "next" for link in links
             ):
-                return None
+                return
             if links is None and len(elements) < 100:
-                return None
+                return
             start += len(elements)

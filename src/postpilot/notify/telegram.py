@@ -355,12 +355,13 @@ class Notifier:
     def send_project_preview(
         self,
         item_id: UUID,
-        cover: bytes,
+        cover: bytes | None,
         heading: str,
-        post_de: str,
+        post_de: str | None,
         threads: str | None,
     ) -> int:
-        self.api.send_photo(self.chat_id, cover)
+        if cover is not None:
+            self.api.send_photo(self.chat_id, cover)
         markup = {
             "inline_keyboard": [
                 [
@@ -369,7 +370,9 @@ class Notifier:
                 ]
             ]
         }
-        sections = [heading, f"LinkedIn DE\n{post_de}"]
+        sections = [heading]
+        if post_de is not None:
+            sections.append(f"LinkedIn DE\n{post_de}")
         if threads is not None:
             sections.append(f"Threads\n{threads}")
         preview = "\n\n".join(sections)

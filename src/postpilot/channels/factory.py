@@ -7,7 +7,12 @@ from uuid import UUID
 
 import httpx
 
-from postpilot.channels.base import ChannelError, ChannelHeld
+from postpilot.channels.base import (
+    ChannelError,
+    ChannelHeld,
+    TransientChannelError,
+    UncertainPublication,
+)
 from postpilot.channels.linkedin import LinkedInChannel
 from postpilot.channels.linkedin_video import LinkedInVideoChannel
 from postpilot.channels.own_video_reels import _fit_video
@@ -22,6 +27,8 @@ from postpilot.video.reel import ReelVideo
 
 _VIDEO = "reel_de.mp4"
 _COVER = "cover_de.png"
+_TEXT_POSTING = "text-posting"
+_TEXT_READY = "text-ready"
 
 
 def _asset_name(reel: ProjectItem, current: str, legacy: str) -> str:
@@ -42,9 +49,15 @@ class FactoryAssets:
         self._errors: dict[str, str] = {}
         self._fitted: bytes | None = None
 
+    def item(self, item_id: UUID) -> ProjectItem:
+        item = self.store.get_by_item(item_id)
+        if item is None:
+            raise ChannelError("Project item data is unavailable")
+        return item
+
     def reel(self, item_id: UUID) -> ProjectItem:
-        reel = self.store.get_by_item(item_id)
-        if reel is None or reel.kind != "reel":
+        reel = self.item(item_id)
+        if reel.kind != "reel":
             raise ChannelError("Factory reel data is unavailable")
         return reel
 
@@ -69,7 +82,12 @@ class FactoryAssets:
         return self._release
 
     def check_release(self, item_id: UUID) -> None:
-        reel = self.reel(item_id)
+        reel = self.item(item_id)
+        if reel.kind == "post":
+            self._download(item_id, "post_de.txt")
+            if "post_threads.txt" in reel.assets:
+                self._download(item_id, "post_threads.txt")
+            return
         release = self._release_for(item_id, reel)
         name = _asset_name(reel, "video.mp4", _VIDEO)
         if name in self._errors:
@@ -80,7 +98,7 @@ class FactoryAssets:
             raise ChannelError(f"Factory {error}") from None
 
     def _download(self, item_id: UUID, name: str) -> bytes:
-        reel = self.reel(item_id)
+        reel = self.item(item_id)
         release = self._release_for(item_id, reel)
         if name not in self._downloads and name not in self._errors:
             try:
@@ -146,13 +164,54 @@ class FactoryLinkedInChannel(LinkedInVideoChannel):
         self._assets = assets
 
     def _commentary(self, item: Item, variants: list[Variant]) -> str:
-        reel = self._assets.reel(item.id)
+        reel = self._assets.item(item.id)
         return self._linkedin._commentary(
             item,
             [Variant(item.id, "de", reel.post_de)],
-            label=AI_VIDEO_CAPTION_LABEL if reel.ai else "",
+            label=AI_VIDEO_CAPTION_LABEL if reel.ai and reel.kind == "reel" else "",
             include_marker=False,
         )
+
+    def publish_with_ref(
+        self,
+        item: Item,
+        variants: list[Variant],
+        *,
+        ref: str | None,
+        claimed_at: datetime,
+        save_ref: Callable[[str], None],
+    ) -> str | None:
+        if self._assets.item(item.id).kind != "post":
+            return super().publish_with_ref(
+                item, variants, ref=ref, claimed_at=claimed_at, save_ref=save_ref
+            )
+
+        linkedin = self._linkedin
+        token = linkedin._token()
+        text = self._commentary(item, variants)
+        if ref == _TEXT_POSTING:
+            try:
+                return linkedin._find_text_post(
+                    text, token, int(claimed_at.timestamp() * 1000)
+                )
+            except ChannelError:
+                raise UncertainPublication("LinkedIn post lookup failed") from None
+        if ref not in {None, _TEXT_READY}:
+            raise ChannelError("Invalid LinkedIn text publication reference")
+
+        self._assets.check_release(item.id)
+        author = linkedin._author(token)
+        save_ref(_TEXT_POSTING)
+        try:
+            return linkedin._create_post(text, author, token)
+        except UncertainPublication:
+            raise
+        except TransientChannelError:
+            save_ref(_TEXT_READY)
+            return None
+        except (ChannelError, ChannelHeld):
+            save_ref(_TEXT_READY)
+            raise
 
 
 class FactoryThreadsChannel(ThreadsChannel):
@@ -166,7 +225,7 @@ class FactoryThreadsChannel(ThreadsChannel):
         self._assets = assets
 
     def _text(self, item: Item, variants: list[Variant]) -> str:
-        text = self._assets.reel(item.id).post_threads
+        text = self._assets.item(item.id).post_threads
         if text is None or not text.strip():
             raise ChannelError("Factory Threads text is empty")
         if len(text) > 500:
