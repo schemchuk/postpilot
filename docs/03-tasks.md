@@ -286,11 +286,18 @@ the day limit, the three repeat cases; live: one test release in a test repo fou
 written, length checks. Accept: tests for intake and publish per channel; live: one test post.
 **T27d** `post` kind, image (ADR 025 consequences): LinkedIn Images API upload, Threads `IMAGE` container.
 Accept: tests for upload payloads and recovery; live: one image post on both.
-**T27e** Contract for other projects (ADR 025 decision 8): `docs/publishing-contract.md` with the manifest
-schema and a `gh release create` example, the AGENTS.md block for other projects, the factory moved to v2
-(with the factory session), then `factory-intake` and `factory_reels` removed. Touches a workflow: Volodymyr's
-OK before merge. Accept: doc reviewed by Volodymyr; live: one factory release in v2 published.
+**T27e1** Contract for other projects (ADR 025 decision 8). Owner Codex, reviewer Claude. Docs only, no code
+or workflow change: `docs/publishing-contract.md` (tag rules, manifest v2 schema with every field and its
+limits, assets per kind, approval and idempotency rules as seen from the project, rejection reasons, a ready
+`gh release create` example for a reel and for a post, how to ask for a `config/projects.toml` entry) and the
+short AGENTS.md block for other projects (ADR 025 decision 8 wording). Every limit in the doc matches the
+code (`sources/project_release.py`, `projects.py`). Accept: doc reviewed by Volodymyr.
+
+**T27e2** Factory switched to v2, then `factory-intake` removed. Owner Codex, reviewer Claude. Starts only
+after one factory release in v2 was published live (the factory session moves itself, postpilot only sends
+the contract). Removes `factory-intake.yml`, the v1 source/channel code and v1 asset names, drops
+`factory_reels` (migration). Touches a workflow: Volodymyr's OK before merge.
 
 ## Order
-T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22 -> T23a -> T23b -> T24a -> T24b -> T25a -> T25b -> T26a -> T26b -> T26c (due before 2026-12-14) -> T28a -> T28b -> T28c -> T29a -> T29b -> T27a -> T27b -> T27c -> T27d -> T27e -> T29c.
+T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22 -> T23a -> T23b -> T24a -> T24b -> T25a -> T25b -> T26a -> T26b -> T26c (due before 2026-12-14) -> T28a -> T28b -> T28c -> T29a -> T29b -> T27a -> T27b -> T27c -> T27d -> T27e1 -> T27e2 -> T29c.
 First useful vertical slice after T11: Telegram text to approval to LinkedIn.
