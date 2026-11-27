@@ -446,3 +446,23 @@ To check inbox delivery, run `postpilot tiktok-sandbox-check /path/to/video.mp4`
 with sandbox credentials and a stored sandbox grant. The command uploads once
 and prints the last status and failure reason. `SEND_TO_USER_INBOX` means the
 video can be opened in the TikTok app.
+
+### Scan a project release
+
+The `publish-reels` workflow scans enabled projects every 15 minutes. To scan one
+project sooner, open **Actions → project-intake → Run workflow** and enter its key
+from `config/projects.toml`. The dispatch scans the configured public repository
+for `reel/*` releases with `manifest.json`. Factory v1 releases still use
+`factory-intake`.
+
+An automatic intake notice shows whether a reel was added, replaced or unchanged.
+For tap approval, review the cover and channel texts, then select **Approve** to
+schedule the reel or **Reject** to skip it. If the release time has passed, an
+approved reel can publish on the next run. **Already handled** means the item has
+already been acted on or the button belongs to an older preview.
+
+A **rejected** notice explains a validation error or refused replacement. It is
+sent once for each distinct fingerprint of the release. A **daily limit** notice
+means the item remains approved and waits until the next Berlin day. Disabled
+projects are held and reported once per Berlin day. If the project configuration
+is invalid, project publishing is held while own-video reels continue.

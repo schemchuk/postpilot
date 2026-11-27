@@ -24,6 +24,12 @@ from postpilot.projects import FACTORY_PROJECT, Projects
 from postpilot.store.project_items import ProjectItem, ProjectItemStore
 from postpilot.video.label import AI_VIDEO_CAPTION_LABEL
 
+
+@pytest.fixture(autouse=True)
+def disable_project_scan(monkeypatch):
+    monkeypatch.setattr(tasks, "scan_projects", lambda *args, **kwargs: True)
+
+
 pytestmark = test_store.pytestmark
 database_schema = test_store.database_schema
 conn = test_store.conn

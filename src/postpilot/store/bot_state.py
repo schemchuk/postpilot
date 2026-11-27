@@ -149,14 +149,14 @@ class BotState:
     def send_token_alert_once(
         self, provider: str, day: date, send: Callable[[], None]
     ) -> None:
-        self._send_daily_once(f"token_alert:{provider}", day, send)
+        self.send_daily_once(f"token_alert:{provider}", day, send)
 
     def send_renewal_prompt_once(
         self, provider: str, day: date, send: Callable[[], None]
     ) -> None:
-        self._send_daily_once(f"token_renewal:{provider}", day, send)
+        self.send_daily_once(f"token_renewal:{provider}", day, send)
 
-    def _send_daily_once(self, key: str, day: date, send: Callable[[], None]) -> None:
+    def send_daily_once(self, key: str, day: date, send: Callable[[], None]) -> None:
         with self.conn.transaction():
             result = self.conn.execute(
                 """

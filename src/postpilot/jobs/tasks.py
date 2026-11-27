@@ -44,7 +44,11 @@ from postpilot.channels.threads import ThreadsChannel
 from postpilot.channels.tiktok import TikTokChannel
 from postpilot.channels.youtube import YouTubeChannel
 from postpilot.config import ConfigError, HeyGenSettings, Settings
-from postpilot.core.approval import ProjectApprovalError
+from postpilot.core.approval import (
+    ProjectApprovalError,
+    ProjectDailyLimitError,
+    ProjectDisabledError,
+)
 from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
 from postpilot.core.models import Item
 from postpilot.core.publisher import ChannelResult, Publisher
@@ -65,7 +69,7 @@ from postpilot.notify.approval import ApprovalHandler
 from postpilot.notify.poller import drain_inbox
 from postpilot.notify.renewal import RenewalHandler
 from postpilot.notify.telegram import Notifier, TelegramApi, TelegramError
-from postpilot.projects import Projects
+from postpilot.projects import Projects, ProjectsConfigError
 from postpilot.sources.github import (
     PROMPT_COMMIT_LIMIT,
     GitHubClient,
@@ -73,6 +77,7 @@ from postpilot.sources.github import (
     pick_project,
 )
 from postpilot.sources.own_video import OwnVideoInbox
+from postpilot.sources.project_release import scan_projects
 from postpilot.sources.series import SeriesStore
 from postpilot.sources.telegram import TelegramInbox
 from postpilot.stats import StatsStore
@@ -225,6 +230,7 @@ def _publish_items(
     *,
     on_result: Callable[[UUID, str, ChannelResult], None] | None = None,
     notifier: Notifier | None = None,
+    on_project_hold: Callable[[UUID, ProjectApprovalError], None] | None = None,
 ) -> None:
     failed = False
     for item_id in item_ids:
@@ -232,6 +238,8 @@ def _publish_items(
             report = publisher.publish_item(item_id)
         except ProjectApprovalError as error:
             logger.warning("Project item %s held: %s", item_id, error)
+            if on_project_hold is not None:
+                on_project_hold(item_id, error)
         except IllegalTransition:
             item = publisher.repo.get_item(item_id)
             if item is None or item.state != ItemState.PUBLISHED:
@@ -407,6 +415,7 @@ def poll_telegram(settings: Settings, conn: Connection[TupleRow]) -> None:
             inbox=TelegramInbox(repo, api, model),
             own_video=OwnVideoInbox(repo, api, model),
             video_store=VideoStore(conn),
+            project_store=ProjectItemStore(conn),
             engagement=EngagementStore(conn),
             stats=StatsStore(conn),
             threads_reply_client=threads_reply_client,
@@ -536,10 +545,55 @@ def _own_video_reel_publisher(
 def publish_reels(
     settings: Settings, conn: Connection[TupleRow], *, retry: bool = False
 ) -> None:
-    projects = Projects.load()
     store = TokenStore(conn, TokenCipher(settings.token_encryption_key))
 
     with httpx.Client() as client:
+        repo = ItemRepo(conn)
+        api = TelegramApi(settings.telegram_bot_token, client=client)
+        notifier = Notifier(api, settings.telegram_chat_id)
+        notify = notifier.send_alert
+        now = _now()
+
+        def daily_notice(key: str, message: str) -> None:
+            day = _now().astimezone(ZoneInfo("Europe/Berlin")).date()
+            try:
+                repo.bot_state.send_daily_once(key, day, partial(notify, message))
+            except TelegramError:
+                logger.warning("Telegram project notice failed")
+
+        def project_hold(item_id: UUID, error: ProjectApprovalError) -> None:
+            if isinstance(error, ProjectDisabledError):
+                return  # Disabled projects already have a project-wide notice.
+            if isinstance(error, ProjectDailyLimitError):
+                daily_notice(f"projects:daily_limit:{item_id}", str(error))
+            else:
+                daily_notice(
+                    f"projects:held:{item_id}",
+                    f"Project item {item_id.hex[:8]} held: {error}",
+                )
+
+        project_items = ProjectItemStore(conn)
+        config_invalid = False
+        try:
+            projects = Projects.load()
+        except ProjectsConfigError as error:
+            config_invalid = True
+            logger.warning("Project configuration invalid: %s", error)
+            daily_notice(
+                "projects:config",
+                "Project publishing held: config/projects.toml is invalid.",
+            )
+            projects = Projects()
+        for project in projects:
+            if not project.enabled:
+                daily_notice(
+                    f"projects:disabled:{project.key}",
+                    f"Project {project.key} is disabled",
+                )
+        scan_projects(
+            projects, client, project_items, notifier, now, token=settings.github_token
+        )
+
         youtube_token: str | None = None
         youtube_checked = False
         tiktok_token: str | None = None
@@ -571,7 +625,6 @@ def publish_reels(
             return token.access_token if token and token.expires_at > _now() else None
 
         reel_channels = _reel_channels(settings, client)
-        repo = ItemRepo(conn)
         channels: list[VideoChannel | RenderChannel] = list(reel_channels)
         if settings.linkedin is not None:
             token_source = partial(read_token, LinkedInChannel.token_provider)
@@ -590,9 +643,6 @@ def publish_reels(
                 for name, lang in LINKEDIN_VIDEO_CHANNELS.items()
                 if not is_paused(name)
             )
-        api = TelegramApi(settings.telegram_bot_token, client=client)
-        notifier = Notifier(api, settings.telegram_chat_id)
-        notify = notifier.send_alert
         publish_one(
             VideoPublicationStore(conn),
             VideoStore(conn),
@@ -642,8 +692,7 @@ def publish_reels(
             except _ChannelPublishingFailed:
                 own_video_failed = True
 
-        project_items = ProjectItemStore(conn)
-        due = project_items.list_due_item_ids(_now())
+        due = [] if config_invalid else project_items.list_due_item_ids(_now())
         if due:
             assets = FactoryAssets(project_items, client, projects)
             targets: list[
@@ -692,6 +741,7 @@ def publish_reels(
                 due,
                 on_result=notify_result,
                 notifier=notifier,
+                on_project_hold=project_hold,
             )
         if own_video_failed:
             raise _ChannelPublishingFailed("Channel publishing failed")

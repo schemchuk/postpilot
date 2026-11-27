@@ -24,6 +24,10 @@ _VIDEO = "reel_de.mp4"
 _COVER = "cover_de.png"
 
 
+def _asset_name(reel: ProjectItem, current: str, legacy: str) -> str:
+    return current if current in reel.assets else legacy
+
+
 class FactoryAssets:
     def __init__(
         self, store: ProjectItemStore, client: httpx.Client, projects: Projects
@@ -67,10 +71,11 @@ class FactoryAssets:
     def check_release(self, item_id: UUID) -> None:
         reel = self.reel(item_id)
         release = self._release_for(item_id, reel)
-        if _VIDEO in self._errors:
-            raise ChannelError(self._errors[_VIDEO])
+        name = _asset_name(reel, "video.mp4", _VIDEO)
+        if name in self._errors:
+            raise ChannelError(self._errors[name])
         try:
-            release.asset_url(_VIDEO)
+            release.asset_url(name)
         except Rejected as error:
             raise ChannelError(f"Factory {error}") from None
 
@@ -85,7 +90,9 @@ class FactoryAssets:
                     "sha256": sha256(data).hexdigest(),
                 }:
                     raise ChannelError(f"Factory asset {name} changed since intake")
-                if name == _COVER and not data.startswith(b"\x89PNG\r\n\x1a\n"):
+                if name in {_COVER, "cover.png"} and not data.startswith(
+                    b"\x89PNG\r\n\x1a\n"
+                ):
                     raise ChannelError(
                         f"Factory asset {name} must have a PNG signature"
                     )
@@ -99,16 +106,20 @@ class FactoryAssets:
         return self._downloads[name]
 
     def video(self, item_id: UUID) -> bytes:
-        return self._download(item_id, _VIDEO)
+        return self._download(
+            item_id, _asset_name(self.reel(item_id), "video.mp4", _VIDEO)
+        )
 
     def cover(self, item_id: UUID) -> bytes:
-        return self._download(item_id, _COVER)
+        return self._download(
+            item_id, _asset_name(self.reel(item_id), "cover.png", _COVER)
+        )
 
     def cover_url(self, item_id: UUID) -> str:
         reel = self.reel(item_id)
         release = self._release_for(item_id, reel)
         try:
-            return str(release.asset_url(_COVER))
+            return str(release.asset_url(_asset_name(reel, "cover.png", _COVER)))
         except Rejected as error:
             raise ChannelError(f"Factory {error}") from None
 

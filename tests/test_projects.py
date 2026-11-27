@@ -180,6 +180,7 @@ def test_publish_checks_project_policy_and_channels(
         [],
         project_channels=[allowed, blocked],
         project_item=lambda _: replace(REEL, approval=approval),
+        project_published_today=lambda *_: 0,
         projects=registry,
         now=lambda: NOW,
     )
@@ -219,3 +220,50 @@ def test_publish_batch_continues_after_policy_refusal(caplog):
         (allowed,),
     ]
     assert "disabled" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("used", "state", "blocked"),
+    [
+        (1, ItemState.APPROVED, False),
+        (2, ItemState.APPROVED, True),
+        (2, ItemState.PUBLISHING, False),
+    ],
+)
+def test_project_daily_limit_and_channel_subset(used, state, blocked):
+    from postpilot.core.approval import ProjectApprovalError
+
+    project = replace(PROJECT, channels=("threads", "youtube"), max_per_day=2)
+    item = Item(uuid4(), "project", state, NOW, NOW, None, NOW)
+    repo = Mock(
+        get_item=Mock(return_value=item),
+        transition=Mock(return_value=replace(item, state=ItemState.PUBLISHING)),
+        get_variants=Mock(return_value=[]),
+        list_publications=Mock(return_value=[]),
+        finish_publishing=Mock(return_value=False),
+    )
+    threads, youtube = Mock(), Mock()
+    threads.name, youtube.name = "threads", "youtube"
+    published_today = Mock(return_value=used)
+    publisher = Publisher(
+        repo,
+        [],
+        projects=Projects((project,)),
+        project_channels=[threads, youtube],
+        project_item=lambda _: replace(REEL, channels=("threads",)),
+        project_published_today=published_today,
+        now=lambda: NOW,
+    )
+    publisher._send = Mock(return_value="remote")
+    if blocked:
+        with pytest.raises(ProjectApprovalError, match="daily limit 2 reached"):
+            publisher.publish_item(item.id)
+        repo.transition.assert_not_called()
+        repo.claim_publication.assert_not_called()
+    else:
+        assert set(publisher.publish_item(item.id).channels) == {"threads"}
+    if state == ItemState.PUBLISHING:
+        published_today.assert_not_called()
+    else:
+        published_today.assert_called_once_with(project.key, NOW)
+    assert not youtube.mock_calls

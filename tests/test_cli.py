@@ -265,3 +265,48 @@ def test_series_import_reports_active_series(series_import, capsys):
     assert caught.value.code != 0
     out, err = capsys.readouterr()
     assert not out and "A series is already active." in err
+
+
+@pytest.mark.parametrize(
+    ("enabled", "key", "message"),
+    [
+        (True, "typo", "Unknown project"),
+        (False, "demo", "disabled"),
+    ],
+)
+def test_project_intake_rejects_unknown_or_disabled_project(
+    monkeypatch, capsys, enabled, key, message
+):
+    from postpilot.projects import Project, Projects
+
+    projects = Projects(
+        (Project("demo", "owner/repo", ("reel",), ("threads",), enabled=enabled),)
+    )
+    monkeypatch.setattr(cli.Projects, "load", lambda: projects)
+    monkeypatch.setenv("PROJECT_KEY", key)
+    assert cli.main(["project-intake"]) == 1
+    assert message in capsys.readouterr().err
+
+
+def test_project_intake_runs_selected_scan(monkeypatch):
+    from postpilot.projects import Project, Projects
+
+    project = Project("demo", "owner/repo", ("reel",), ("threads",))
+    projects = Projects((project,))
+    monkeypatch.setattr(cli.Projects, "load", lambda: projects)
+    monkeypatch.setenv("PROJECT_KEY", project.key)
+    settings = Settings("db", "bot", 99, "", github_token="test-token")
+    settings_from_env = Mock(return_value=settings)
+    monkeypatch.setattr(cli.Settings, "from_env", settings_from_env)
+    conn = Mock()
+    monkeypatch.setattr(cli, "connect", lambda _: nullcontext(conn))
+    monkeypatch.setattr(cli.migrate, "up", Mock())
+    scan = Mock(return_value=True)
+    monkeypatch.setattr(cli, "scan_projects", scan)
+
+    assert cli.main(["project-intake"]) == 0
+    assert settings_from_env.call_args.kwargs == {"require_token_key": False}
+    cli.migrate.up.assert_called_once_with(conn)
+    assert scan.call_args.args[0] is projects
+    assert scan.call_args.args[2].conn is conn
+    assert scan.call_args.kwargs == {"only": project.key, "token": "test-token"}

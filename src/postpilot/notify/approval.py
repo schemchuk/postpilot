@@ -42,6 +42,7 @@ from postpilot.sources.series import (
 from postpilot.sources.telegram import TelegramInbox
 from postpilot.stats import StatsStore, format_stats
 from postpilot.store.bot_state import PROFILE_LIMIT
+from postpilot.store.project_items import ProjectItemStore
 from postpilot.store.repo import EditTooLong, ItemRepo
 from postpilot.trace import trace
 from postpilot.video.store import VideoStore
@@ -67,6 +68,7 @@ _FAILURE_ACTIONS = {
     "retry": (ItemState.PUBLISHING, "Retrying"),
     "skipfail": (ItemState.SKIPPED, "Skipped"),
 }
+_PROJECT_ACTIONS = {"papprove", "preject"}
 _VIDEO_ACTIONS = {"vapprove", "vreject", "vlinkedin"}
 _AWAITING = ItemState.AWAITING_APPROVAL
 _ACTIONS = {
@@ -106,6 +108,7 @@ class ApprovalHandler:
         inbox: TelegramInbox | None = None,
         own_video: OwnVideoInbox | None = None,
         video_store: VideoStore | None = None,
+        project_store: ProjectItemStore | None = None,
         engagement: EngagementStore | None = None,
         drafter: ReplyDrafter | None = None,
         stats: StatsStore | None = None,
@@ -124,6 +127,7 @@ class ApprovalHandler:
         self.inbox = inbox
         self.own_video = own_video
         self.video_store = video_store
+        self.project_store = project_store
         self.repo = repo
         self.api = api
         self.allowed_user_id = allowed_user_id
@@ -371,6 +375,7 @@ class ApprovalHandler:
                 "own:gen",
                 "own:skip",
                 *_VIDEO_ACTIONS,
+                *_PROJECT_ACTIONS,
                 "eng:redraft",
                 "eng:send",
             }
@@ -384,6 +389,31 @@ class ApprovalHandler:
         message = _object(event.get("message"))
         chat_id = _object(message.get("chat")).get("id")
         message_id = message.get("message_id")
+        if action in _PROJECT_ACTIONS:
+            if (
+                self.project_store is None
+                or chat_id != self.allowed_user_id
+                or type(message_id) is not int
+            ):
+                return
+            approve = action == "papprove"
+            changed = self.project_store.resolve_preview(
+                item_id, message_id, sender, approve
+            )
+            label = (
+                ("Project approved" if approve else "Project rejected")
+                if changed
+                else "Already handled"
+            )
+            send_callback_result(self.api, chat_id, message_id, label)
+            if changed:
+                _reply(
+                    self.api.edit_message_reply_markup,
+                    chat_id,
+                    message_id,
+                    {"inline_keyboard": []},
+                )
+            return
         if intake_action:
             if self.own_video and type(chat_id) is int and type(update_id) is int:
                 self.own_video.intake_callback(
@@ -470,7 +500,7 @@ class ApprovalHandler:
                 _reply(self.api.edit_message_caption, chat_id, message_id, label)
             return
         item = self.repo.get_item(item_id)
-        if item is None or item.state != _AWAITING:
+        if item is None or item.state != _AWAITING or item.source == "project":
             send_callback_result(self.api, chat_id, message_id, "Already handled")
             return
 

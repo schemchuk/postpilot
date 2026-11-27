@@ -6,7 +6,7 @@ import logging
 import os
 import sys
 from collections.abc import Callable
-from datetime import date
+from datetime import UTC, date, datetime
 from functools import partial
 from pathlib import Path
 
@@ -16,13 +16,15 @@ from psycopg.rows import TupleRow
 
 from postpilot import __version__
 from postpilot.config import ConfigError, Settings
-from postpilot.core.approval import auto_approved_project
+from postpilot.core.approval import auto_approved_project, enabled_project
 from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
+from postpilot.core.states import IllegalTransition
 from postpilot.jobs import tasks
 from postpilot.jobs.runner import run_job
 from postpilot.notify.telegram import Notifier, TelegramApi
-from postpilot.projects import FACTORY_PROJECT, Projects
+from postpilot.projects import FACTORY_PROJECT, Projects, ProjectsConfigError
 from postpilot.sources.factory import intake
+from postpilot.sources.project_release import scan_projects
 from postpilot.sources.series import ActiveSeriesExists, SeriesStore
 from postpilot.store import migrate
 from postpilot.store.db import connect
@@ -43,6 +45,7 @@ _DATABASE_COMMANDS = {
 }
 _COMMANDS = (
     "factory-intake",
+    "project-intake",
     "series-import",
     "draft-weekly",
     "poll-engagement",
@@ -226,10 +229,23 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
 
+    if args.command in {"project-intake", "publish-reels"}:
+        logging.basicConfig(format="%(message)s")
+        logging.getLogger("postpilot.sources.project_release").setLevel(logging.INFO)
+
+    if args.command == "project-intake":
+        key = os.environ.get("PROJECT_KEY", "")
+        try:
+            projects = Projects.load()
+            enabled_project(projects, key)
+        except (ProjectsConfigError, IllegalTransition) as error:
+            print(error, file=sys.stderr)
+            return 1
+
     try:
         settings = (
             Settings.from_env(Path(".env"), require_token_key=False)
-            if args.command == "factory-intake"
+            if args.command in {"factory-intake", "project-intake"}
             else Settings.from_env(Path(".env"))
         )
         if args.command == "render-video":
@@ -245,6 +261,34 @@ def main(argv: list[str] | None = None) -> int:
             result = _factory_intake(args.payload, settings)
 
         return run_job(args.command, run_intake, settings) or result
+
+    if args.command == "project-intake":
+        result = 1
+
+        def run_project_intake() -> None:
+            nonlocal result
+            with (
+                connect(settings.database_url) as conn,
+                httpx.Client(timeout=30) as client,
+            ):
+                migrate.up(conn)
+                notifier = Notifier(
+                    TelegramApi(settings.telegram_bot_token, client=client),
+                    settings.telegram_chat_id,
+                )
+                result = int(
+                    not scan_projects(
+                        projects,
+                        client,
+                        ProjectItemStore(conn),
+                        notifier,
+                        datetime.now(UTC),
+                        only=key,
+                        token=settings.github_token,
+                    )
+                )
+
+        return run_job(args.command, run_project_intake, settings) or result
 
     if args.command == "series-import":
         try:

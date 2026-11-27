@@ -88,6 +88,7 @@ def test_migration_up_noop_and_down(conn):
         "telegram_inbox",
         "factory_reels",
         "project_items",
+        "project_rejections",
     }
     assert table_names(conn) == latest_schema
     initial = applied_migrations(conn)
@@ -113,6 +114,7 @@ def test_migration_up_noop_and_down(conn):
         "0019_factory_reels",
         "0020_item_video_publications",
         "0021_project_items",
+        "0022_project_intake",
     ]
     migrate.up(conn)
     assert applied_migrations(conn) == initial
@@ -122,6 +124,9 @@ def test_migration_up_noop_and_down(conn):
             (id := uuid4(),),
         )
         conn.execute("DELETE FROM items WHERE id = %s", (id,))
+    migrate.down(conn)
+    assert applied_migrations(conn) == initial[:21]
+    assert "project_rejections" not in table_names(conn)
     migrate.down(conn)
     assert applied_migrations(conn) == initial[:20]
     assert "project_items" not in table_names(conn)
@@ -136,6 +141,7 @@ def test_migration_up_noop_and_down(conn):
         "telegram_inbox",
         "factory_reels",
         "project_items",
+        "project_rejections",
     }
     migrate.down(conn)
     assert applied_migrations(conn) == initial[:16]
@@ -478,3 +484,158 @@ def test_factory_intake_repeats_and_publisher_isolation(conn, repo, status):
     assert store.create_approved_reel(projects, reel) == "refused"
     assert persisted() == replacement
     assert repo.get_variants(item_id) == [Variant(item_id, "de", "Fixed")]
+
+
+def test_project_intake_migration_round_trip_with_data(conn):
+    from postpilot.projects import FACTORY_PROJECT, Projects
+    from postpilot.store.project_items import ProjectItem, ProjectItemStore
+
+    store = ProjectItemStore(conn)
+    projects = Projects.load()
+    reel = ProjectItem(
+        uuid4().hex,
+        datetime.now(UTC),
+        False,
+        "Legacy text",
+        None,
+        {},
+        10,
+        FACTORY_PROJECT,
+    )
+    assert store.create_approved_reel(projects, reel) == "new"
+    with conn.transaction():
+        item_id = store.preview_item_id(reel)
+    assert store.get_by_item(item_id).fingerprint is None
+    assert store.get_by_item(item_id).channels is None
+    v2 = replace(
+        reel,
+        release_at=reel.release_at + timedelta(minutes=1),
+        fingerprint="revision",
+        channels=("threads",),
+    )
+    assert store.save_reel(projects, v2) == ("replaced", None)
+    assert store.record_rejection(reel.project, reel.tag, "bad", "bad manifest")
+    assert not store.record_rejection(reel.project, reel.tag, "bad", "bad manifest")
+    migrate.down(conn)
+    with conn.transaction():
+        row = conn.execute(
+            "SELECT to_jsonb(f) FROM project_items f WHERE item_id = %s", (item_id,)
+        ).fetchone()[0]
+    assert (
+        "channels" not in row
+        and "fingerprint" not in row
+        and "preview_message_id" not in row
+    )
+    assert row["post_de"] == "Legacy text"
+    assert "project_rejections" not in table_names(conn)
+    migrate.up(conn)
+    migrated = store.get_by_item(item_id)
+    assert migrated.post_de == reel.post_de
+    assert migrated.release_at == v2.release_at
+    assert migrated.channels is None and migrated.fingerprint is None
+    assert not store.seen(reel.project, reel.tag, "bad")
+
+
+def test_project_tap_replacement_approval_and_refusal(conn, repo):
+    from postpilot.projects import Project, Projects
+    from postpilot.store.project_items import ProjectItem, ProjectItemStore
+
+    store = ProjectItemStore(conn)
+    project = Project("review", "owner/review", ("reel",), ("threads",))
+    projects = Projects((project,))
+    now = datetime.now(UTC)
+    reel = ProjectItem(
+        uuid4().hex,
+        now,
+        False,
+        "Original",
+        "Original",
+        {},
+        10,
+        project.key,
+        approval="tap",
+        channels=("threads",),
+        fingerprint="first",
+    )
+    with conn.transaction():
+        assert store.save_reel(projects, reel) == ("new", None)
+        item_id = store.preview_item_id(reel)
+        store.set_preview_message(item_id, 1)
+    assert repo.get_item(item_id).state == ItemState.AWAITING_APPROVAL
+    assert item_id not in store.list_due_item_ids(now)
+    assert store.resolve_preview(item_id, 1, 7, True)
+    assert repo.get_item(item_id).approved_by == 7
+    assert item_id in store.list_due_item_ids(now)
+    unchanged = replace(reel, fingerprint="second")
+    assert store.save_reel(projects, unchanged) == ("unchanged", None)
+    assert store.seen(project.key, reel.tag, "second")
+    assert not store.resolve_preview(item_id, 1, 7, False)
+    changed = replace(reel, ai=True, fingerprint="third")
+    with conn.transaction():
+        assert store.save_reel(projects, changed) == ("replaced", None)
+        store.set_preview_message(item_id, 2)
+    item = repo.get_item(item_id)
+    assert item.state == ItemState.AWAITING_APPROVAL
+    assert item.approved_by is None and item.approved_at is None
+    assert not store.resolve_preview(item_id, 1, 7, True)
+    assert item_id not in store.list_due_item_ids(now)
+    auto = Projects((replace(project, approval="auto"),))
+    assert store.save_reel(
+        auto, replace(changed, approval="auto", fingerprint="auto")
+    ) == ("refused", "the existing item has a different kind or approval mode")
+    assert store.resolve_preview(item_id, 2, 7, True)
+    repo.transition(item_id, ItemState.PUBLISHING)
+    claim = repo.claim_publication(item_id, "threads")
+    assert claim is not None
+    repo.mark_published(item_id, "threads", "remote", claim=claim)
+    assert (
+        store.save_reel(projects, replace(reel, fingerprint="fourth"))[0] == "refused"
+    )
+
+    skipped = replace(reel, id=uuid4().hex)
+    with conn.transaction():
+        assert store.save_reel(projects, skipped) == ("new", None)
+        skipped_id = store.preview_item_id(skipped)
+        store.set_preview_message(skipped_id, 3)
+    assert store.resolve_preview(skipped_id, 3, 7, False)
+    assert repo.get_item(skipped_id).state == ItemState.SKIPPED
+    assert store.save_reel(projects, replace(skipped, fingerprint="next")) == (
+        "refused",
+        "the existing item was skipped",
+    )
+
+
+def test_project_daily_count_uses_first_publication_and_berlin_day(conn):
+    from postpilot.projects import Project, Projects
+    from postpilot.store.project_items import ProjectItem, ProjectItemStore
+
+    store = ProjectItemStore(conn)
+    project = Project("quota", "owner/quota", ("reel",), ("threads",), approval="auto")
+    projects = Projects((project,))
+    berlin_midnight = datetime(2026, 12, 1, 23, tzinfo=UTC)
+    reel = ProjectItem(
+        "previous", berlin_midnight, False, "Text", "Thread", {}, 5, project.key
+    )
+    for name, first_published in [
+        ("previous", berlin_midnight - timedelta(seconds=1)),
+        ("current", berlin_midnight),
+    ]:
+        release = replace(reel, id=name)
+        assert store.create_approved_reel(projects, release) == "new"
+        with conn.transaction():
+            item_id = store.preview_item_id(release)
+            conn.execute(
+                "INSERT INTO publications (item_id, channel, status, updated_at) VALUES "
+                "(%s, 'threads', 'PUBLISHED', %s), (%s, 'instagram-reels', 'PUBLISHED', %s)",
+                (
+                    item_id,
+                    first_published,
+                    item_id,
+                    berlin_midnight + timedelta(seconds=1),
+                ),
+            )
+    assert (
+        store.published_today(project.key, berlin_midnight - timedelta(seconds=1)) == 1
+    )
+    assert store.published_today(project.key, berlin_midnight) == 1
+    assert store.published_today(project.key, berlin_midnight + timedelta(days=1)) == 0
