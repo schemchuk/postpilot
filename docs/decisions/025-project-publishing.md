@@ -113,6 +113,7 @@ the AI label, and nothing central enforces approval.
    for each project's `AGENTS.md` points to it: "To publish, build a release per the postpilot contract; never
    handle social tokens; ask Volodymyr before the first release of a project." A project gets its entry in
    `config/projects.toml` only by a postpilot PR.
+   See the [publishing contract](../publishing-contract.md).
 
 ## Consequences
 
