@@ -5,6 +5,10 @@ Status: APPROVED by Volodymyr (2026-11-18).
 Every task ships tests; no real network in CI. "Secret gate" = Volodymyr supplies a secret first;
 Claude Code gives a step-by-step guide with a verified link at that moment (AGENTS.md).
 Tasks touching workflows or secret handling need Volodymyr's explicit OK before merge.
+Every task from T29c on has an `ADRs:` line naming the ADRs (and AGENTS.md hard constraints) it touches.
+Each binding rule from them that the task's code reaches becomes its own Accept item with a test; a rule that
+is not written into Accept is not checked in review. After each task series, an ADR audit task compares the
+ADRs with the code (as T27e1 did for ADR 025).
 
 ## Phase 0: foundation
 
@@ -271,6 +275,7 @@ for privacy), per-item settings migration, Direct Post with caption, `is_aigc`, 
 factory fallback to the inbox when no choice by `release_at`. Then Claude records the sandbox demo, replaces the
 placeholder video, Volodymyr submits for review. Accept: tests for the row, defaults, the gate on Approve, the
 payload, the factory fallback; live: sandbox demo post (private), app submitted.
+ADRs: 026 (decisions 5, 7); AGENTS.md AI label (`is_aigc = true` for every AI video in direct mode, tested).
 **T27a** Project allowlist (ADR 025 decisions 2, 3, 6): `config/projects.toml` with the factory entry
 (`beekeeper`, `reel`, LinkedIn DE, Threads, IG, FB, YouTube, TikTok, `auto`, `max_per_day = 2`), source
 `project`, migration `project_items` with the `factory_reels` data copied, F3.3 rule in the core keyed on
@@ -297,6 +302,8 @@ code (`sources/project_release.py`, `projects.py`). Accept: doc reviewed by Volo
 after one factory release in v2 was published live (the factory session moves itself, postpilot only sends
 the contract). Removes `factory-intake.yml`, the v1 source/channel code and v1 asset names, drops
 `factory_reels` (migration). Touches a workflow: Volodymyr's OK before merge.
+ADRs: 024, 025 (decisions 4-8); AGENTS.md AI label and idempotency (factory reels keep the label on every
+channel after the v1 code is removed; a v2 re-release of a published v1 episode does not post twice; both tested).
 
 **T27f** ADR 025 gaps found in T27e1 (ADR 025 T27f notes). Owner Codex, reviewer Claude. No workflow change.
 (1) Reel text on Threads: with `ai: true` append `\n\nKI-generiertes Video / AI-generated video`, counted in
@@ -309,6 +316,17 @@ must fit LinkedIn's 3000. Update `docs/publishing-contract.md` to match. Accept:
 (file, fallback, fallback that no longer fits, `ai: false`), pagination stops (age, empty, cap), the 2200 rule
 with and without IG/TikTok; contract text matches the code.
 
+**T30** AI-label invariant + ADR audit for T26-T29 (lesson from T27f: three task reviews missed the Threads
+reel label because it was not in their Accept). Owner Codex, reviewer Claude. No workflow change.
+ADRs: 019, 024, 025, 026; AGENTS.md AI label.
+(1) One parametrised test over every registered channel adapter (`channels/registry.py`) and every content kind
+it accepts (HeyGen avatar, own video, factory reel, `post` image): with AI media the outgoing payload carries the
+label (caption/text suffix, burned-in label or the platform flag such as YouTube `containsSyntheticMedia`, TikTok
+`is_aigc`); a new adapter not listed in the test's channel/kind table fails the test. (2) Claude writes
+`docs/adr-audit-2026-11.md`: each binding rule of ADR 019 and 024-026 with the code or test that enforces it, or
+"gap"; gaps become tasks. Accept: test fails when the label is removed from any one adapter (checked by hand
+once in review); audit table reviewed by Volodymyr.
+
 ## Order
-T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22 -> T23a -> T23b -> T24a -> T24b -> T25a -> T25b -> T26a -> T26b -> T26c (due before 2026-12-14) -> T28a -> T28b -> T28c -> T29a -> T29b -> T27a -> T27b -> T27c -> T27d -> T27e1 -> T27f -> T29c -> T27e2.
+T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22 -> T23a -> T23b -> T24a -> T24b -> T25a -> T25b -> T26a -> T26b -> T26c (due before 2026-12-14) -> T28a -> T28b -> T28c -> T29a -> T29b -> T27a -> T27b -> T27c -> T27d -> T27e1 -> T27f -> T29c -> T30 -> T27e2.
 First useful vertical slice after T11: Telegram text to approval to LinkedIn.

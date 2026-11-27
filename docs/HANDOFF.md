@@ -7,12 +7,14 @@ never opens a Codex window. Same scheme as in handmake (Codex edit-only sandbox,
 1. **Secret step (only if the task has a "Secret gate").** Claude gives the guide and a verified link;
    Volodymyr puts the secret into `.env` (and GitHub Secrets if CI needs it).
 2. **Build (background).** Claude creates `feat/Tnn-<slug>`, writes the task brief from
-   docs/03-tasks.md, and runs `codex exec -s workspace-write -C <repo> -o <scratch>/Tnn-last.md - < brief`
+   docs/03-tasks.md (quoting the binding rules of the ADRs on its `ADRs:` line), and runs
+   `codex exec -s workspace-write -C <repo> -o <scratch>/Tnn-last.md - < brief`
    with `run_in_background`. Codex edits files and runs local checks inside its sandbox (no network, no
    git push). Claude is notified when it exits.
 3. **Check and review.** Claude runs ruff, mypy and pytest itself, reads the diff against the acceptance
-   criteria, and sends findings back with `codex exec resume --last` (fix loop). Writer is Codex,
-   reviewer is Claude, so the rule "author never merges own work" holds.
+   criteria and against the binding rules of every ADR on the task's `ADRs:` line (a rule the diff reaches but
+   no test covers is a blocking finding), and sends findings back with `codex exec resume --last` (fix loop).
+   Writer is Codex, reviewer is Claude, so the rule "author never merges own work" holds.
 4. **Commit, PR, merge.** Claude commits with trailer `Agent: codex`, pushes, opens the PR, waits for CI,
    merges with `gh pr merge --squash --delete-branch`. Tasks marked "Needs OK" (workflows, secret
    handling) stop for Volodymyr's explicit OK before merge.
@@ -27,7 +29,8 @@ not Codex. Claude Code must:
 - Then poll every 2-3 minutes with `kill -0 <pid>`, the `-o` last-message file and `git status`, using Monitor
   with an until-loop on the PID or the file (never `pgrep -f` matching its own command line).
 - The moment the PID is gone or the last-message file exists, start review in the same turn: ruff, mypy,
-  pytest, diff against acceptance criteria. Never end a turn with "waiting" while Codex is idle or finished.
+  pytest, diff against acceptance criteria and the `ADRs:` rules. Never end a turn with "waiting" while Codex
+  is idle or finished.
 - If the log is silent for 3 minutes, read it and act (resume Codex or take over the fix).
 - Report to Volodymyr only facts (log, files, test output), never "it is working" without evidence.
 

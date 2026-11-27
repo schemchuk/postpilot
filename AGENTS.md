@@ -79,7 +79,8 @@ No code before steps 1-4 are approved by Volodymyr.
 1. INTERVIEW -> docs/00-interview.md
 2. SPEC -> docs/01-spec.md (what, why, acceptance criteria, non-goals). Stop for review.
 3. ARCHITECTURE -> docs/02-architecture.md plus docs/decisions/NNN-title.md. Stop for review.
-4. TASKS -> docs/03-tasks.md (each with Owner, Reviewer, acceptance criteria, tests). Stop for review.
+4. TASKS -> docs/03-tasks.md (each with Owner, Reviewer, an `ADRs:` line, acceptance criteria, tests;
+   every binding ADR rule the task reaches is its own acceptance criterion). Stop for review.
 5. EXECUTE one task at a time; writer and reviewer are different agents. Docs are the source of truth.
 
 ## Interview rules
