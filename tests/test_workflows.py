@@ -235,3 +235,36 @@ def test_project_intake_dispatch():
             for name in ["DATABASE_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]
         },
     }
+
+
+def test_projects_guard():
+    workflow = yaml.safe_load((WORKFLOWS / "projects-guard.yml").read_text())
+    triggers = workflow["on"] if "on" in workflow else workflow[True]
+    assert triggers == {
+        "pull_request": {
+            "types": ["opened", "synchronize", "reopened", "labeled", "unlabeled"]
+        }
+    }
+    assert workflow["permissions"] == {"contents": "read"}
+    for job in workflow["jobs"].values():
+        assert "permissions" not in job
+        assert all("${{" not in step.get("run", "") for step in job["steps"])
+
+    steps = workflow["jobs"]["check"]["steps"]
+    assert {"uses": "actions/checkout@v4", "with": {"fetch-depth": 0}} in steps
+    assert {
+        "uses": "actions/setup-python@v5",
+        "with": {"python-version": "3.12"},
+    } in steps
+    assert {"run": "python -m pip install ."} in steps
+    command = next(
+        step for step in steps if "check_projects_widening.py" in step.get("run", "")
+    )
+    assert command["env"] == {
+        "BASE_REF": "${{ github.base_ref }}",
+        "HAS_OK": "${{ contains(github.event.pull_request.labels.*.name, 'projects-ok') }}",
+    }
+    assert "$BASE_REF" in command["run"]
+    assert "$HAS_OK" in command["run"]
+    assert "Volodymyr must review" in command["run"]
+    assert "projects-ok" in command["run"]
