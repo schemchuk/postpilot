@@ -340,6 +340,25 @@ label (caption/text suffix, burned-in label or the platform flag such as YouTube
 "gap"; gaps become tasks. Accept: test fails when the label is removed from any one adapter (checked by hand
 once in review); audit table reviewed by Volodymyr.
 
+**T31** CI guard for widening `config/projects.toml` (audit gap G2, ADR 025 decision 2). Owner Codex, reviewer
+Claude. Touches a workflow: Volodymyr's OK before merge.
+ADRs: 025 (decision 2: a PR that adds a project with `approval = "auto"` or widens an existing one's `channels`,
+`kinds` or `max_per_day` needs Volodymyr's explicit OK); AGENTS.md git rules.
+(1) `scripts/check_projects_widening.py BASE_FILE HEAD_FILE` parses both versions with the same loader as
+`projects.py` and prints one line per widening: new project with `approval = "auto"`, `tap` -> `auto`, a channel
+or kind added, `max_per_day` raised, `enabled` false -> true on an `auto` project, `repo` changed. Narrowing,
+a new `tap` project and unchanged files print nothing. Exit 1 on any widening, 0 otherwise; a missing base file
+(new file) counts as all projects added. (2) New job in `ci.yml`, `pull_request` only (types `opened`,
+`synchronize`, `reopened`, `labeled`, `unlabeled`): when the PR touches `config/projects.toml`, run the script on
+`origin/<base>` vs HEAD; on widening the job fails unless the PR has the label `projects-ok`. (3) AGENTS.md git
+rules: only Volodymyr adds `projects-ok`; agents never add it. Known limit, written in the audit: agents use
+Volodymyr's `gh` login, so the label is an audit trail and a hard stop for honest mistakes, not a security
+boundary. Update `docs/adr-audit-2026-11.md` row 025-2b to `test` and close G2.
+Accept: unit tests for every widening case above and for each non-widening case (narrowing, new `tap` project,
+reorder of `channels`, whitespace/comment change, missing base); test that the script exits 1 and names the
+project and field; CI job checked live once on a throwaway PR that adds a channel (fails without the label,
+passes after Volodymyr adds it), PR closed unmerged.
+
 ## Order
-T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22 -> T23a -> T23b -> T24a -> T24b -> T25a -> T25b -> T26a -> T26b -> T26c (due before 2026-12-14) -> T28a -> T28b -> T28c -> T29a -> T29b -> T27a -> T27b -> T27c -> T27d -> T27e1 -> T27f -> T29c1 -> T29c2 -> T30 -> T27e2.
+T01 -> T02 -> T03 -> T04 -> T05 -> T06 -> T07 -> T08 -> T10 -> T11 -> T12 -> T09 -> T13 -> T14 -> T15 -> T16 -> T19 -> T20 -> T17 -> T18a -> T18b -> T18c -> T21a -> T21b -> T21c -> T21d -> T18 -> T22 -> T23a -> T23b -> T24a -> T24b -> T25a -> T25b -> T26a -> T26b -> T26c (due before 2026-12-14) -> T28a -> T28b -> T28c -> T29a -> T29b -> T27a -> T27b -> T27c -> T27d -> T27e1 -> T27f -> T29c1 -> T29c2 -> T30 -> T27e2 -> T31.
 First useful vertical slice after T11: Telegram text to approval to LinkedIn.
