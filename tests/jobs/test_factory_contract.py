@@ -23,7 +23,7 @@ from postpilot.core.publisher import Publisher
 from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.projects import FACTORY_PROJECT, Project, Projects
 from postpilot.store.project_items import ProjectItem
-from postpilot.video.label import AI_IMAGE_CAPTION_LABEL
+from postpilot.video.label import AI_IMAGE_CAPTION_LABEL, AI_VIDEO_CAPTION_LABEL
 
 NOW = datetime(2026, 12, 1, 7, tzinfo=UTC)
 VIDEO = b"video"
@@ -86,11 +86,12 @@ def assets(
     thread=" Zweite Zeile.\n",
     size=5,
     cover=COVER,
+    ai=False,
 ):
     reel = ProjectItem(
         "002-test",
         NOW,
-        False,
+        ai,
         text,
         thread,
         {
@@ -212,8 +213,15 @@ def test_factory_threads_rejects_invalid_text_without_shortening(thread):
             channel.validate(item(ItemState.PUBLISHING), [])
 
 
-def test_threads_only_checks_release_metadata_and_sends_stored_text():
+@pytest.mark.parametrize(
+    ("ai", "already_labelled"), [(False, False), (True, False), (True, True)]
+)
+def test_threads_only_checks_release_metadata_and_labels_stored_text(
+    ai, already_labelled
+):
     thread = "  Zeile eins.\nZeile zwei.  "
+    label = "\n\n" + AI_VIDEO_CAPTION_LABEL
+    stored = thread + label if already_labelled else thread
     callbacks = Mock()
     calls = []
 
@@ -236,7 +244,7 @@ def test_threads_only_checks_release_metadata_and_sends_stored_text():
         if request.url.path.endswith("/me/threads"):
             assert parse_qs(request.content.decode()) == {
                 "media_type": ["TEXT"],
-                "text": [thread],
+                "text": [thread + label if ai else thread],
             }
             return httpx.Response(200, json={"id": "container"})
         assert request.url.path.endswith("/me/threads_publish")
@@ -244,7 +252,7 @@ def test_threads_only_checks_release_metadata_and_sends_stored_text():
 
     with httpx.Client(transport=httpx.MockTransport(route)) as client:
         channel = FactoryThreadsChannel(
-            lambda: "token", client, assets(client, thread=thread)
+            lambda: "token", client, assets(client, thread=stored, ai=ai)
         )
         assert (
             channel.publish_with_ref(

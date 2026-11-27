@@ -1,7 +1,7 @@
 import json
 from contextlib import contextmanager, nullcontext
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from unittest.mock import Mock
 
@@ -11,12 +11,13 @@ import pytest
 from postpilot.notify.telegram import Notifier, TelegramApi
 from postpilot.projects import Project, Projects
 from postpilot.sources.factory import ProjectRelease, Rejected
-from postpilot.sources.project_release import read_manifest, scan_projects
-from postpilot.video.label import AI_IMAGE_CAPTION_LABEL
+from postpilot.sources.project_release import _releases, read_manifest, scan_projects
+from postpilot.video.label import AI_IMAGE_CAPTION_LABEL, AI_VIDEO_CAPTION_LABEL
 
 NOW = datetime(2026, 11, 27, 8, tzinfo=UTC)
 PROJECT = Project("example", "owner/repo", ("reel",), ("linkedin-de", "threads"))
 TAG = "reel/sample-1"
+VIDEO_LABEL = "\n\n" + AI_VIDEO_CAPTION_LABEL
 PNG = b"\x89PNG\r\n\x1a\n"
 MANIFEST = {
     "v": 2,
@@ -49,6 +50,17 @@ def metadata(files, tag=TAG):
         }
         for index, (name, content) in enumerate(files.items(), start=1)
     ]
+
+
+def scan_page(request, rows):
+    assert request.url.params["per_page"] == "100"
+    page = int(request.url.params["page"])
+    return httpx.Response(
+        200,
+        json=[{"created_at": NOW.isoformat(), **row} for row in rows]
+        if page == 1
+        else [],
+    )
 
 
 def download(files):
@@ -140,7 +152,6 @@ def test_manifest_requires_assets(name):
         ("post_de.txt", b"  \n ", "non-empty"),
         ("post_de.txt", b"a\0b", "without NUL"),
         ("post_de.txt", b"x" * 3001, "exceeds 3000 characters"),
-        ("post_de.txt", b"x" * 2200, "Instagram caption limit"),
         ("post_threads.txt", b"x" * 501, "exceeds 500 characters"),
         ("post_threads.txt", b"\xff", "UTF-8"),
     ],
@@ -178,6 +189,96 @@ def test_project_text_is_verbatim():
     assert cover == PNG
 
 
+@pytest.mark.parametrize("filename", ["post_threads.txt", "post_de.txt"])
+def test_reel_threads_label_counts_toward_limit(filename):
+    raw = "x" * (500 - len(VIDEO_LABEL))
+    files = release_files() | {filename: raw.encode()}
+    reel, _ = load(files)
+    assert reel.post_threads == raw
+    assert reel.threads_text == raw + VIDEO_LABEL
+
+    files[filename] += b"x"
+    if filename == "post_threads.txt":
+        with pytest.raises(
+            Rejected,
+            match="post_threads.txt exceeds 500 characters including the AI video label",
+        ):
+            load(files)
+    else:
+        reel, _ = load(files)
+        assert reel.post_threads is None
+        assert reel.threads_text is None
+
+
+@pytest.mark.parametrize("filename", ["post_threads.txt", "post_de.txt"])
+def test_non_ai_reel_threads_uses_full_limit(filename):
+    files = release_files(MANIFEST | {"ai": False}) | {filename: b"x" * 500}
+    reel, _ = load(files)
+    assert reel.threads_text == "x" * 500
+
+
+@pytest.mark.parametrize(
+    ("allowlist", "selected", "limit", "platform"),
+    [
+        (("threads",), None, 3000, "LinkedIn"),
+        (("instagram", "threads"), ["threads"], 3000, "LinkedIn"),
+        (("instagram", "threads"), None, 2200, "Instagram"),
+        (("tiktok", "threads"), ["tiktok"], 2200, "TikTok"),
+    ],
+)
+def test_reel_caption_limit_uses_effective_channels(
+    allowlist, selected, limit, platform
+):
+    project = replace(PROJECT, channels=allowlist)
+    manifest = MANIFEST if selected is None else MANIFEST | {"channels": selected}
+    raw = b"x" * (limit - len(VIDEO_LABEL))
+    files = release_files(manifest) | {"post_de.txt": raw}
+    reel, _ = load(files, project)
+    assert reel.post_de.encode() == raw
+    files["post_de.txt"] += b"x"
+    with pytest.raises(Rejected, match=f"{limit}-character {platform} caption limit"):
+        load(files, project)
+
+
+@pytest.mark.parametrize(("stop", "pages"), [("age", 2), ("empty", 2), ("cap", 10)])
+def test_release_scan_pagination(stop, pages, caplog):
+    requested = []
+    cutoff = NOW - timedelta(days=61)
+
+    def release(tag, created):
+        return {
+            "tag_name": tag,
+            "created_at": created.isoformat(),
+            "assets": metadata(release_files(), tag),
+        }
+
+    def http(request):
+        page = len(requested) + 1
+        requested.append(page)
+        assert dict(request.url.params) == {"per_page": "100", "page": str(page)}
+        assert request.headers["Authorization"] == "Bearer test-token"
+        if page == 2 and stop == "empty":
+            return httpx.Response(200, json=[])
+        rows = [release(f"reel/item-{page}", cutoff)]
+        if page == 2 and stop == "age":
+            rows.extend(
+                [
+                    release("unrelated/old", cutoff - timedelta(seconds=1)),
+                    release("reel/after-cutoff", cutoff - timedelta(seconds=2)),
+                ]
+            )
+        return httpx.Response(200, json=rows)
+
+    with httpx.Client(transport=httpx.MockTransport(http)) as client:
+        releases = list(_releases(PROJECT, client, "test-token", NOW))
+    assert requested == list(range(1, pages + 1))
+    count = 1 if stop == "empty" else pages
+    assert [release.tag for release in releases] == [
+        f"reel/item-{page}" for page in range(1, count + 1)
+    ]
+    assert ("10-page cap" in caplog.text) == (stop == "cap")
+
+
 def test_scan_filters_and_isolates_projects():
     files = release_files()
     drafts = [
@@ -199,9 +300,8 @@ def test_scan_filters_and_isolates_projects():
         if request.url.path == "/repos/owner/bad-json/releases":
             return httpx.Response(200, content=b"invalid")
         assert request.url.path == "/repos/owner/repo/releases"
-        assert dict(request.url.params) == {"per_page": "30"}
-        return httpx.Response(
-            200, json=[*drafts, {"tag_name": TAG, "assets": metadata(files)}]
+        return scan_page(
+            request, [*drafts, {"tag_name": TAG, "assets": metadata(files)}]
         )
 
     projects = Projects(
@@ -217,12 +317,12 @@ def test_scan_filters_and_isolates_projects():
             projects, client, store, notify, NOW, token="test-token"
         )
         assert scan_projects(projects, client, store, notify, NOW, only=PROJECT.key)
-    assert len(requests) == 4
+    assert len(requests) == 6
     assert all(
         request.headers["Authorization"] == "Bearer test-token"
-        for request in requests[:3]
+        for request in requests[:4]
     )
-    assert "Authorization" not in requests[-1].headers
+    assert all("Authorization" not in request.headers for request in requests[4:])
     assert store.seen.call_count == 2
     assert store.seen.call_args_list[0] == store.seen.call_args_list[1]
     assert store.seen.call_args.args[:2] == (PROJECT.key, TAG)
@@ -236,9 +336,7 @@ def test_scan_rejection_fingerprint_is_saved_and_notified_once():
 
     def http(request):
         if request.url.host == "api.github.com":
-            return httpx.Response(
-                200, json=[{"tag_name": TAG, "assets": metadata(files)}]
-            )
+            return scan_page(request, [{"tag_name": TAG, "assets": metadata(files)}])
         downloads.append(request.url.path)
         return download(files)(request)
 
@@ -269,9 +367,7 @@ def test_scan_sends_notice_or_preview(monkeypatch, approval):
 
     def http(request):
         if request.url.host == "api.github.com":
-            return httpx.Response(
-                200, json=[{"tag_name": TAG, "assets": metadata(files)}]
-            )
+            return scan_page(request, [{"tag_name": TAG, "assets": metadata(files)}])
         return download(files)(request)
 
     import postpilot.sources.project_release as source
@@ -292,6 +388,7 @@ def test_scan_sends_notice_or_preview(monkeypatch, approval):
     message = api.send_message.call_args.args
     assert "Fri 27.11 09:00 Berlin" in message[1]
     assert "AI label: yes" in message[1]
+    assert f"Threads\n  Exact text.\n{VIDEO_LABEL}" in message[1]
     if approval == "auto":
         assert len(message) == 2
         api.send_photo.assert_not_called()
@@ -364,9 +461,7 @@ def test_scan_retries_failed_download_with_same_fingerprint(
 
     def http(request):
         if request.url.host == "api.github.com":
-            return httpx.Response(
-                200, json=[{"tag_name": TAG, "assets": metadata(files)}]
-            )
+            return scan_page(request, [{"tag_name": TAG, "assets": metadata(files)}])
         assert not in_transaction
         if fail_download and request.url.path.endswith("/video.mp4"):
             if failure == "timeout":
@@ -513,8 +608,8 @@ def test_post_rejects_invalid_text(name, data, error):
 def scan_post(files, project, store, notify):
     def http(request):
         if request.url.host == "api.github.com":
-            return httpx.Response(
-                200, json=[{"tag_name": POST_TAG, "assets": metadata(files, POST_TAG)}]
+            return scan_page(
+                request, [{"tag_name": POST_TAG, "assets": metadata(files, POST_TAG)}]
             )
         return download(files)(request)
 

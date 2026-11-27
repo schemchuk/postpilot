@@ -69,8 +69,8 @@ to both the reported asset size and downloaded bytes, unless noted.
 | Asset | Reel | Post | Intake limits |
 | --- | --- | --- | --- |
 | `manifest.json` | Required | Required | 16,000 bytes. See schema above. |
-| `post_de.txt` | Required | Required | 12,000 bytes. Reel: 2,200 characters with any AI video label, even without Instagram. Post: 3,000 characters with any AI image label. |
-| `post_threads.txt` | Optional | Optional | 2,000 bytes and 500 characters, including any AI image label on a post. |
+| `post_de.txt` | Required | Required | 12,000 bytes. Reel: 2,200 characters when targeting Instagram or TikTok, otherwise 3,000 characters. Both limits include any AI video label. Post: 3,000 characters with any AI image label. |
+| `post_threads.txt` | Optional | Optional | 2,000 bytes and 500 characters, including any AI video or image label. |
 | `video.mp4` | Required | — | 100,000,000 bytes. Must have a video stream and an MP4 duration that ffprobe can read. Duration must be 3–90 seconds. |
 | `cover.png` | Required | — | 10,000,000 bytes. Must start with the PNG signature. Used as the preview and as a thumbnail where supported. |
 | `image.png` or `image.jpg` | — | Optional | One image at most. 8,000,000 bytes. Must start with the matching PNG or JPEG signature. |
@@ -85,7 +85,9 @@ their channel-specific escaping. If `post_threads.txt` is absent, Threads uses
 `post_de.txt` if it fits its 500-character limit with any applicable label.
 Otherwise Threads is skipped and the Telegram intake notice gives the reason.
 An invalid `post_threads.txt` rejects intake even if Threads is outside the
-selected channels.
+selected channels. For reels, the effective channels come from the manifest
+when specified and from the project allowlist otherwise. For v1 factory
+reels, they come from the factory project configuration.
 
 For YouTube, a title override reported as over 16,000 bytes, invalid UTF-8,
 a NUL, an empty trimmed title or a title over 100 characters leads to the
@@ -99,10 +101,11 @@ any AI label. An oversized description fails that channel. A cover over
 
 - For a reel with `ai: true`, postpilot appends two newlines and
   `KI-generiertes Video / AI-generated video` to the LinkedIn, Instagram,
-  Facebook and YouTube captions and to the caption supplied for the TikTok
-  draft. This uses 43 characters of the budget, leaving 2,157 in
-  `post_de.txt`. YouTube also sets its synthetic media flag. Reel text on
-  Threads has no label added by postpilot.
+  Facebook and YouTube captions, the caption supplied for the TikTok draft,
+  and the Threads text, including the German caption fallback. The two newlines
+  and label take 43 characters, leaving 2,157 or 2,957 in `post_de.txt` depending
+  on the reel's channels, and 457 for Threads. An existing exact suffix on
+  Threads text is used as-is. YouTube also sets its synthetic media flag.
 - For a post with an image and `ai: true`, postpilot appends two newlines and
   `KI-generiertes Bild / AI-generated image` to LinkedIn and Threads text.
   This uses 42 characters, leaving 2,958 for `post_de.txt` and 458 for the
@@ -111,8 +114,11 @@ any AI label. An oversized description fails that channel. A cover over
 
 ## Intake and approval
 
-`publish-reels` is scheduled every 15 minutes. Each run scans the first page
-of up to 30 releases from each enabled project before it publishes due items.
+`publish-reels` is scheduled every 15 minutes. Before publishing due items, each run scans GitHub
+releases for every enabled project in newest-first order, requesting 100 per
+page. The scan stops at the
+first release whose `created_at` is more than 61 days old, an empty page, or
+after 10 pages. Reaching the page cap logs a warning.
 Allow for GitHub Actions scheduling delays. Polling requires no postpilot
 credential in your project. With existing permission to dispatch Actions in
 postpilot, you can request an earlier scan of a single project:
@@ -131,8 +137,9 @@ A successful dispatch alone does not confirm that a release was accepted.
   it is eligible in a publishing run at or after `release_at`. Reject skips it.
 - `auto`: Get approval in your project before handing over the release.
   Postpilot takes the item in as approved and sends a Telegram notice without
-  approval buttons. It becomes eligible at `release_at` if the project still
-  allows auto approval.
+  approval buttons. For reels targeting Threads, the notice includes the
+  Threads text when available, including any AI label. The item becomes
+  eligible at `release_at` if the project still allows auto approval.
 
 `max_per_day` is a per-project integer of at least 1. It counts items across
 both kinds by their first successful channel publication on a Berlin calendar

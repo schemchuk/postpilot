@@ -298,7 +298,8 @@ class FactoryThreadsChannel(ThreadsChannel):
         text = project_item.post_threads
         if text is None or not text.strip():
             raise ChannelError("Factory Threads text is empty")
-        text += project_item.image_caption_suffix
+        text = project_item.threads_text
+        assert text is not None
         if len(text) > 500:
             raise ChannelError("Factory Threads text exceeds 500 characters")
         return text

@@ -205,7 +205,9 @@ def _factory_intake(raw: str, settings: Settings) -> int:
         notifier.send_alert(message)
 
     with httpx.Client(timeout=30) as client:
-        return intake(raw, project.repo, client, save, notify)
+        return intake(
+            raw, project.repo, client, save, notify, channels=project.channels
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
