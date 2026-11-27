@@ -11,6 +11,7 @@ from uuid import UUID
 from postpilot.channels.base import (
     Channel,
     ChannelHeld,
+    ConfirmedPublicationFailure,
     RefChannel,
     TransientChannelError,
     UncertainPublication,
@@ -323,6 +324,8 @@ class Publisher:
                 return ChannelResult("pending")
             except UncertainPublication as error:
                 return ChannelResult("pending", describe_error(error))
+            except ConfirmedPublicationFailure as error:
+                validation_error = describe_error(error)
             except Exception as error:  # noqa: BLE001 - isolate adapter failures
                 if preserve_claim:
                     return ChannelResult("pending", describe_error(error))

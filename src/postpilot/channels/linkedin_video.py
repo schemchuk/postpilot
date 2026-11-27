@@ -22,7 +22,7 @@ from postpilot.channels.base import (
     TransientChannelError,
     UncertainPublication,
 )
-from postpilot.channels.linkedin import _VIDEOS, LinkedInChannel
+from postpilot.channels.linkedin import _IMAGES, _VIDEOS, LinkedInChannel
 from postpilot.core.models import Item, Variant
 from postpilot.notify.telegram import TelegramError
 from postpilot.store.repo import ItemRepo
@@ -62,12 +62,29 @@ class _LinkedInVideoPublisher:
         return f"https://www.linkedin.com/feed/update/{quote(remote_id, safe=':')}/"
 
     def _put_upload(
-        self, url: str, data: bytes, *, thumbnail: bool = False
+        self,
+        url: str,
+        data: bytes,
+        *,
+        thumbnail: bool = False,
+        image_token: str | None = None,
     ) -> httpx.Response:
         headers = {"Content-Type": "application/octet-stream"}
         if thumbnail:
             headers["media-type-family"] = "STILLIMAGE"
-        asset = "thumbnail" if thumbnail else "part"
+        if image_token is not None:
+            try:
+                target = httpx.URL(url)
+            except httpx.InvalidURL:
+                raise ChannelError("Invalid LinkedIn image upload URL") from None
+            if target.scheme != "https" or target.host not in {
+                "www.linkedin.com",
+                "linkedin.com",
+            }:
+                raise ChannelError("Invalid LinkedIn image upload URL")
+        asset = (
+            "image" if image_token is not None else "thumbnail" if thumbnail else "part"
+        )
         for attempt in range(_PART_ATTEMPTS):
             logging_context = _uploading_part.set(True)
             try:
@@ -80,6 +97,10 @@ class _LinkedInVideoPublisher:
                     timeout=30,
                 )
                 request.headers.pop("Authorization", None)
+                if image_token is not None:
+                    request.headers["Authorization"] = (
+                        f"Bearer {self._linkedin._same_token(image_token)}"
+                    )
                 response = client.send(request, auth=None, follow_redirects=False)
             except (httpx.RequestError, httpx.StreamError):
                 pass
@@ -188,18 +209,27 @@ class _LinkedInVideoPublisher:
         save_ref(_FINAL + urn)
         return urn
 
-    def _available(self, urn: str, token: str) -> bool:
+    def _media_status(self, endpoint: str, urn: str, token: str) -> object:
         linkedin = self._linkedin
-        url = f"{_VIDEOS}/{quote(urn, safe='')}"
+        url = f"{endpoint}/{quote(urn, safe='')}"
+        response = linkedin._request("GET", url, linkedin._same_token(token))
+        return (
+            None
+            if response.status_code == 404
+            else linkedin._object(response).get("status")
+        )
+
+    def _available(self, urn: str, token: str, *, image: bool = False) -> bool:
+        endpoint = _IMAGES if image else _VIDEOS
+        asset = "image" if image else "video"
         for attempt in range(_POLL_ATTEMPTS):
-            response = linkedin._request("GET", url, linkedin._same_token(token))
-            status = linkedin._object(response).get("status")
+            status = self._media_status(endpoint, urn, token)
             if status == "AVAILABLE":
                 return True
             if status == "PROCESSING_FAILED":
-                raise ChannelError("LinkedIn video processing failed")
+                raise ChannelError(f"LinkedIn {asset} processing failed")
             if status not in ("PROCESSING", "WAITING_UPLOAD"):
-                raise ChannelError("Unexpected LinkedIn video status")
+                raise ChannelError(f"Unexpected LinkedIn {asset} status")
             if attempt + 1 < _POLL_ATTEMPTS:
                 self._sleep(_POLL_INTERVAL)
         return False
@@ -253,7 +283,7 @@ class _LinkedInVideoPublisher:
             video_bytes()
         save_ref(_POSTING + urn)
         try:
-            return linkedin._create_post(text, author, token, video=urn)
+            return linkedin._create_post(text, author, token, media=urn)
         except UncertainPublication:
             raise
         except TransientChannelError:

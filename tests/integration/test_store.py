@@ -641,7 +641,8 @@ def test_project_daily_count_uses_first_publication_and_berlin_day(conn):
     assert store.published_today(project.key, berlin_midnight + timedelta(days=1)) == 0
 
 
-def test_project_post_save_replace_and_refuse_reel_clash(conn, repo):
+@pytest.mark.parametrize("change_image", [False, True])
+def test_project_post_save_replace_and_refuse_reel_clash(conn, repo, change_image):
     from hashlib import sha256
 
     from postpilot.projects import Project, Projects
@@ -651,16 +652,21 @@ def test_project_post_save_replace_and_refuse_reel_clash(conn, repo):
         data = text.encode()
         return {"post_de.txt": {"sha256": sha256(data).hexdigest(), "size": len(data)}}
 
+    def image_asset(image):
+        return {"image.png": {"sha256": sha256(image).hexdigest(), "size": len(image)}}
+
+    original_text = "  Original.\n"
     project = Project("writer", "owner/writer", ("reel", "post"), ("linkedin-de",))
     projects = Projects((project,))
     store = ProjectItemStore(conn)
+    release_id = "sample-image" if change_image else "sample"
     post = ProjectItem(
-        "sample",
+        release_id,
         datetime.now(UTC),
         True,
-        "  Original.\n",
+        original_text,
         None,
-        assets("  Original.\n"),
+        assets(original_text) | (image_asset(b"old") if change_image else {}),
         None,
         project.key,
         approval="tap",
@@ -675,15 +681,19 @@ def test_project_post_save_replace_and_refuse_reel_clash(conn, repo):
     assert store.resolve_preview(item_id, 42, 7, True)
     assert store.save_item(projects, post) == ("unchanged", None)
     assert repo.get_item(item_id).state == ItemState.APPROVED
+    text = original_text if change_image else "Revision"
     changed = replace(
-        post, post_de="Revision", assets=assets("Revision"), fingerprint="revision"
+        post,
+        post_de=text,
+        assets=assets(text) | (image_asset(b"new") if change_image else {}),
+        fingerprint="revision",
     )
     assert store.save_item(projects, changed) == ("replaced", None)
     assert store.get_by_item(item_id) == replace(
         changed, item_id=item_id, threads_skipped=True
     )
-    assert store.seen(project.key, "post/sample", "revision")
-    assert repo.get_variants(item_id)[0].text == "Revision"
+    assert store.seen(project.key, f"post/{release_id}", "revision")
+    assert repo.get_variants(item_id)[0].text == text
     assert repo.get_item(item_id).state == ItemState.AWAITING_APPROVAL
     assert store.save_item(projects, replace(changed, kind="reel", duration=10)) == (
         "refused",

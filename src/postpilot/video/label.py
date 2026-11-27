@@ -6,6 +6,8 @@ AI_AVATAR_CAPTION_LABEL = "KI-generierter Avatar / AI-generated avatar"
 
 AI_VIDEO_CAPTION_LABEL = "KI-generiertes Video / AI-generated video"
 
+AI_IMAGE_CAPTION_LABEL = "KI-generiertes Bild / AI-generated image"
+
 # Fontconfig resolves the font family on the runner without a fixed font file path.
 _FILTER = (
     "drawtext=font=DejaVu Sans:text=KI-generierter Avatar:"

@@ -28,11 +28,13 @@ from postpilot.sources.factory import (
     read_reel,
 )
 from postpilot.store.project_items import (
+    POST_IMAGE_SIGNATURES,
     Asset,
     IntakeStatus,
     ProjectItem,
     ProjectItemStore,
 )
+from postpilot.video.label import AI_IMAGE_CAPTION_LABEL
 
 logger = logging.getLogger(__name__)
 _REQUIRED = {"v", "kind", "id", "release_at", "ai"}
@@ -116,8 +118,26 @@ def read_manifest(
             assets[name] = _asset_hash(content)
             return content
 
-        post_de = _text(download("post_de.txt"), "post_de.txt", LINKEDIN_TEXT_LIMIT)
-        threads = _threads_text(post_de, release.metadata, download)
+        images = POST_IMAGE_SIGNATURES.keys() & release.metadata.keys()
+        if len(images) > 1:
+            raise Rejected("provide only one of image.png and image.jpg")
+        photo = None
+        if images:
+            name = images.pop()
+            photo = download(name)
+            if not photo.startswith(POST_IMAGE_SIGNATURES[name]):
+                raise Rejected(f"{name} has an invalid image signature")
+
+        label_length = len(AI_IMAGE_CAPTION_LABEL) + 2 if photo and ai else 0
+        post_de = _text(
+            download("post_de.txt"),
+            "post_de.txt",
+            LINKEDIN_TEXT_LIMIT,
+            label_length=label_length,
+        )
+        threads = _threads_text(
+            post_de, release.metadata, download, label_length=label_length
+        )
         return ProjectItem(
             item_id,
             release_at,
@@ -132,7 +152,7 @@ def read_manifest(
             threads_skipped=threads is None,
             channels=channels,
             fingerprint=fingerprint,
-        ), None
+        ), photo
     return read_reel(
         release,
         item_id,
@@ -199,13 +219,17 @@ def _notice(project: Project, item: ProjectItem, status: IntakeStatus) -> str:
             f"Project {project.key} {item.tag} · scheduled {_WEEKDAYS[local.weekday()]} "
             f"{local:%d.%m %H:%M} Berlin · {status}"
         ),
-        f"Channels: {', '.join(channels)} · AI label: {'yes' if item.ai and item.kind == 'reel' else 'no'}",
+        f"Channels: {', '.join(channels)} · AI label: {'yes' if item.ai and (item.kind == 'reel' or item.image_name) else 'no'}",
     ]
+    if item.image_name:
+        lines.append("Image: yes")
     if "threads" not in channels:
         lines.append(f"Threads skipped: channel outside this {item.kind}'s targets.")
     elif item.post_threads is None:
+        label = item.image_caption_suffix
         lines.append(
-            f"Threads skipped: post_de.txt is {len(item.post_de)} chars (max 500), no post_threads.txt"
+            f"Threads skipped: post_de.txt is {len(item.post_de + label)} chars"
+            f"{' with AI label' if label else ''} (max 500), no post_threads.txt"
         )
     if item.kind == "reel" and "youtube" in channels:
         title = fitting_title(item.post_de, item.title_de)
@@ -228,36 +252,35 @@ def _intake(
     notify: Notifier,
     now: datetime,
 ) -> None:
-    if (
-        release.tag.startswith("post/")
-        and {"image.png", "image.jpg"} & release.metadata.keys()
-    ):
-        logger.info(
-            "Project %s %s image post deferred to T27d", project.key, release.tag
-        )
-        return
     fingerprint = _fingerprint(release)
     if store.seen(project.key, release.tag, fingerprint):
         return
     try:
-        item, cover = read_manifest(release, project, now, fingerprint)
+        item, photo = read_manifest(release, project, now, fingerprint)
         with store.conn.transaction():
             status, reason = store.save_item(projects, item)
             if status == "refused":
                 raise Rejected(f"replacement refused: {reason}")
             if project.approval == "auto":
-                notify.send_alert(_notice(project, item, status))
+                notice = _notice(project, item, status)
+                if item.image_name:
+                    notify.send_alert(notice, photo=photo)
+                else:
+                    notify.send_alert(notice)
             elif status in {"new", "replaced"}:
                 item_id = store.preview_item_id(item)
                 targets = item.channels or project.channels
+                label = item.image_caption_suffix
                 message_id = notify.send_project_preview(
                     item_id,
-                    cover,
+                    photo,
                     _notice(project, item, status),
-                    item.post_de
+                    item.post_de + label
                     if item.kind == "reel" or "linkedin-de" in targets
                     else None,
-                    item.post_threads if "threads" in targets else None,
+                    item.post_threads + label
+                    if "threads" in targets and item.post_threads is not None
+                    else None,
                 )
                 store.set_preview_message(item_id, message_id)
     except DownloadFailed:

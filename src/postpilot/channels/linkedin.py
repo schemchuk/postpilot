@@ -19,6 +19,7 @@ LINKEDIN_TEXT_CHANNELS: dict[str, Language] = {"linkedin": "de", "linkedin-ua": 
 
 _POSTS = "https://api.linkedin.com/rest/posts"
 _VIDEOS = "https://api.linkedin.com/rest/videos"
+_IMAGES = "https://api.linkedin.com/rest/images"
 _USERINFO = "https://api.linkedin.com/v2/userinfo"
 _MAX_LENGTH = 3000
 # Keep hashtag and @mention prefixes. Preserve explicit LinkedIn URN mentions.
@@ -105,7 +106,11 @@ class LinkedInChannel:
         payload: dict[str, object] | None = None,
     ) -> httpx.Response:
         headers = {"Authorization": f"Bearer {token}"}
-        if url in {_POSTS, _VIDEOS} or url.startswith(_VIDEOS + "/"):
+        if (
+            url == _POSTS
+            or url in {_VIDEOS, _IMAGES}
+            or url.startswith((_VIDEOS + "/", _IMAGES + "/"))
+        ):
             headers.update(
                 {
                     "LinkedIn-Version": self._version,
@@ -132,7 +137,11 @@ class LinkedInChannel:
         except (ValueError, httpx.InvalidURL):
             transient = ChannelError
         else:
-            if response.is_success:
+            if response.is_success or (
+                method == "GET"
+                and url.startswith(_IMAGES + "/")
+                and response.status_code == 404
+            ):
                 return response
             if response.status_code in {401, 403}:
                 raise ChannelError("LinkedIn authorization failed")
@@ -170,7 +179,7 @@ class LinkedInChannel:
         return self._create_post(commentary, author, token)
 
     def _create_post(
-        self, commentary: str, author: str, token: str, *, video: str | None = None
+        self, commentary: str, author: str, token: str, *, media: str | None = None
     ) -> str:
         payload: dict[str, object] = {
             "author": author,
@@ -184,8 +193,8 @@ class LinkedInChannel:
             "lifecycleState": "PUBLISHED",
             "isReshareDisabledByAuthor": False,
         }
-        if video is not None:
-            payload["content"] = {"media": {"id": video}}
+        if media is not None:
+            payload["content"] = {"media": {"id": media}}
         response = self._request(
             "POST", _POSTS, self._same_token(token), payload=payload
         )
@@ -214,13 +223,23 @@ class LinkedInChannel:
                 return self._post_id(post)
         return None
 
-    def _find_text_post(self, text: str, token: str, since_ms: int) -> str | None:
+    def _find_text_post(
+        self, text: str, token: str, since_ms: int, *, media: str | None = None
+    ) -> str | None:
         match = None
         for post in self._author_posts(token):
             published_at = post.get("publishedAt")
+            content = post.get("content")
+            if media is None:
+                matches_media = content is None
+            else:
+                attachment = content.get("media") if isinstance(content, dict) else None
+                matches_media = (
+                    isinstance(attachment, dict) and attachment.get("id") == media
+                )
             if (
                 post.get("commentary") != text
-                or post.get("content") is not None
+                or not matches_media
                 or type(published_at) is not int
                 or published_at < since_ms
             ):

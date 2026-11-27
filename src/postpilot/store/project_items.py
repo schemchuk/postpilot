@@ -14,8 +14,14 @@ from postpilot.core.approval import auto_approved_project, enabled_project
 from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.projects import Projects
 from postpilot.store.repo import ItemRepo
+from postpilot.video.label import AI_IMAGE_CAPTION_LABEL
 
 type IntakeStatus = Literal["new", "replaced", "unchanged", "refused"]
+
+POST_IMAGE_SIGNATURES = {
+    "image.png": b"\x89PNG\r\n\x1a\n",
+    "image.jpg": b"\xff\xd8\xff",
+}
 
 
 class Asset(TypedDict):
@@ -42,6 +48,18 @@ class ProjectItem:
     kind: str = "reel"
     channels: tuple[str, ...] | None = None
     fingerprint: str | None = field(default=None, compare=False)
+
+    @property
+    def image_name(self) -> str | None:
+        if self.kind == "post":
+            return next(
+                (name for name in POST_IMAGE_SIGNATURES if name in self.assets), None
+            )
+        return None
+
+    @property
+    def image_caption_suffix(self) -> str:
+        return "\n\n" + AI_IMAGE_CAPTION_LABEL if self.ai and self.image_name else ""
 
     @property
     def tag(self) -> str:

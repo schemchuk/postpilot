@@ -135,9 +135,12 @@ class TelegramApi:
         raise TelegramError("Telegram file download failed")
 
     def send_photo(self, chat_id: int, photo: bytes) -> None:
-        self._request(
-            "sendPhoto", {"photo": ("cover.png", photo, "image/png")}, chat_id=chat_id
+        filename, mime = (
+            ("image.jpg", "image/jpeg")
+            if photo.startswith(b"\xff\xd8\xff")
+            else ("cover.png", "image/png")
         )
+        self._request("sendPhoto", {"photo": (filename, photo, mime)}, chat_id=chat_id)
 
     def send_video(
         self,
@@ -427,7 +430,9 @@ class Notifier:
             video_preview_markup(render.id, render.linkedin),
         )
 
-    def send_alert(self, text: str) -> None:
+    def send_alert(self, text: str, *, photo: bytes | None = None) -> None:
+        if photo is not None:
+            self.api.send_photo(self.chat_id, photo)
         self.api.send_message(self.chat_id, _truncate(text))
 
     def send_tiktok_draft(self, caption: str) -> None:

@@ -10,6 +10,10 @@ class ChannelError(Exception):
     """A permanent channel or validation failure."""
 
 
+class ConfirmedPublicationFailure(ChannelError):
+    """A failure after establishing that no post was published."""
+
+
 class TransientChannelError(ChannelError):
     """A channel failure that can be retried."""
 
