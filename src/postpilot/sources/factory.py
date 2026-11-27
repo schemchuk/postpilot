@@ -19,7 +19,7 @@ from postpilot.core.limits import (
 )
 from postpilot.projects import FACTORY_PROJECT
 from postpilot.store.project_items import Asset, IntakeStatus, ProjectItem
-from postpilot.video.label import AI_VIDEO_CAPTION_LABEL
+from postpilot.video.label import AI_VIDEO_CAPTION_SUFFIX, label_video_thread
 
 _EPISODE = re.compile(r"[0-9]{3}-[a-z0-9]+(?:-[a-z0-9]+)*")
 _OFFSET = re.compile(r"(?:Z|[+-](?:[01][0-9]|2[0-3])(?::?[0-5][0-9])?)$")
@@ -149,11 +149,18 @@ def _threads_text(
     download: Callable[[str], bytes],
     *,
     label_length: int = 0,
+    video_label: bool = False,
 ) -> str | None:
     name = "post_threads.txt"
     if name in names:
-        return _text(download(name), name, 500, label_length=label_length)
-    return post_de if len(post_de) + label_length <= 500 else None
+        text = _text(download(name), name, 500, label_length=label_length)
+        if video_label and len(label_video_thread(text)) > 500:
+            raise Rejected(
+                f"{name} exceeds 500 characters including the AI video label"
+            )
+        return text
+    fallback = label_video_thread(post_de) if video_label else post_de
+    return post_de if len(fallback) + label_length <= 500 else None
 
 
 def _probe_duration(video: bytes) -> float:
@@ -252,6 +259,7 @@ def read_reel(
     ai: bool,
     probe: Callable[[bytes], float],
     *,
+    project_channels: tuple[str, ...],
     project: str = FACTORY_PROJECT,
     approval: str = "auto",
     channels: tuple[str, ...] | None = None,
@@ -274,12 +282,20 @@ def read_reel(
         return data
 
     post_de = _text(download("post_de.txt"), "post_de.txt", LINKEDIN_TEXT_LIMIT)
-    label = f"\n\n{AI_VIDEO_CAPTION_LABEL}" if ai else ""
-    if len(post_de + label) > 2200:
+    label = AI_VIDEO_CAPTION_SUFFIX if ai else ""
+    targets = channels if channels is not None else project_channels
+    short_caption_platforms = [
+        name for name in ("Instagram", "TikTok") if name.lower() in targets
+    ]
+    if short_caption_platforms:
+        caption_limit, platform = 2200, "/".join(short_caption_platforms)
+    else:
+        caption_limit, platform = LINKEDIN_TEXT_LIMIT, "LinkedIn"
+    if len(post_de + label) > caption_limit:
         raise Rejected(
-            "post_de.txt exceeds the 2200-character Instagram caption limit (including any AI label)"
+            f"post_de.txt exceeds the {caption_limit}-character {platform} caption limit (including any AI label)"
         )
-    threads = _threads_text(post_de, urls, download)
+    threads = _threads_text(post_de, urls, download, video_label=ai)
     cover = download(cover_name)
     if not cover.startswith(b"\x89PNG\r\n\x1a\n"):
         raise Rejected(f"{cover_name} must have a PNG signature")
@@ -320,21 +336,40 @@ def read_reel(
     ), cover
 
 
-def _notice(repo: str, reel: ProjectItem, status: IntakeStatus) -> str:
+def _notice(
+    repo: str, reel: ProjectItem, status: IntakeStatus, channels: tuple[str, ...]
+) -> str:
     local = reel.release_at.astimezone(ZoneInfo("Europe/Berlin"))
-    threads = "" if reel.post_threads is None else "Threads, "
+    names = {
+        "linkedin-de": "LinkedIn DE",
+        "threads": "Threads",
+        "instagram": "IG",
+        "facebook": "FB",
+        "youtube": "YouTube",
+        "tiktok": "TikTok",
+    }
+    targets = ", ".join(
+        names[name]
+        for name in channels
+        if name != "threads" or reel.post_threads is not None
+    )
     lines = [
         (
             f"Factory reel {reel.id} · scheduled {_WEEKDAYS[local.weekday()]} "
-            f"{local:%d.%m %H:%M} · LinkedIn DE, {threads}IG, FB, YouTube, TikTok · AI label: "
+            f"{local:%d.%m %H:%M} · {targets} · AI label: "
             f"{'yes' if reel.ai else 'no'}"
         )
     ]
-    if reel.post_threads is None:
-        lines.append(
-            f"Threads skipped: post_de.txt is {len(reel.post_de)} chars (max 500), no post_threads.txt"
-        )
-    if not fitting_title(reel.post_de, reel.title_de):
+    if "threads" in channels:
+        if (threads := reel.threads_text) is None:
+            fallback = label_video_thread(reel.post_de) if reel.ai else reel.post_de
+            lines.append(
+                f"Threads skipped: post_de.txt is {len(fallback)} chars"
+                f"{' with AI label' if reel.ai else ''} (max 500), no post_threads.txt"
+            )
+        else:
+            lines.append(f"Threads\n{threads}")
+    if "youtube" in channels and not fitting_title(reel.post_de, reel.title_de):
         lines.append("YouTube will use the default title.")
     lines.append(
         f"Status: {'refused (already published)' if status == 'refused' else status}"
@@ -350,6 +385,7 @@ def intake(
     save: Callable[[ProjectItem], IntakeStatus],
     notify: Callable[[str], None],
     *,
+    channels: tuple[str, ...],
     now: datetime | None = None,
     probe: Callable[[bytes], float] = _probe_duration,
 ) -> int:
@@ -368,10 +404,12 @@ def intake(
             raise Rejected("ai must be a boolean")
         release_at = _release_time(data["release_at"], now or datetime.now(UTC))
         release = FactoryRelease(client, repo, f"reel/{episode}")
-        reel, _ = read_reel(release, episode, release_at, ai, probe)
+        reel, _ = read_reel(
+            release, episode, release_at, ai, probe, project_channels=channels
+        )
     except Rejected as error:
         notify(f"Factory reel {episode} rejected: {error}")
         return 1
     status = save(reel)
-    notify(_notice(repo, reel, status))
+    notify(_notice(repo, reel, status, channels))
     return int(status == "refused")

@@ -9,6 +9,7 @@ import pytest
 from postpilot import cli
 from postpilot.config import Settings
 from postpilot.sources import factory
+from postpilot.video.label import AI_VIDEO_CAPTION_LABEL
 
 REPO = "schemchuk/beekeeper-ai-integrator"
 NOW = datetime(2026, 11, 26, tzinfo=UTC)
@@ -20,6 +21,7 @@ ASSETS = {
     "cover_de.png": b"\x89PNG\r\n\x1a\nimage",
     "post_de.txt": "  Grüße\r\n".encode(),
 }
+CHANNELS = ("linkedin-de", "threads", "instagram", "facebook", "youtube", "tiktok")
 URL = f"https://github.com/{REPO}/releases/tag/{TAG}"
 
 
@@ -35,6 +37,7 @@ def run(
     sizes=None,
     downloads=None,
     redirects=None,
+    channels=CHANNELS,
 ):
     assets = ASSETS if assets is None else assets
     urls = {
@@ -77,7 +80,9 @@ def run(
 
     probe = duration if callable(duration) else Mock(return_value=duration)
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        code = factory.intake(raw, REPO, client, save, notice, now=NOW, probe=probe)
+        code = factory.intake(
+            raw, REPO, client, save, notice, channels=channels, now=NOW, probe=probe
+        )
     notice.assert_called_once()
     return code, notice.call_args.args[0], save
 
@@ -164,6 +169,7 @@ def test_missing_asset(missing):
         ("post_threads.txt", b"\xff", "must be UTF-8"),
         ("post_threads.txt", b"", "non-empty"),
         ("post_threads.txt", b"a" * 501, "500 characters"),
+        ("post_threads.txt", b"a" * 500, "including the AI video label"),
     ],
 )
 def test_invalid_asset(name, content, reason):
@@ -217,6 +223,7 @@ def test_notice_and_verbatim_text(status, monkeypatch):
     status_line = "refused (already published)" if status == "refused" else status
     assert message == (
         f"Factory reel {EPISODE} · scheduled Tue 01.12 08:00 · LinkedIn DE, Threads, IG, FB, YouTube, TikTok · AI label: yes\n"
+        f"Threads\n  Grüße\r\n\n\n{AI_VIDEO_CAPTION_LABEL}\n"
         f"Status: {status_line}\n{URL}"
     )
     reel = save.call_args.args[0]
@@ -242,6 +249,38 @@ def test_threads_skip_or_use_explicit_text():
     code, _, save = run(raw, assets=assets | {"post_threads.txt": b"b" * 500})
     assert code == 0
     assert save.call_args.args[0].post_threads == "b" * 500
+
+
+@pytest.mark.parametrize("already_labelled", [False, True])
+def test_ai_threads_file_notice_shows_label_once(already_labelled):
+    label = "\n\n" + AI_VIDEO_CAPTION_LABEL
+    thread = "Short text" + (label if already_labelled else "")
+    code, message, save = run(
+        json.dumps(PAYLOAD), assets=ASSETS | {"post_threads.txt": thread.encode()}
+    )
+    assert code == 0
+    assert save.call_args.args[0].post_threads == thread
+    assert f"Threads\nShort text{label}" in message
+    assert message.count(AI_VIDEO_CAPTION_LABEL) == 1
+
+
+def test_ai_threads_fallback_is_skipped_when_label_exceeds_limit():
+    code, message, save = run(
+        json.dumps(PAYLOAD), assets=ASSETS | {"post_de.txt": b"x" * 500}
+    )
+    assert code == 0
+    assert save.call_args.args[0].post_threads is None
+    assert f"{500 + len(AI_VIDEO_CAPTION_LABEL) + 2} chars with AI label" in message
+
+
+def test_factory_caption_can_exceed_2200_without_instagram_or_tiktok():
+    code, _, save = run(
+        json.dumps(PAYLOAD),
+        assets=ASSETS | {"post_de.txt": b"x" * 2200},
+        channels=("linkedin-de",),
+    )
+    assert code == 0
+    assert len(save.call_args.args[0].post_de) == 2200
 
 
 @pytest.mark.parametrize("explicit", [True, False])
@@ -392,3 +431,4 @@ def test_cli_intake_uses_project_repo(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "intake", intake)
     assert cli._factory_intake("payload", Settings("db", "bot", 1, "")) == 0
     assert intake.call_args.args[:2] == ("payload", "owner/repo")
+    assert intake.call_args.kwargs["channels"] == ("threads",)

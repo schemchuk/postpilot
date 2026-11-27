@@ -6,6 +6,8 @@ AI_AVATAR_CAPTION_LABEL = "KI-generierter Avatar / AI-generated avatar"
 
 AI_VIDEO_CAPTION_LABEL = "KI-generiertes Video / AI-generated video"
 
+AI_VIDEO_CAPTION_SUFFIX = "\n\n" + AI_VIDEO_CAPTION_LABEL
+
 AI_IMAGE_CAPTION_LABEL = "KI-generiertes Bild / AI-generated image"
 
 # Fontconfig resolves the font family on the runner without a fixed font file path.
@@ -14,6 +16,12 @@ _FILTER = (
     "x=w*0.04:y=h*0.04:fontsize=h*0.035:fontcolor=white:box=1:"
     "boxcolor=black@0.8:boxborderw=6"
 )
+
+
+def label_video_thread(text: str) -> str:
+    if text.endswith(AI_VIDEO_CAPTION_SUFFIX):
+        return text
+    return text + AI_VIDEO_CAPTION_SUFFIX
 
 
 def burn_ai_label(video: bytes) -> bytes:

@@ -14,7 +14,7 @@ from postpilot.core.approval import auto_approved_project, enabled_project
 from postpilot.core.states import IllegalTransition, ItemState
 from postpilot.projects import Projects
 from postpilot.store.repo import ItemRepo
-from postpilot.video.label import AI_IMAGE_CAPTION_LABEL
+from postpilot.video.label import AI_IMAGE_CAPTION_LABEL, label_video_thread
 
 type IntakeStatus = Literal["new", "replaced", "unchanged", "refused"]
 
@@ -60,6 +60,14 @@ class ProjectItem:
     @property
     def image_caption_suffix(self) -> str:
         return "\n\n" + AI_IMAGE_CAPTION_LABEL if self.ai and self.image_name else ""
+
+    @property
+    def threads_text(self) -> str | None:
+        if self.post_threads is None:
+            return None
+        if self.kind == "reel" and self.ai:
+            return label_video_thread(self.post_threads)
+        return self.post_threads + self.image_caption_suffix
 
     @property
     def tag(self) -> str:

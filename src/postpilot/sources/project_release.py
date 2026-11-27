@@ -3,7 +3,7 @@ import json
 import logging
 import re
 from collections.abc import Callable, Iterator
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
@@ -34,7 +34,7 @@ from postpilot.store.project_items import (
     ProjectItem,
     ProjectItemStore,
 )
-from postpilot.video.label import AI_IMAGE_CAPTION_LABEL
+from postpilot.video.label import AI_IMAGE_CAPTION_LABEL, label_video_thread
 
 logger = logging.getLogger(__name__)
 _REQUIRED = {"v", "kind", "id", "release_at", "ai"}
@@ -159,6 +159,7 @@ def read_manifest(
         release_at,
         ai,
         probe,
+        project_channels=project.channels,
         project=project.key,
         approval=project.approval,
         channels=channels,
@@ -175,40 +176,62 @@ def _fingerprint(release: ProjectRelease) -> str:
 
 
 def _releases(
-    project: Project, client: httpx.Client, token: str | None
+    project: Project, client: httpx.Client, token: str | None, now: datetime
 ) -> Iterator[ProjectRelease]:
-    response = client.get(
-        f"https://api.github.com/repos/{project.repo}/releases?per_page=30",
-        headers={"Authorization": f"Bearer {token}"} if token else None,
-        follow_redirects=False,
-    )
-    response.raise_for_status()
-    releases = response.json()
-    if not isinstance(releases, list):
-        raise TypeError("expected a list of releases")
-    for data in releases:
-        if not isinstance(data, dict) or not isinstance(
-            tag := data.get("tag_name"), str
-        ):
-            logger.warning("Project %s has invalid release metadata", project.key)
-            continue
-        if data.get("draft") or data.get("prerelease"):
-            continue
-        prefix = tag.partition("/")[0]
-        if prefix not in {"reel", "post"} or prefix not in project.kinds:
-            logger.info("Project %s ignored tag %s", project.key, tag)
-            continue
-        assets = data.get("assets")
-        if not isinstance(assets, list):
-            logger.warning("Project %s %s has invalid asset metadata", project.key, tag)
-            continue
-        try:
-            release = ProjectRelease(client, project.repo, tag, assets=assets)
-        except Rejected:
-            logger.warning("Project %s %s has invalid asset metadata", project.key, tag)
-            continue
-        if "manifest.json" in release.metadata:
-            yield release
+    cutoff = now - timedelta(days=61)
+    for page in range(1, 11):
+        response = client.get(
+            f"https://api.github.com/repos/{project.repo}/releases",
+            params={"per_page": 100, "page": page},
+            headers={"Authorization": f"Bearer {token}"} if token else None,
+            follow_redirects=False,
+        )
+        response.raise_for_status()
+        releases = response.json()
+        if not isinstance(releases, list):
+            raise TypeError("expected a list of releases")
+        if not releases:
+            return
+        for data in releases:
+            if not isinstance(data, dict) or not isinstance(
+                tag := data.get("tag_name"), str
+            ):
+                logger.warning("Project %s has invalid release metadata", project.key)
+                continue
+            created_at = data.get("created_at")
+            try:
+                created = datetime.fromisoformat(
+                    created_at if isinstance(created_at, str) else ""
+                )
+                if created.utcoffset() is None:
+                    raise ValueError
+            except ValueError:
+                logger.warning("Project %s %s has invalid created_at", project.key, tag)
+                continue
+            if created < cutoff:
+                return
+            if data.get("draft") or data.get("prerelease"):
+                continue
+            prefix = tag.partition("/")[0]
+            if prefix not in {"reel", "post"} or prefix not in project.kinds:
+                logger.info("Project %s ignored tag %s", project.key, tag)
+                continue
+            assets = data.get("assets")
+            if not isinstance(assets, list):
+                logger.warning(
+                    "Project %s %s has invalid asset metadata", project.key, tag
+                )
+                continue
+            try:
+                release = ProjectRelease(client, project.repo, tag, assets=assets)
+            except Rejected:
+                logger.warning(
+                    "Project %s %s has invalid asset metadata", project.key, tag
+                )
+                continue
+            if "manifest.json" in release.metadata:
+                yield release
+    logger.warning("Project %s release scan reached the 10-page cap", project.key)
 
 
 def _notice(project: Project, item: ProjectItem, status: IntakeStatus) -> str:
@@ -226,10 +249,16 @@ def _notice(project: Project, item: ProjectItem, status: IntakeStatus) -> str:
     if "threads" not in channels:
         lines.append(f"Threads skipped: channel outside this {item.kind}'s targets.")
     elif item.post_threads is None:
-        label = item.image_caption_suffix
+        video_label = item.kind == "reel" and item.ai
+        image_label = item.image_caption_suffix
+        fallback = (
+            label_video_thread(item.post_de)
+            if video_label
+            else item.post_de + image_label
+        )
         lines.append(
-            f"Threads skipped: post_de.txt is {len(item.post_de + label)} chars"
-            f"{' with AI label' if label else ''} (max 500), no post_threads.txt"
+            f"Threads skipped: post_de.txt is {len(fallback)} chars"
+            f"{' with AI label' if video_label or image_label else ''} (max 500), no post_threads.txt"
         )
     if item.kind == "reel" and "youtube" in channels:
         title = fitting_title(item.post_de, item.title_de)
@@ -263,6 +292,12 @@ def _intake(
                 raise Rejected(f"replacement refused: {reason}")
             if project.approval == "auto":
                 notice = _notice(project, item, status)
+                if (
+                    item.kind == "reel"
+                    and "threads" in (item.channels or project.channels)
+                    and (threads := item.threads_text) is not None
+                ):
+                    notice += f"\n\nThreads\n{threads}"
                 if item.image_name:
                     notify.send_alert(notice, photo=photo)
                 else:
@@ -278,9 +313,7 @@ def _intake(
                     item.post_de + label
                     if item.kind == "reel" or "linkedin-de" in targets
                     else None,
-                    item.post_threads + label
-                    if "threads" in targets and item.post_threads is not None
-                    else None,
+                    item.threads_text if "threads" in targets else None,
                 )
                 store.set_preview_message(item_id, message_id)
     except DownloadFailed:
@@ -310,7 +343,7 @@ def scan_projects(
         if not project.enabled or (only is not None and project.key != only):
             continue
         try:
-            for release in _releases(project, client, token):
+            for release in _releases(project, client, token, now):
                 try:
                     _intake(release, project, projects, store, notify, now)
                 except DownloadFailed as error:
