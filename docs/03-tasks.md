@@ -311,7 +311,7 @@ limits, assets per kind, approval and idempotency rules as seen from the project
 short AGENTS.md block for other projects (ADR 025 decision 8 wording). Every limit in the doc matches the
 code (`sources/project_release.py`, `projects.py`). Accept: doc reviewed by Volodymyr.
 
-**T27e2** Factory switched to v2, then `factory-intake` removed. Owner Codex, reviewer Claude. Starts only
+**T27e2** (DONE 2026-11-27, PR #73) Factory switched to v2, then `factory-intake` removed. Owner Codex, reviewer Claude. Starts only
 after one factory release in v2 was published live (the factory session moves itself, postpilot only sends
 the contract). Removes `factory-intake.yml`, the v1 source/channel code and v1 asset names, drops
 `factory_reels` (migration). Touches a workflow: Volodymyr's OK before merge.
