@@ -340,7 +340,7 @@ label (caption/text suffix, burned-in label or the platform flag such as YouTube
 "gap"; gaps become tasks. Accept: test fails when the label is removed from any one adapter (checked by hand
 once in review); audit table reviewed by Volodymyr.
 
-**T31** CI guard for widening `config/projects.toml` (audit gap G2, ADR 025 decision 2). Owner Codex, reviewer
+**T31** (DONE 2026-11-27, PR #74) CI guard for widening `config/projects.toml` (audit gap G2, ADR 025 decision 2). Owner Codex, reviewer
 Claude. Touches a workflow: Volodymyr's OK before merge.
 ADRs: 025 (decision 2: a PR that adds a project with `approval = "auto"` or widens an existing one's `channels`,
 `kinds` or `max_per_day` needs Volodymyr's explicit OK); AGENTS.md git rules.
