@@ -11,6 +11,7 @@ from uuid import UUID
 from postpilot.channels.base import (
     Channel,
     ChannelHeld,
+    ChannelSkipped,
     ConfirmedPublicationFailure,
     RefChannel,
     TransientChannelError,
@@ -263,7 +264,11 @@ class Publisher:
             )
         transitioned_to_failed = self.repo.finish_publishing(
             item_id,
-            set(results),
+            {
+                name
+                for name, result in results.items()
+                if not (result.outcome == "skipped" and result.error is not None)
+            },
             held=frozenset(
                 name for name, result in results.items() if result.outcome == "held"
             ).union(excluded if project else ()),
@@ -316,6 +321,9 @@ class Publisher:
         if validation_error is None or preserve_claim:
             try:
                 remote_id = self._send(channel, item, variants, claim)
+            except ChannelSkipped as error:
+                self.repo.release_publication(claim)
+                return ChannelResult("skipped", str(error))
             except ChannelHeld:
                 if not preserve_claim:
                     self.repo.release_publication(claim)

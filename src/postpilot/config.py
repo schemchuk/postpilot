@@ -4,6 +4,9 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
+
+from postpilot.core.tiktok import TikTokMode
 
 
 class ConfigError(ValueError):
@@ -32,7 +35,7 @@ class TikTokSettings:
     client_secret: str = field(repr=False)
     redirect_uri: str
     refresh_token: str | None = field(default=None, repr=False)
-    mode: str = "draft"
+    mode: TikTokMode = "draft"
 
 
 @dataclass(frozen=True)
@@ -138,7 +141,7 @@ class Settings:
         youtube_secret = values.get("YOUTUBE_CLIENT_SECRET")
         tiktok_mode = values.get("TIKTOK_MODE", "draft")
         if tiktok_mode == "direct":
-            raise ConfigError("TIKTOK_MODE=direct comes with T29c")
+            raise ConfigError("TIKTOK_MODE=direct comes with T29c2")
         if tiktok_mode != "draft":
             raise ConfigError("TIKTOK_MODE must be draft")
         tiktok_env = values.get("TIKTOK_ENV", "sandbox")
@@ -215,7 +218,7 @@ class Settings:
                 tiktok_secret,
                 redirect_uri or "https://schemchuk.github.io/postpilot/callback/",
                 values.get(f"{tiktok_prefix}_REFRESH_TOKEN"),
-                tiktok_mode,
+                cast(TikTokMode, tiktok_mode),
             )
             if tiktok_key and tiktok_secret
             else None,

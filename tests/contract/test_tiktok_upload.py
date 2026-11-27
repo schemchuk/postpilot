@@ -70,7 +70,7 @@ def test_upload_saves_ref_before_chunks_and_polls(
         )
         assert channel.caption("new") == caption
         with pytest.raises(ChannelHeld):
-            channel.publish_with_ref(reel, "access", "other", save_ref, claimed_at=NOW)
+            channel.publish_with_ref(reel, "access", None, save_ref, claimed_at=NOW)
     assert chunks == (
         [("bytes 0-7/8", video)]
         if count == 1

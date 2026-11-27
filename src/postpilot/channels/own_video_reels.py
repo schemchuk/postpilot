@@ -9,6 +9,7 @@ from uuid import UUID
 from postpilot.channels.base import ChannelError, ChannelHeld
 from postpilot.core.limits import shorten_text
 from postpilot.core.models import Item, Variant
+from postpilot.core.tiktok import TikTokChoice
 from postpilot.notify.telegram import TelegramApi, TelegramError
 from postpilot.store.own_videos import OwnVideo
 from postpilot.video.label import AI_VIDEO_CAPTION_LABEL
@@ -67,6 +68,7 @@ class OwnVideoReelsChannel:
         read_token: Callable[[str], str | None],
         *,
         caption_limit: int | None = None,
+        tiktok_choice: Callable[[UUID], TikTokChoice | None] | None = None,
     ) -> None:
         self.name = channel.name
         self._channel = channel
@@ -74,6 +76,7 @@ class OwnVideoReelsChannel:
         self._telegram = telegram
         self._read_token = read_token
         self._caption_limit = caption_limit
+        self._tiktok_choice = tiktok_choice
 
     @staticmethod
     def _text(item: Item, variants: list[Variant], video: OwnVideo | None) -> str:
@@ -118,6 +121,7 @@ class OwnVideoReelsChannel:
                 text + label,
                 video.duration,
                 video.ai_generated,
+                tiktok=self._tiktok_choice(item.id) if self._tiktok_choice else None,
             ),
             token,
             ref,

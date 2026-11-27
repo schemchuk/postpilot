@@ -64,23 +64,70 @@ class PublishStatus:
         return self.status in {"SEND_TO_USER_INBOX", "PUBLISH_COMPLETE", "FAILED"}
 
 
+@dataclass(frozen=True)
+class CreatorInfo:
+    privacy_level_options: list[str]
+    comment_disabled: bool
+    duet_disabled: bool
+    stitch_disabled: bool
+    max_video_post_duration_sec: int
+    creator_nickname: str
+
+
 class TikTokClient:
     def __init__(self, client: httpx.Client, access_token: str) -> None:
         self._client = client
         self._headers = {"Authorization": f"Bearer {access_token}"}
 
     def init_inbox(self, plan: UploadPlan) -> InboxUpload:
-        data = self._post(
-            "inbox/video/init",
-            {
-                "source_info": {
-                    "source": "FILE_UPLOAD",
-                    "video_size": plan.video_size,
-                    "chunk_size": plan.chunk_size,
-                    "total_chunk_count": plan.total_chunk_count,
-                }
-            },
-        )
+        return self._init_upload("inbox/video/init", plan)
+
+    def creator_info(self) -> CreatorInfo:
+        data = self._post("creator_info/query", {})
+        options = data.get("privacy_level_options")
+        comment = data.get("comment_disabled")
+        duet = data.get("duet_disabled")
+        stitch = data.get("stitch_disabled")
+        duration = data.get("max_video_post_duration_sec")
+        nickname = data.get("creator_nickname")
+        if (
+            not isinstance(options, list)
+            or not all(isinstance(option, str) and option for option in options)
+            or not isinstance(comment, bool)
+            or not isinstance(duet, bool)
+            or not isinstance(stitch, bool)
+            or not isinstance(duration, int)
+            or isinstance(duration, bool)
+            or duration <= 0
+            or not isinstance(nickname, str)
+            or not nickname.strip()
+        ):
+            raise TikTokAPIError("TikTok returned malformed creator info")
+        return CreatorInfo(options, comment, duet, stitch, duration, nickname)
+
+    def init_direct(
+        self, plan: UploadPlan, post_info: dict[str, object]
+    ) -> InboxUpload:
+        return self._init_upload("video/init", plan, post_info=post_info)
+
+    def _init_upload(
+        self,
+        endpoint: str,
+        plan: UploadPlan,
+        *,
+        post_info: dict[str, object] | None = None,
+    ) -> InboxUpload:
+        body: dict[str, object] = {
+            "source_info": {
+                "source": "FILE_UPLOAD",
+                "video_size": plan.video_size,
+                "chunk_size": plan.chunk_size,
+                "total_chunk_count": plan.total_chunk_count,
+            }
+        }
+        if post_info is not None:
+            body["post_info"] = post_info
+        data = self._post(endpoint, body)
         publish_id, upload_url = data.get("publish_id"), data.get("upload_url")
         if not isinstance(publish_id, str) or not publish_id:
             raise TikTokAPIError("TikTok did not return a publish ID")

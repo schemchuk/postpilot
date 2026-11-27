@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from postpilot.channels.base import ChannelError
 from postpilot.core.limits import REELS_MIN_DURATION
+from postpilot.core.tiktok import TikTokChoice
 from postpilot.video.label import AI_AVATAR_CAPTION_LABEL, AI_VIDEO_CAPTION_LABEL
 
 
@@ -16,6 +17,8 @@ class ReelVideo:
     cover: Callable[[], bytes] | None = None
     cover_url: str | None = None
     title: str | None = None
+    tiktok: TikTokChoice | None = None
+    inbox_fallback: bool = False
 
     def video_bytes(self) -> bytes:
         video = self.video() if callable(self.video) else self.video

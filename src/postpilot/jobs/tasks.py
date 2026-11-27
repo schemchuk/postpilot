@@ -85,6 +85,7 @@ from postpilot.store.bot_state import BotState
 from postpilot.store.own_videos import OwnVideo, OwnVideoStore
 from postpilot.store.project_items import ProjectItemStore
 from postpilot.store.repo import ItemRepo
+from postpilot.store.tiktok_settings import TikTokSettingsStore
 from postpilot.store.update_inbox import UpdateInbox
 from postpilot.store.weekly import WeeklyDraft, WeeklyStore
 from postpilot.tokens import service
@@ -522,6 +523,8 @@ def _own_video_reel_publisher(
     channels: list[VideoChannel],
     api: TelegramApi,
     read_token: Callable[[str], str | None],
+    *,
+    tiktok_settings: TikTokSettingsStore | None = None,
 ) -> Publisher:
     store = OwnVideoStore(repo.conn)
     return Publisher(
@@ -534,6 +537,9 @@ def _own_video_reel_publisher(
                 api,
                 read_token,
                 caption_limit=2200 if channel.name == _INSTAGRAM_TARGET else None,
+                tiktok_choice=tiktok_settings.get
+                if tiktok_settings is not None and channel.name == TikTokChannel.name
+                else None,
             )
             for channel in channels
         ],
@@ -655,12 +661,17 @@ def publish_reels(
         if settings.youtube is not None and not is_paused(YouTubeChannel.name):
             reel_channels.append(YouTubeChannel(client, clock=_now))
         tiktok = None
+        tiktok_settings = None
         if settings.tiktok is not None and not is_paused(TikTokChannel.name):
-            tiktok = TikTokChannel(client, clock=_now)
+            tiktok = TikTokChannel(client, mode=settings.tiktok.mode, clock=_now)
+            if tiktok.mode == "direct":
+                tiktok_settings = TikTokSettingsStore(conn)
             reel_channels.append(tiktok)
         permalinks = {channel.name: channel.permalink for channel in reel_channels}
 
         def notify_result(item_id: UUID, name: str, result: ChannelResult) -> None:
+            if result.outcome == "skipped" and result.error is not None:
+                alert(notify, f"{name}: skipped, {result.error}.")
             if result.outcome == "published":
                 for publication in repo.list_publications(item_id):
                     if (
@@ -668,10 +679,16 @@ def publish_reels(
                         and publication.remote_id is not None
                     ):
                         if tiktok is not None and name == tiktok.name:
-                            alert(
-                                notifier.send_tiktok_draft,
-                                tiktok.caption(publication.remote_id),
-                            )
+                            caption = tiktok.caption(publication.remote_id)
+                            if caption is None:
+                                alert(notify, "tiktok: posted")
+                            elif tiktok.mode == "direct":
+                                alert(
+                                    partial(notifier.send_tiktok_draft, fallback=True),
+                                    caption,
+                                )
+                            else:
+                                alert(notifier.send_tiktok_draft, caption)
                         else:
                             link = permalinks[name](publication.remote_id)
                             alert(notify, f"{name}: published {link}")
@@ -679,7 +696,9 @@ def publish_reels(
 
         own_video_failed = False
         if reel_channels:
-            publisher = _own_video_reel_publisher(repo, reel_channels, api, read_token)
+            publisher = _own_video_reel_publisher(
+                repo, reel_channels, api, read_token, tiktok_settings=tiktok_settings
+            )
             item_ids = repo.list_approved_item_ids(source="own_video")
             item_ids += repo.list_unfinished_item_ids(source="own_video")
             try:
@@ -705,6 +724,10 @@ def publish_reels(
                     caption_limit=2200 if channel.name == _INSTAGRAM_TARGET else None,
                     use_release_video=channel.name
                     in {YouTubeChannel.name, TikTokChannel.name},
+                    tiktok_choice=tiktok_settings.get
+                    if tiktok_settings is not None
+                    and channel.name == TikTokChannel.name
+                    else None,
                 )
                 for channel in reel_channels
             ]

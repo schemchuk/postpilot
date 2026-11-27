@@ -20,6 +20,7 @@ from postpilot.channels.linkedin_video import LinkedInVideoChannel
 from postpilot.channels.own_video_reels import _fit_video
 from postpilot.channels.threads import ThreadsChannel
 from postpilot.core.models import Item, Variant
+from postpilot.core.tiktok import TikTokChoice
 from postpilot.projects import Projects
 from postpilot.sources.factory import FactoryRelease, Rejected
 from postpilot.store.project_items import Asset, ProjectItem, ProjectItemStore
@@ -340,6 +341,7 @@ class FactoryReelsChannel:
         *,
         caption_limit: int | None = None,
         use_release_video: bool = False,
+        tiktok_choice: Callable[[UUID, datetime], TikTokChoice | None] | None = None,
     ) -> None:
         self.name = channel.name
         self.token_provider = channel.token_provider
@@ -348,6 +350,7 @@ class FactoryReelsChannel:
         self._assets = assets
         self._caption_limit = caption_limit
         self._use_release_video = use_release_video
+        self._tiktok_choice = tiktok_choice
 
     def _caption(self, reel: ProjectItem) -> str:
         text = reel.post_de + (f"\n\n{AI_VIDEO_CAPTION_LABEL}" if reel.ai else "")
@@ -400,6 +403,10 @@ class FactoryReelsChannel:
                 cover=partial(self._assets.cover, item.id),
                 cover_url=cover_url,
                 title=reel.title_de,
+                tiktok=self._tiktok_choice(item.id, reel.release_at)
+                if self._tiktok_choice
+                else None,
+                inbox_fallback=item.source == "project",
             ),
             token,
             ref,
