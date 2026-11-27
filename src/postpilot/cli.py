@@ -16,19 +16,18 @@ from psycopg.rows import TupleRow
 
 from postpilot import __version__
 from postpilot.config import ConfigError, Settings
-from postpilot.core.approval import auto_approved_project, enabled_project
+from postpilot.core.approval import enabled_project
 from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
 from postpilot.core.states import IllegalTransition
 from postpilot.jobs import tasks
 from postpilot.jobs.runner import run_job
 from postpilot.notify.telegram import Notifier, TelegramApi
-from postpilot.projects import FACTORY_PROJECT, Projects, ProjectsConfigError
-from postpilot.sources.factory import intake
+from postpilot.projects import Projects, ProjectsConfigError
 from postpilot.sources.project_release import scan_projects
 from postpilot.sources.series import ActiveSeriesExists, SeriesStore
 from postpilot.store import migrate
 from postpilot.store.db import connect
-from postpilot.store.project_items import IntakeStatus, ProjectItem, ProjectItemStore
+from postpilot.store.project_items import ProjectItemStore
 
 _DATABASE_COMMANDS = {
     "draft-weekly": tasks.draft_weekly,
@@ -44,7 +43,6 @@ _DATABASE_COMMANDS = {
     "tiktok-import-token": tasks.tiktok_import_token,
 }
 _COMMANDS = (
-    "factory-intake",
     "project-intake",
     "series-import",
     "draft-weekly",
@@ -188,28 +186,6 @@ def _series_import(path: Path, settings: Settings) -> None:
     )
 
 
-def _factory_intake(raw: str, settings: Settings) -> int:
-    projects = Projects.load()
-    project = auto_approved_project(projects, FACTORY_PROJECT)
-    notifier = Notifier(
-        TelegramApi(settings.telegram_bot_token), settings.telegram_chat_id
-    )
-
-    def save(reel: ProjectItem) -> IntakeStatus:
-        with connect(settings.database_url) as conn:
-            migrate.up(conn)
-            return ProjectItemStore(conn).create_approved_reel(projects, reel)
-
-    def notify(message: str) -> None:
-        print(message, file=sys.stderr)
-        notifier.send_alert(message)
-
-    with httpx.Client(timeout=30) as client:
-        return intake(
-            raw, project.repo, client, save, notify, channels=project.channels
-        )
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="postpilot", description=f"postpilot {__version__}"
@@ -217,10 +193,6 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command")
     for command in _COMMANDS:
         subparser = subparsers.add_parser(command)
-        if command == "factory-intake":
-            subparser.add_argument(
-                "--payload", default=os.environ.get("FACTORY_PAYLOAD", "")
-            )
         if command in {"series-import", "tiktok-sandbox-check"}:
             subparser.add_argument("path", type=Path)
         if command in {"render-video", "publish-reels"}:
@@ -247,22 +219,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = (
             Settings.from_env(Path(".env"), require_token_key=False)
-            if args.command in {"factory-intake", "project-intake"}
+            if args.command == "project-intake"
             else Settings.from_env(Path(".env"))
         )
         if args.command == "render-video":
             tasks.validate_video_settings(settings)
     except ConfigError as error:
         parser.error(str(error))
-
-    if args.command == "factory-intake":
-        result = 1
-
-        def run_intake() -> None:
-            nonlocal result
-            result = _factory_intake(args.payload, settings)
-
-        return run_job(args.command, run_intake, settings) or result
 
     if args.command == "project-intake":
         result = 1

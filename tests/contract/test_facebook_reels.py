@@ -322,7 +322,7 @@ def test_thumbnail_is_uploaded_after_finish_and_is_best_effort(render, caplog, f
         assert request.url.path == "/v27.0/old/thumbnails"
         assert request.headers["Content-Type"].startswith("multipart/form-data;")
         assert b'name="is_preferred"\r\n\r\ntrue' in request.content
-        assert b'name="source"; filename="cover_de.png"' in request.content
+        assert b'name="source"; filename="cover.png"' in request.content
         assert b"Content-Type: image/png\r\n\r\n" + png in request.content
         calls.append("thumbnail")
         if failure == "permissions":

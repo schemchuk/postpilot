@@ -11,8 +11,18 @@ import pytest
 from postpilot.core.tiktok import TikTokSelection
 from postpilot.notify.telegram import Notifier, TelegramApi
 from postpilot.projects import Project, Projects
-from postpilot.sources.factory import ProjectRelease, Rejected
-from postpilot.sources.project_release import _releases, read_manifest, scan_projects
+from postpilot.sources.project_release import (
+    _notice,
+    _releases,
+    read_manifest,
+    scan_projects,
+)
+from postpilot.sources.release_assets import (
+    _LIMITS,
+    DownloadFailed,
+    ProjectRelease,
+    Rejected,
+)
 from postpilot.video.label import AI_IMAGE_CAPTION_LABEL, AI_VIDEO_CAPTION_LABEL
 from postpilot.video.tiktok import CreatorInfo
 
@@ -96,7 +106,9 @@ def load(files, project=PROJECT, duration=12):
         ({"id": "Bad--slug"}, "lowercase slug"),
         ({"id": "a" * 81}, "at most 80"),
         ({"ai": 1}, "boolean"),
+        ({"release_at": "soon"}, "explicit offset"),
         ({"release_at": "2026-11-27T08:00:00"}, "explicit offset"),
+        ({"release_at": "2026-11-27T08:00:00+01:99"}, "explicit offset"),
         ({"release_at": "2026-11-27T06:59:59Z"}, "within 1 hour"),
         ({"release_at": "2027-02-01T08:00:00Z"}, "60 days"),
         ({"channels": []}, "non-empty list"),
@@ -156,6 +168,7 @@ def test_manifest_requires_assets(name):
         ("post_de.txt", b"x" * 3001, "exceeds 3000 characters"),
         ("post_threads.txt", b"x" * 501, "exceeds 500 characters"),
         ("post_threads.txt", b"\xff", "UTF-8"),
+        ("post_threads.txt", b"", "non-empty"),
     ],
 )
 def test_reel_rejects_invalid_content(name, content, error):
@@ -169,9 +182,10 @@ def test_reel_duration_limit(duration):
         load(release_files(), duration=duration)
 
 
-def test_reel_probe_error():
+@pytest.mark.parametrize("error", [ValueError, OSError])
+def test_reel_probe_error(error):
     def probe(_):
-        raise ValueError("not a video")
+        raise error("not a video")
 
     files = release_files()
     with httpx.Client(transport=httpx.MockTransport(download(files))) as client:
@@ -180,15 +194,28 @@ def test_reel_probe_error():
             read_manifest(release, PROJECT, NOW, "fingerprint", probe)
 
 
-def test_project_text_is_verbatim():
-    files = release_files(MANIFEST | {"channels": ["threads"]})
-    reel, cover = load(files | {"post_threads.txt": b" Threads!\n"})
-    assert reel.post_de == "  Exact text.\n"
+def test_project_text_is_verbatim(monkeypatch):
+    from postpilot.ai import client, humanizer
+
+    forbidden = Mock(side_effect=AssertionError("Project text must remain verbatim"))
+    monkeypatch.setattr(client.anthropic, "Anthropic", forbidden)
+    monkeypatch.setattr(humanizer, "humanize_pair", forbidden)
+    files = release_files(MANIFEST | {"channels": ["threads"]}) | {
+        "post_de.txt": "  Grüße\r\n".encode(),
+        "post_threads.txt": b" Threads!\n",
+    }
+    reel, cover = load(files)
+    assert reel.post_de == "  Grüße\r\n"
     assert reel.post_threads == " Threads!\n"
     assert reel.channels == ("threads",)
     assert reel.approval == "tap"
-    assert set(reel.assets) == set(files) - {"manifest.json"} | {"post_threads.txt"}
+    assert reel.assets == {
+        name: {"size": len(data), "sha256": sha256(data).hexdigest()}
+        for name, data in files.items()
+        if name != "manifest.json"
+    }
     assert cover == PNG
+    forbidden.assert_not_called()
 
 
 @pytest.mark.parametrize("filename", ["post_threads.txt", "post_de.txt"])
@@ -210,6 +237,9 @@ def test_reel_threads_label_counts_toward_limit(filename):
         reel, _ = load(files)
         assert reel.post_threads is None
         assert reel.threads_text is None
+        assert f"{len(raw) + 1 + len(VIDEO_LABEL)} chars with AI label" in _notice(
+            PROJECT, reel, "new"
+        )
 
 
 @pytest.mark.parametrize("filename", ["post_threads.txt", "post_de.txt"])
@@ -240,6 +270,182 @@ def test_reel_caption_limit_uses_effective_channels(
     files["post_de.txt"] += b"x"
     with pytest.raises(Rejected, match=f"{limit}-character {platform} caption limit"):
         load(files, project)
+
+
+@pytest.fixture
+def reel_downloads():
+    files = release_files()
+    assets = metadata(files)
+    requested = []
+    redirects = {}
+
+    def read(project=PROJECT):
+        content_by_url = {
+            asset["browser_download_url"]: files[asset["name"]] for asset in assets
+        }
+        content_by_url.update(
+            {target: content_by_url[url] for url, target in redirects.items()}
+        )
+
+        def respond(request):
+            assert "authorization" not in request.headers
+            url = str(request.url)
+            requested.append(url)
+            if url in redirects:
+                return httpx.Response(302, headers={"Location": redirects[url]})
+            return httpx.Response(200, content=content_by_url[url])
+
+        with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+            release = ProjectRelease(client, project.repo, TAG, assets=assets)
+            return read_manifest(release, project, NOW, "fingerprint", lambda _: 12)
+
+    return files, assets, requested, redirects, read
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["manifest.json", "video.mp4", "cover.png", "post_de.txt", "post_threads.txt"],
+)
+def test_oversized_metadata_rejects_before_asset_downloads(name, reel_downloads):
+    files, assets, requested, _, read = reel_downloads
+    if name not in files:
+        files[name] = b"Threads"
+        assets[:] = metadata(files)
+    limit = _LIMITS[name]
+    next(asset for asset in assets if asset["name"] == name)["size"] = limit + 1
+
+    with pytest.raises(Rejected, match=rf"{name} exceeds {limit} bytes"):
+        read()
+    expected = [] if name == "manifest.json" else [assets[0]["browser_download_url"]]
+    assert requested == expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://github.com/owner/repo/releases/download/asset",
+        "https://github.com.evil.example/owner/repo/releases/download/asset",
+        "https://github.com/other/repo/releases/download/asset",
+        "https://github.com/owner/repo/releases/tag/asset",
+        "https://github.com/owner/repo/releases/download/%2e%2e/asset",
+        "https://objects.githubusercontent.com:8443/asset",
+        "https://release-assets.githubusercontent.com/asset",
+    ],
+)
+def test_disallowed_asset_url_rejects_before_reel_downloads(url, reel_downloads):
+    _, assets, requested, _, read = reel_downloads
+    next(asset for asset in assets if asset["name"] == "video.mp4")[
+        "browser_download_url"
+    ] = url
+
+    with pytest.raises(Rejected, match=r"video\.mp4 has a disallowed download URL"):
+        read()
+    assert requested == [assets[0]["browser_download_url"]]
+
+
+def test_uses_asset_url_and_follows_github_cdn_redirect(reel_downloads):
+    files, assets, requested, redirects, read = reel_downloads
+    object_url = "https://objects.githubusercontent.com/opaque?asset=cover"
+    cdn_url = "https://release-assets.githubusercontent.com/opaque?asset=video"
+    next(asset for asset in assets if asset["name"] == "cover.png")[
+        "browser_download_url"
+    ] = object_url
+    video_url = next(asset for asset in assets if asset["name"] == "video.mp4")[
+        "browser_download_url"
+    ]
+    redirects[video_url] = cdn_url
+
+    reel, cover = read()
+    assert requested[-3:] == [object_url, video_url, cdn_url]
+    assert cover == files["cover.png"]
+    assert reel.assets["video.mp4"]["sha256"] == sha256(files["video.mp4"]).hexdigest()
+
+
+def test_disallowed_download_redirect_is_not_followed(reel_downloads):
+    _, assets, requested, redirects, read = reel_downloads
+    caption_url = next(asset for asset in assets if asset["name"] == "post_de.txt")[
+        "browser_download_url"
+    ]
+    redirects[caption_url] = "https://other.example/asset"
+
+    with pytest.raises(
+        Rejected, match=r"post_de\.txt has a disallowed download redirect"
+    ):
+        read()
+    assert requested == [assets[0]["browser_download_url"], caption_url]
+
+
+@pytest.mark.parametrize("name", ["video.mp4", "cover.png"])
+def test_oversized_asset_body(name, monkeypatch, reel_downloads):
+    files, assets, requested, _, read = reel_downloads
+    monkeypatch.setitem(_LIMITS, name, 10)
+    asset = next(asset for asset in assets if asset["name"] == name)
+    asset["size"] = 10
+    files[name] = b"x" * 11
+
+    with pytest.raises(Rejected, match=rf"{name} exceeds 10 bytes"):
+        read()
+    assert requested[-1] == asset["browser_download_url"]
+
+
+@pytest.mark.parametrize(
+    ("raw_title", "title", "notice"),
+    [
+        (b"  Override \n", "Override", "YouTube title: Override"),
+        (b"a" * 101, "", "YouTube will use the default title."),
+    ],
+)
+def test_youtube_title_asset(raw_title, title, notice):
+    project = replace(PROJECT, channels=(*PROJECT.channels, "youtube"))
+    reel, _ = load(release_files() | {"title_de.txt": raw_title}, project)
+    assert reel.title_de == title
+    assert reel.assets["title_de.txt"] == {
+        "sha256": sha256(raw_title).hexdigest(),
+        "size": len(raw_title),
+    }
+    assert notice in _notice(project, reel, "new")
+
+
+def test_oversized_youtube_title_asset_keeps_reel_intake(reel_downloads):
+    files, assets, requested, _, read = reel_downloads
+    name = "title_de.txt"
+    files[name] = b"large title"
+    assets[:] = metadata(files)
+    title_asset = next(asset for asset in assets if asset["name"] == name)
+    title_asset["size"] = _LIMITS[name] + 1
+    project = replace(PROJECT, channels=(*PROJECT.channels, "youtube"))
+
+    reel, _ = read(project)
+    assert reel.title_de == ""
+    assert name not in reel.assets
+    assert title_asset["browser_download_url"] not in requested
+    assert "YouTube will use the default title." in _notice(project, reel, "new")
+
+
+def test_missing_release_lookup_raises_download_failed():
+    url = f"https://api.github.com/repos/{PROJECT.repo}/releases/tags/reel%2Fsample-1"
+
+    def respond(request):
+        assert str(request.url) == url
+        return httpx.Response(404)
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(respond)) as client,
+        pytest.raises(DownloadFailed, match=f"could not read release {TAG}"),
+    ):
+        ProjectRelease(client, PROJECT.repo, TAG)
+
+
+def test_threads_skip_or_use_explicit_text():
+    project = replace(PROJECT, channels=(*PROJECT.channels, "instagram", "youtube"))
+    files = release_files(MANIFEST | {"ai": False}) | {"post_de.txt": b"x" * 2200}
+    reel, _ = load(files, project)
+    assert reel.threads_text is None
+    assert "Threads skipped: post_de.txt is 2200 chars (max 500)" in _notice(
+        project, reel, "new"
+    )
+    reel, _ = load(files | {"post_threads.txt": b"b" * 500}, project)
+    assert reel.threads_text == "b" * 500
 
 
 @pytest.mark.parametrize(("stop", "pages"), [("age", 2), ("empty", 2), ("cap", 10)])
@@ -286,7 +492,17 @@ def test_scan_filters_and_isolates_projects():
     drafts = [
         {"tag_name": TAG, "draft": True, "assets": metadata(files)},
         {"tag_name": TAG, "prerelease": True, "assets": metadata(files)},
-        {"tag_name": "reel/legacy", "assets": []},
+        {
+            "tag_name": "reel/legacy",
+            "assets": metadata(
+                {
+                    "reel_de.mp4": b"video",
+                    "cover_de.png": PNG,
+                    "post_de.txt": b"Legacy caption",
+                },
+                "reel/legacy",
+            ),
+        },
         {"tag_name": "post/example", "assets": metadata(files)},
     ]
     store = Mock()
@@ -362,13 +578,20 @@ def test_scan_rejection_fingerprint_is_saved_and_notified_once():
     )
 
 
+@pytest.mark.parametrize(
+    ("already_labelled", "status"), [(False, "new"), (True, "replaced")]
+)
 @pytest.mark.parametrize("approval", ["auto", "tap"])
 @pytest.mark.parametrize("mode", ["draft", "direct"])
 @pytest.mark.parametrize("target", [True, False])
-def test_scan_sends_notice_or_preview(monkeypatch, approval, mode, target):
+def test_scan_sends_notice_or_preview(
+    monkeypatch, approval, mode, target, already_labelled, status
+):
     from uuid import uuid4
 
     files = release_files()
+    if already_labelled:
+        files["post_threads.txt"] = b"  Exact text.\n" + VIDEO_LABEL.encode()
     project = replace(
         PROJECT,
         approval=approval,
@@ -399,7 +622,7 @@ def test_scan_sends_notice_or_preview(monkeypatch, approval, mode, target):
     store = Mock()
     store.conn.transaction.side_effect = nullcontext
     store.seen.return_value = False
-    store.save_item.return_value = ("new", None)
+    store.save_item.return_value = (status, None)
     api = Mock(spec=TelegramApi)
     api.send_message.return_value = 17
     store.preview_item_id.return_value = uuid4()
@@ -414,9 +637,10 @@ def test_scan_sends_notice_or_preview(monkeypatch, approval, mode, target):
         )
     assert store.save_item.call_args.args[1].approval == approval
     message = api.send_message.call_args.args
-    assert "Fri 27.11 09:00 Berlin" in message[1]
+    assert f"Fri 27.11 09:00 Berlin · {status}" in message[1]
     assert "AI label: yes" in message[1]
     assert f"Threads\n  Exact text.\n{VIDEO_LABEL}" in message[1]
+    assert message[1].count(AI_VIDEO_CAPTION_LABEL) == 1
     has_row = mode == "direct" and target
     assert ("TikTok account: Creator" in message[1]) == has_row
     assert creator.call_count == int(has_row)
@@ -479,7 +703,7 @@ def test_publishing_reads_and_verifies_v2_asset_names():
             reader.video(uuid4())
 
 
-@pytest.mark.parametrize("failure", ["503", "timeout"])
+@pytest.mark.parametrize("failure", ["404", "503", "timeout"])
 def test_scan_retries_failed_download_with_same_fingerprint(
     monkeypatch, caplog, failure
 ):
@@ -506,7 +730,7 @@ def test_scan_retries_failed_download_with_same_fingerprint(
         if fail_download and request.url.path.endswith("/video.mp4"):
             if failure == "timeout":
                 raise httpx.ReadTimeout("asset unavailable", request=request)
-            return httpx.Response(503)
+            return httpx.Response(int(failure))
         return download(files)(request)
 
     def probe(_):

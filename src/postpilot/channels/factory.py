@@ -22,23 +22,19 @@ from postpilot.channels.threads import ThreadsChannel
 from postpilot.core.models import Item, Variant
 from postpilot.core.tiktok import TikTokChoice
 from postpilot.projects import Projects
-from postpilot.sources.factory import FactoryRelease, Rejected
+from postpilot.sources.release_assets import ProjectRelease, Rejected
 from postpilot.store.project_items import Asset, ProjectItem, ProjectItemStore
 from postpilot.video.label import AI_VIDEO_CAPTION_LABEL
 from postpilot.video.publisher import VideoChannel
 from postpilot.video.reel import ReelVideo
 
-_VIDEO = "reel_de.mp4"
-_COVER = "cover_de.png"
+_VIDEO = "video.mp4"
+_COVER = "cover.png"
 _TEXT_POSTING = "text-posting"
 _TEXT_READY = "text-ready"
 _IMAGE_READY = "image:"
 _IMAGE_POSTING = "image-posting:"
 _IMAGE_URN = "urn:li:image:"
-
-
-def _asset_name(reel: ProjectItem, current: str, legacy: str) -> str:
-    return current if current in reel.assets else legacy
 
 
 class FactoryAssets:
@@ -50,7 +46,7 @@ class FactoryAssets:
         self.projects = projects
         # Keep the release and downloaded media for the current item only.
         self._key: tuple[UUID, str, dict[str, Asset]] | None = None
-        self._release: FactoryRelease | None = None
+        self._release: ProjectRelease | None = None
         self._downloads: dict[str, bytes] = {}
         self._errors: dict[str, str] = {}
         self._fitted: bytes | None = None
@@ -67,7 +63,7 @@ class FactoryAssets:
             raise ChannelError("Factory reel data is unavailable")
         return reel
 
-    def _release_for(self, item_id: UUID, reel: ProjectItem) -> FactoryRelease:
+    def _release_for(self, item_id: UUID, reel: ProjectItem) -> ProjectRelease:
         key = (item_id, reel.tag, reel.assets)
         if self._key != key:
             self._key = key
@@ -80,7 +76,7 @@ class FactoryAssets:
                 project = self.projects.get(reel.project)
                 if project is None:
                     raise ChannelError("Project release repository is unavailable")
-                self._release = FactoryRelease(self.client, project.repo, reel.tag)
+                self._release = ProjectRelease(self.client, project.repo, reel.tag)
             except Rejected:
                 self._errors["release"] = f"Factory release {reel.tag} is unavailable"
         if self._release is None:
@@ -99,7 +95,7 @@ class FactoryAssets:
                 self._download(item_id, image)
             return
         release = self._release_for(item_id, reel)
-        name = _asset_name(reel, "video.mp4", _VIDEO)
+        name = _VIDEO
         if name in self._errors:
             raise ChannelError(self._errors[name])
         try:
@@ -118,9 +114,7 @@ class FactoryAssets:
                     "sha256": sha256(data).hexdigest(),
                 }:
                     raise ChannelError(f"Factory asset {name} changed since intake")
-                if name in {_COVER, "cover.png"} and not data.startswith(
-                    b"\x89PNG\r\n\x1a\n"
-                ):
+                if name == _COVER and not data.startswith(b"\x89PNG\r\n\x1a\n"):
                     raise ChannelError(
                         f"Factory asset {name} must have a PNG signature"
                     )
@@ -134,20 +128,18 @@ class FactoryAssets:
         return self._downloads[name]
 
     def video(self, item_id: UUID) -> bytes:
-        return self._download(
-            item_id, _asset_name(self.reel(item_id), "video.mp4", _VIDEO)
-        )
+        self.reel(item_id)
+        return self._download(item_id, _VIDEO)
 
     def cover(self, item_id: UUID) -> bytes:
-        return self._download(
-            item_id, _asset_name(self.reel(item_id), "cover.png", _COVER)
-        )
+        self.reel(item_id)
+        return self._download(item_id, _COVER)
 
     def cover_url(self, item_id: UUID) -> str:
         reel = self.reel(item_id)
         release = self._release_for(item_id, reel)
         try:
-            return str(release.asset_url(_asset_name(reel, "cover.png", _COVER)))
+            return str(release.asset_url(_COVER))
         except Rejected as error:
             raise ChannelError(f"Factory {error}") from None
 

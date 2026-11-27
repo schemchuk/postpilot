@@ -43,7 +43,7 @@ The bot also drafts replies to LinkedIn comments from Gmail notifications (I pos
 ```mermaid
 flowchart TD
     Cron["cron-job.org"] --> Dispatch["workflow_dispatch"]
-    Dispatch --> Jobs["GitHub Actions jobs<br/>draft-weekly · poll-telegram · publish-due · render-video<br/>publish-reels · poll-engagement · check-tokens · snapshot-traffic"]
+    Dispatch --> Jobs["GitHub Actions jobs<br/>draft-weekly · poll-telegram · publish-due · render-video<br/>publish-projects · poll-engagement · check-tokens · snapshot-traffic"]
     Jobs --> Sources["Sources<br/>GitHub activity · Telegram inbox"]
     Sources --> Core["Core<br/>Approval state machine · publisher<br/>Gates: humanizer · repo safety · length"]
     Jobs --> Core
@@ -96,12 +96,12 @@ stateDiagram-v2
 | `poll-telegram` | Every five minutes | Handles drafts, approvals, commands and renewals. Publishes approved on-demand text. |
 | `publish-due` | Friday 09:00 UTC | Publishes approved weekly text and resumes unfinished publications. |
 | `render-video` | Friday 10:00 UTC | Checks the render budget and sends an eligible HeyGen video for approval. |
-| `publish-reels` | Hourly at :00 UTC | Publishes approved videos to Instagram and Facebook and reports each result. |
+| `publish-projects` | Hourly at :00 UTC | Publishes approved videos to Instagram and Facebook and reports each result. |
 | `poll-engagement` | Every 30 minutes | Checks LinkedIn notifications, Threads replies and GitHub stars and forks. |
 | `check-tokens` | Daily 07:00 UTC | Checks expiry, tries to refresh and asks for renewal when needed. |
 | `snapshot-traffic` | Daily 07:30 UTC | Stores GitHub traffic and Short.io click counts. |
 
-The GitHub fallback runs `draft-weekly` on Wednesday at 17:00 UTC, `poll-engagement` every 10 minutes and `publish-reels` every 15 minutes. The [runbook](docs/runbook.md) covers dispatch and operations.
+The GitHub fallback runs `draft-weekly` on Wednesday at 17:00 UTC, `poll-engagement` every 10 minutes and `publish-projects` every 15 minutes. The [runbook](docs/runbook.md) covers dispatch and operations.
 
 ## How I work on it
 

@@ -7,21 +7,13 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import quote
-from zoneinfo import ZoneInfo
 
 import httpx
 
-from postpilot.channels.youtube import fitting_title
-from postpilot.core.limits import (
-    LINKEDIN_TEXT_LIMIT,
-    REELS_MAX_DURATION,
-    REELS_MIN_DURATION,
-)
-from postpilot.projects import FACTORY_PROJECT
-from postpilot.store.project_items import Asset, IntakeStatus, ProjectItem
-from postpilot.video.label import AI_VIDEO_CAPTION_SUFFIX, label_video_thread
+from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
+from postpilot.store.project_items import Asset
+from postpilot.video.label import label_video_thread
 
-_EPISODE = re.compile(r"[0-9]{3}-[a-z0-9]+(?:-[a-z0-9]+)*")
 _OFFSET = re.compile(r"(?:Z|[+-](?:[01][0-9]|2[0-3])(?::?[0-5][0-9])?)$")
 _LIMITS = {
     "manifest.json": 16_000,
@@ -29,13 +21,10 @@ _LIMITS = {
     "image.png": 8_000_000,
     "image.jpg": 8_000_000,
     "cover.png": 10_000_000,
-    "reel_de.mp4": 100_000_000,
-    "cover_de.png": 10_000_000,
     "post_de.txt": 4 * LINKEDIN_TEXT_LIMIT,
     "post_threads.txt": 4 * 500,
     "title_de.txt": 16_000,
 }
-_WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 
 class Rejected(ValueError):
@@ -44,12 +33,6 @@ class Rejected(ValueError):
 
 class DownloadFailed(Rejected):
     pass
-
-
-def _episode(value: object) -> str:
-    if isinstance(value, str) and len(value) <= 80 and _EPISODE.fullmatch(value):
-        return value
-    return "?"
 
 
 def _unique_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -165,7 +148,7 @@ def _threads_text(
 
 def _probe_duration(video: bytes) -> float:
     with TemporaryDirectory() as directory:
-        path = Path(directory) / "reel_de.mp4"
+        path = Path(directory) / "video.mp4"
         path.write_bytes(video)
         result = subprocess.run(
             [
@@ -247,169 +230,3 @@ class ProjectRelease:
 
     def download(self, name: str, url: httpx.URL) -> bytes:
         return _asset(self.client, url, self.repo, name)
-
-
-FactoryRelease = ProjectRelease
-
-
-def read_reel(
-    release: ProjectRelease,
-    episode: str,
-    release_at: datetime,
-    ai: bool,
-    probe: Callable[[bytes], float],
-    *,
-    project_channels: tuple[str, ...],
-    project: str = FACTORY_PROJECT,
-    approval: str = "auto",
-    channels: tuple[str, ...] | None = None,
-    fingerprint: str | None = None,
-) -> tuple[ProjectItem, bytes]:
-    video_name, cover_name = (
-        ("reel_de.mp4", "cover_de.png")
-        if fingerprint is None
-        else ("video.mp4", "cover.png")
-    )
-    names = [video_name, cover_name, "post_de.txt"]
-    if "post_threads.txt" in release.metadata:
-        names.append("post_threads.txt")
-    urls = {name: release.asset_url(name) for name in names}
-    assets: dict[str, Asset] = {}
-
-    def download(name: str) -> bytes:
-        data = release.download(name, urls[name])
-        assets[name] = _asset_hash(data)
-        return data
-
-    post_de = _text(download("post_de.txt"), "post_de.txt", LINKEDIN_TEXT_LIMIT)
-    label = AI_VIDEO_CAPTION_SUFFIX if ai else ""
-    targets = channels if channels is not None else project_channels
-    short_caption_platforms = [
-        name for name in ("Instagram", "TikTok") if name.lower() in targets
-    ]
-    if short_caption_platforms:
-        caption_limit, platform = 2200, "/".join(short_caption_platforms)
-    else:
-        caption_limit, platform = LINKEDIN_TEXT_LIMIT, "LinkedIn"
-    if len(post_de + label) > caption_limit:
-        raise Rejected(
-            f"post_de.txt exceeds the {caption_limit}-character {platform} caption limit (including any AI label)"
-        )
-    threads = _threads_text(post_de, urls, download, video_label=ai)
-    cover = download(cover_name)
-    if not cover.startswith(b"\x89PNG\r\n\x1a\n"):
-        raise Rejected(f"{cover_name} must have a PNG signature")
-    video = download(video_name)
-    try:
-        duration = probe(video)
-    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
-        raise Rejected(f"could not probe {video_name} duration") from None
-    if not REELS_MIN_DURATION <= duration <= REELS_MAX_DURATION:
-        raise Rejected(
-            f"{video_name} must be {REELS_MIN_DURATION}-{REELS_MAX_DURATION} seconds"
-        )
-    title = None
-    if (title_asset := release.metadata.get("title_de.txt")) is not None:
-        size = title_asset.get("size")
-        title = ""
-        if not (type(size) is int and size > _LIMITS["title_de.txt"]):
-            urls["title_de.txt"] = release.asset_url("title_de.txt")
-            try:
-                raw_title = download("title_de.txt").decode("utf-8")
-            except UnicodeDecodeError:
-                raw_title = ""
-            if "\0" not in raw_title:
-                title = fitting_title("", raw_title)
-    return ProjectItem(
-        episode,
-        release_at,
-        ai,
-        post_de,
-        threads,
-        assets,
-        duration,
-        project,
-        title_de=title,
-        approval=approval,
-        channels=channels,
-        fingerprint=fingerprint,
-    ), cover
-
-
-def _notice(
-    repo: str, reel: ProjectItem, status: IntakeStatus, channels: tuple[str, ...]
-) -> str:
-    local = reel.release_at.astimezone(ZoneInfo("Europe/Berlin"))
-    names = {
-        "linkedin-de": "LinkedIn DE",
-        "threads": "Threads",
-        "instagram": "IG",
-        "facebook": "FB",
-        "youtube": "YouTube",
-        "tiktok": "TikTok",
-    }
-    targets = ", ".join(
-        names[name]
-        for name in channels
-        if name != "threads" or reel.post_threads is not None
-    )
-    lines = [
-        (
-            f"Factory reel {reel.id} · scheduled {_WEEKDAYS[local.weekday()]} "
-            f"{local:%d.%m %H:%M} · {targets} · AI label: "
-            f"{'yes' if reel.ai else 'no'}"
-        )
-    ]
-    if "threads" in channels:
-        if (threads := reel.threads_text) is None:
-            fallback = label_video_thread(reel.post_de) if reel.ai else reel.post_de
-            lines.append(
-                f"Threads skipped: post_de.txt is {len(fallback)} chars"
-                f"{' with AI label' if reel.ai else ''} (max 500), no post_threads.txt"
-            )
-        else:
-            lines.append(f"Threads\n{threads}")
-    if "youtube" in channels and not fitting_title(reel.post_de, reel.title_de):
-        lines.append("YouTube will use the default title.")
-    lines.append(
-        f"Status: {'refused (already published)' if status == 'refused' else status}"
-    )
-    lines.append(f"https://github.com/{repo}/releases/tag/{reel.tag}")
-    return "\n".join(lines)
-
-
-def intake(
-    raw: str,
-    repo: str,
-    client: httpx.Client,
-    save: Callable[[ProjectItem], IntakeStatus],
-    notify: Callable[[str], None],
-    *,
-    channels: tuple[str, ...],
-    now: datetime | None = None,
-    probe: Callable[[bytes], float] = _probe_duration,
-) -> int:
-    episode = "?"
-    try:
-        data = _payload(raw)
-        episode = _episode(data.get("episode"))
-        if data.keys() != {"v", "episode", "release_at", "ai"}:
-            raise Rejected("payload keys must be exactly v, episode, release_at, ai")
-        if type(data["v"]) is not int or data["v"] != 1:
-            raise Rejected("v must be the integer 1")
-        if episode == "?":
-            raise Rejected("episode must be a factory slug of at most 80 characters")
-        ai = data["ai"]
-        if not isinstance(ai, bool):
-            raise Rejected("ai must be a boolean")
-        release_at = _release_time(data["release_at"], now or datetime.now(UTC))
-        release = FactoryRelease(client, repo, f"reel/{episode}")
-        reel, _ = read_reel(
-            release, episode, release_at, ai, probe, project_channels=channels
-        )
-    except Rejected as error:
-        notify(f"Factory reel {episode} rejected: {error}")
-        return 1
-    status = save(reel)
-    notify(_notice(repo, reel, status, channels))
-    return int(status == "refused")

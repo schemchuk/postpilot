@@ -87,6 +87,11 @@ the AI label, and nothing central enforces approval.
    at most 10 pages of 100. The 2200 caption check applies only to items targeting Instagram or TikTok. The
    workflow keeps the name `publish-reels`: cron-job.org dispatches it by file name, a rename goes with T27e2.
 
+   **T27e2 notes (2026-11-27).** The factory's first v2 release (`reel/003-vechir-z-sirym`) was published live,
+   so `factory-intake`, the v1 intake code and the v1 asset names (`reel_de.mp4`, `cover_de.png`) are removed and
+   migration 0025 drops the empty `factory_reels`. The workflow file is now `publish-projects.yml` (cron-job.org
+   job 8906005 points to it); the CLI command stays `publish-reels`.
+
 5. **Discovery by polling, dispatch optional.** The hourly `publish-reels` run (renamed `publish-projects`)
    first lists recent releases of every enabled project and takes in new `reel/*` and `post/*` tags with a
    `manifest.json`. A project needs no secret for this. `project-intake` (`workflow_dispatch`, input

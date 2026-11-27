@@ -9,7 +9,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: publish-reels
+  group: publish-projects
   cancel-in-progress: false
 jobs:
   run:

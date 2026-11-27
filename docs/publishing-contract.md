@@ -76,8 +76,6 @@ to both the reported asset size and downloaded bytes, unless noted.
 | `image.png` or `image.jpg` | — | Optional | One image at most. 8,000,000 bytes. Must start with the matching PNG or JPEG signature. |
 | `title_de.txt` | Optional | — | YouTube title override. Use UTF-8, at most 16,000 bytes and at most 100 characters after trimming. |
 
-The legacy `reel_de.mp4` and `cover_de.png` names are for the factory only.
-
 Both caption files must be UTF-8, contain non-whitespace text and have no NUL
 characters. Whitespace and newlines count toward the limits. Postpilot does no
 rewriting, shortening or truncation of captions. LinkedIn and YouTube apply

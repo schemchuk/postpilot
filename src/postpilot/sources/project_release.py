@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import re
+import subprocess
 from collections.abc import Callable, Iterator
 from datetime import datetime, timedelta
 from urllib.parse import quote
@@ -11,11 +12,15 @@ import httpx
 
 from postpilot.channels.paused import is_paused
 from postpilot.channels.youtube import fitting_title
-from postpilot.core.limits import LINKEDIN_TEXT_LIMIT
+from postpilot.core.limits import (
+    LINKEDIN_TEXT_LIMIT,
+    REELS_MAX_DURATION,
+    REELS_MIN_DURATION,
+)
 from postpilot.notify.telegram import Notifier, TelegramError, tiktok_preview
 from postpilot.projects import CHANNEL_NAMES, POST_CHANNELS, Project, Projects
-from postpilot.sources.factory import (
-    _WEEKDAYS,
+from postpilot.sources.release_assets import (
+    _LIMITS,
     DownloadFailed,
     ProjectRelease,
     Rejected,
@@ -25,7 +30,6 @@ from postpilot.sources.factory import (
     _release_time,
     _text,
     _threads_text,
-    read_reel,
 )
 from postpilot.store.project_items import (
     POST_IMAGE_SIGNATURES,
@@ -35,11 +39,16 @@ from postpilot.store.project_items import (
     ProjectItemStore,
 )
 from postpilot.store.tiktok_settings import TikTokSettingsStore
-from postpilot.video.label import AI_IMAGE_CAPTION_LABEL, label_video_thread
+from postpilot.video.label import (
+    AI_IMAGE_CAPTION_LABEL,
+    AI_VIDEO_CAPTION_SUFFIX,
+    label_video_thread,
+)
 from postpilot.video.tiktok import CreatorInfo
 
 logger = logging.getLogger(__name__)
 _REQUIRED = {"v", "kind", "id", "release_at", "ai"}
+_WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 _SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 
 
@@ -62,6 +71,86 @@ def _channels(value: object, project: Project, kind: str) -> tuple[str, ...]:
             raise Rejected(f"duplicate channel {name}")
         names.add(name)
     return tuple(sorted(names))
+
+
+def _read_reel(
+    release: ProjectRelease,
+    episode: str,
+    release_at: datetime,
+    ai: bool,
+    probe: Callable[[bytes], float],
+    *,
+    project_channels: tuple[str, ...],
+    project: str,
+    approval: str,
+    channels: tuple[str, ...] | None,
+    fingerprint: str,
+) -> tuple[ProjectItem, bytes]:
+    video_name, cover_name = "video.mp4", "cover.png"
+    names = [video_name, cover_name, "post_de.txt"]
+    if "post_threads.txt" in release.metadata:
+        names.append("post_threads.txt")
+    urls = {name: release.asset_url(name) for name in names}
+    assets: dict[str, Asset] = {}
+
+    def download(name: str) -> bytes:
+        data = release.download(name, urls[name])
+        assets[name] = _asset_hash(data)
+        return data
+
+    post_de = _text(download("post_de.txt"), "post_de.txt", LINKEDIN_TEXT_LIMIT)
+    label = AI_VIDEO_CAPTION_SUFFIX if ai else ""
+    targets = channels if channels is not None else project_channels
+    short_caption_platforms = [
+        name for name in ("Instagram", "TikTok") if name.lower() in targets
+    ]
+    if short_caption_platforms:
+        caption_limit, platform = 2200, "/".join(short_caption_platforms)
+    else:
+        caption_limit, platform = LINKEDIN_TEXT_LIMIT, "LinkedIn"
+    if len(post_de + label) > caption_limit:
+        raise Rejected(
+            f"post_de.txt exceeds the {caption_limit}-character {platform} caption limit (including any AI label)"
+        )
+    threads = _threads_text(post_de, urls, download, video_label=ai)
+    cover = download(cover_name)
+    if not cover.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise Rejected(f"{cover_name} must have a PNG signature")
+    video = download(video_name)
+    try:
+        duration = probe(video)
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+        raise Rejected(f"could not probe {video_name} duration") from None
+    if not REELS_MIN_DURATION <= duration <= REELS_MAX_DURATION:
+        raise Rejected(
+            f"{video_name} must be {REELS_MIN_DURATION}-{REELS_MAX_DURATION} seconds"
+        )
+    title = None
+    if (title_asset := release.metadata.get("title_de.txt")) is not None:
+        size = title_asset.get("size")
+        title = ""
+        if not (type(size) is int and size > _LIMITS["title_de.txt"]):
+            urls["title_de.txt"] = release.asset_url("title_de.txt")
+            try:
+                raw_title = download("title_de.txt").decode("utf-8")
+            except UnicodeDecodeError:
+                raw_title = ""
+            if "\0" not in raw_title:
+                title = fitting_title("", raw_title)
+    return ProjectItem(
+        episode,
+        release_at,
+        ai,
+        post_de,
+        threads,
+        assets,
+        duration,
+        project,
+        title_de=title,
+        approval=approval,
+        channels=channels,
+        fingerprint=fingerprint,
+    ), cover
 
 
 def read_manifest(
@@ -155,7 +244,7 @@ def read_manifest(
             channels=channels,
             fingerprint=fingerprint,
         ), photo
-    return read_reel(
+    return _read_reel(
         release,
         item_id,
         release_at,

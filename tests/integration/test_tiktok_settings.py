@@ -32,7 +32,7 @@ def test_tiktok_settings_migration_and_store(conn):
     assert store.get(item_id, now - timedelta(days=1)) is None
     assert store.get(item_id, now + timedelta(days=1)) == changed
 
-    migrate.down(conn, 2)
+    migrate.down(conn, 3)
     assert "tiktok_settings" not in test_store.table_names(conn)
     migrate.up(conn)
     assert store.get(item_id) is None
@@ -68,7 +68,7 @@ def test_partial_choice_migration_preserves_complete_choices(conn):
     store.flip_toggle(partial, "stitch", now)
     assert store.get_partial(partial) == TikTokSelection(allow_stitch=True)
 
-    migrate.down(conn)
+    migrate.down(conn, 2)  # 0025 and 0024
     with pytest.raises(NotNullViolation):
         store.flip_toggle(empty, "comment", now)
     assert store.get(chosen) == TikTokChoice("SELF_ONLY", allow_comment=True)
